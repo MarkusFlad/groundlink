@@ -42,9 +42,9 @@
 //!   it receives.
 //! - `pus_server <tc_port> <tm_port>`: receives telecommands on one port
 //!   with the actor chain [`PusServer`] → [`PusTcAcceptor`] →
-//!   [`PusTestServiceActor`] and sends all telemetry through a
-//!   [`RelayAdapter`] and a second [`PusServer`] to the client connected
-//!   to a second port.
+//!   [`PusTestServiceActor`] and sends all telemetry as [`Relay`] to a
+//!   second [`PusServer`], which writes it to the client connected to the
+//!   second port.
 //! - `pus_client <address> <tc_port> <tm_port>`: an interactive client with
 //!   two [`PusClient`]s that sends TC(17,1) and prints the received
 //!   telemetry.
@@ -114,7 +114,7 @@ pub use ccsds::{PacketType, SequenceFlags, SpacePacket, SpacePacketCodec, SpaceP
 pub use cuc::{CucEpoch, CucFormat, CucTime};
 pub use messages::{
     Close, CloseRead, CloseReason, CloseWrite, Connect, ConnectionHalf, ConnectionHalfClosed,
-    GetLocalAddr, MessageCodec, PeerHalfClosed, Relay, Shutdown,
+    GetLocalAddr, MessageCodec, MessageSink, PeerHalfClosed, Relay, Shutdown, SinkError,
 };
 pub use pus::{
     AckFlags, PusCodec, PusConfig, PusPacket, PusTc, PusTcSecondaryHeader, PusTm,

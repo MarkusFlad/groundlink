@@ -64,8 +64,8 @@ pub struct TcpServerArgs<M: Send + 'static> {
 /// A [`Relay<M>`] sent to the server is written to the peer of the
 /// current connection, which lets other actors send to whichever client is
 /// connected. Without a connection the message is dropped with a warning.
-/// Use a [`RelayAdapter`] in front of the server for actors that expect a
-/// `Recipient<M>`.
+/// Actors that produce messages can take a [`MessageSink<M>`](crate::MessageSink),
+/// which accepts the server's `Recipient<Relay<M>>` directly.
 ///
 /// Spawning fails with the I/O error of binding the address. Also handles
 /// [`GetLocalAddr`] and [`ConnectionHalfClosed`].
@@ -801,11 +801,11 @@ pub struct RelayAdapterArgs<M: Send + 'static> {
 /// Small adapter actor: accepts plain messages of type `M` and forwards
 /// them to `target` wrapped in [`Relay<M>`].
 ///
-/// Useful wherever an actor expects a `Recipient<M>` but the messages
-/// should be sent over a connection: e.g. as the `downstream` of a
-/// server, to relay everything it receives through a [`TcpClientActor`],
-/// or in front of a [`TcpServerActor`], to send telemetry to its
-/// connected client.
+/// Useful where an actor only accepts a `Recipient<M>` but the messages
+/// should be sent over a connection, e.g. as the `downstream` of a server,
+/// to relay everything it receives through a [`TcpClientActor`]. Actors
+/// that take a [`MessageSink<M>`](crate::MessageSink) do not need it; this
+/// avoids the extra actor hop.
 pub struct RelayAdapter<M: Send + 'static> {
     target: Recipient<Relay<M>>,
 }

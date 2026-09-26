@@ -156,7 +156,7 @@ async fn adapter_accepts_infallible_conversions() {
     use kameo_tcp_example::{AreYouAliveReport, PusPacketAdapter};
 
     let packets = TestActor::<PusPacket>::spawn(TestActor::new());
-    let adapter = PusPacketAdapter::<AreYouAliveReport>::spawn(PusPacketAdapter::new(packets.clone().recipient()));
+    let adapter = PusPacketAdapter::<AreYouAliveReport>::spawn(PusPacketAdapter::new(packets.clone().recipient::<PusPacket>()));
 
     let report = AreYouAliveReport::new(APID, 0, vec![0u8; 7]);
     adapter.ask(report.clone()).await.unwrap();

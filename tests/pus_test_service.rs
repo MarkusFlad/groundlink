@@ -21,7 +21,7 @@ fn request(sequence_count: u16) -> AreYouAliveRequest {
 #[tokio::test]
 async fn answers_tc_17_1_with_tm_17_2_then_tm_1_7() {
     let tms = TestActor::<PusPacket>::spawn(TestActor::new());
-    let service = PusTestServiceActor::spawn(PusTestServiceActor::new(APID, tms.clone().recipient()));
+    let service = PusTestServiceActor::spawn(PusTestServiceActor::new(APID, tms.clone().recipient::<PusPacket>()));
 
     let request = request(9);
     service.ask(request.clone()).await.unwrap();
@@ -44,7 +44,7 @@ async fn answers_tc_17_1_with_tm_17_2_then_tm_1_7() {
 #[tokio::test]
 async fn without_completion_flag_only_tm_17_2() {
     let tms = TestActor::<PusPacket>::spawn(TestActor::new());
-    let service = PusTestServiceActor::spawn(PusTestServiceActor::new(APID, tms.clone().recipient()));
+    let service = PusTestServiceActor::spawn(PusTestServiceActor::new(APID, tms.clone().recipient::<PusPacket>()));
 
     let mut request = request(1);
     request.ack_flags = AckFlags { completion: false, ..AckFlags::ALL };
@@ -58,7 +58,7 @@ async fn without_completion_flag_only_tm_17_2() {
 #[tokio::test]
 async fn invalid_tcs_are_answered_with_tm_1_4() {
     let tms = TestActor::<PusPacket>::spawn(TestActor::new());
-    let service = PusTestServiceActor::spawn(PusTestServiceActor::new(APID, tms.clone().recipient()));
+    let service = PusTestServiceActor::spawn(PusTestServiceActor::new(APID, tms.clone().recipient::<PusPacket>()));
 
     let unknown_subtype = PusTc::new(APID, 0, 17, 3, Bytes::new());
     let with_app_data = PusTc::new(APID, 1, 17, 1, &b"x"[..]);
@@ -89,7 +89,7 @@ async fn downstream_of_acceptor_with_shared_sequence_counter() {
 
     let acceptor = PusTcAcceptor::new(APID, acceptances.clone().recipient());
     let service = PusTestServiceActor::spawn(
-        PusTestServiceActor::new(APID, tms.clone().recipient())
+        PusTestServiceActor::new(APID, tms.clone().recipient::<PusPacket>())
             .with_sequence_counter(acceptor.sequence_counter()),
     );
     let acceptor = PusTcAcceptor::spawn(
@@ -137,9 +137,9 @@ async fn downstream_of_acceptor_with_shared_sequence_counter() {
 async fn acceptor_for_packets_keeps_tm_order_with_test_service() {
     let tms = TestActor::<PusPacket>::spawn(TestActor::new());
 
-    let acceptor = PusTcAcceptor::for_packets(APID, tms.clone().recipient());
+    let acceptor = PusTcAcceptor::for_packets(APID, tms.clone().recipient::<PusPacket>());
     let service = PusTestServiceActor::spawn(
-        PusTestServiceActor::new(APID, tms.clone().recipient())
+        PusTestServiceActor::new(APID, tms.clone().recipient::<PusPacket>())
             .with_sequence_counter(acceptor.sequence_counter()),
     );
     let acceptor = PusTcAcceptor::spawn(acceptor.with_service_handler(17, &[1], service.recipient::<PusTc>()));

@@ -1,12 +1,11 @@
 //! PUS server with separate TCP ports for telecommands and telemetry.
 //!
 //! ```text
-//! TC port: PusServer ──PusPacket──▶ PusTcAcceptor ──────────TM(1,x)──────────┐
-//!                                          │                                   ├──▶ RelayAdapter
-//!                                          └──TC(17,1)──▶ PusTestServiceActor ─┘         │
-//!                                                                              Relay<PusPacket>
-//!                                                                                        ▼
-//! TM port:                                                     TM client ◀── PusServer
+//! TC port: PusServer ──PusPacket──▶ PusTcAcceptor ────────TM(1,x)───────────┐
+//!                                        │                                  │
+//!                                        └──TC(17,1)──▶ PusTestServiceActor ┤ Relay<PusPacket>
+//!                                                                           ▼
+//! TM port:                                                    TM client ◀── PusServer
 //! ```
 //!
 //! Telecommands are received on the TC port. The application process has
@@ -28,7 +27,7 @@ use kameo::message::{Context, Message};
 use kameo_tcp_example::pus::service17;
 use kameo_tcp_example::{
     GetLocalAddr, PusServer, PusPacket, PusTc, PusTcAcceptor, PusTestServiceActor, Relay,
-    RelayAdapter, RelayAdapterArgs, TcpServerArgs,
+    TcpServerArgs,
 };
 use tracing::warn;
 use tracing_subscriber::EnvFilter;
@@ -75,20 +74,18 @@ async fn main() -> anyhow::Result<()> {
     let tc_port = parse_port(args.next(), usage)?;
     let tm_port = parse_port(args.next(), usage)?;
 
-    // Telemetry: the TM server sends every `Relay<PusPacket>` to its
-    // connected client. The adapter lets the PUS actors send plain packets.
+    // Telemetry: the TM server writes every `Relay<PusPacket>` to its
+    // connected client.
     let tm_server = PusServer::spawn(TcpServerArgs {
         bind_addr: SocketAddr::from(([0, 0, 0, 0], tm_port)),
         downstream: IgnoreIncoming::spawn(IgnoreIncoming).recipient::<PusPacket>(),
     });
-    let telemetry = RelayAdapter::spawn(RelayAdapterArgs {
-        target: tm_server.clone().recipient::<Relay<PusPacket>>(),
-    });
+    let telemetry = tm_server.clone().recipient::<Relay<PusPacket>>();
 
     // Telecommands: acceptance check, then service 17.
-    let acceptor = PusTcAcceptor::for_packets(APID, telemetry.clone().recipient::<PusPacket>());
+    let acceptor = PusTcAcceptor::for_packets(APID, telemetry.clone());
     let test_service = PusTestServiceActor::spawn(
-        PusTestServiceActor::new(APID, telemetry.recipient::<PusPacket>())
+        PusTestServiceActor::new(APID, telemetry)
             .with_sequence_counter(acceptor.sequence_counter()),
     );
     let acceptor = PusTcAcceptor::spawn(acceptor.with_service_handler(

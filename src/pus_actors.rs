@@ -21,6 +21,7 @@ use tracing::{error, warn};
 
 use crate::ccsds::SEQUENCE_COUNT_MAX;
 use crate::cuc::{CucFormat, CucTime};
+use crate::messages::MessageSink;
 use crate::pus::service1::{FailureCode, RequestId, VerificationKind, VerificationReport};
 use crate::pus::service17::{AreYouAliveReport, AreYouAliveRequest};
 use crate::pus::{PusPacket, PusTc};
@@ -123,7 +124,7 @@ struct ServiceHandler {
 /// Where a [`PusTcAcceptor`] sends its verification reports.
 enum ReportRecipient {
     Reports(Recipient<VerificationReport>),
-    Packets(Recipient<PusPacket>),
+    Packets(MessageSink<PusPacket>),
 }
 
 impl PusTcAcceptor {
@@ -135,17 +136,19 @@ impl PusTcAcceptor {
     }
 
     /// Like [`new`](Self::new), but sends the verification reports already
-    /// encoded as [`PusPacket`]s, e.g. directly to a
-    /// [`PusWriter`](crate::PusWriter), or to a
-    /// [`RelayAdapter`](crate::RelayAdapter) in front of a
-    /// [`PusServer`](crate::PusServer) or [`PusClient`](crate::PusClient).
+    /// encoded as [`PusPacket`]s.
+    ///
+    /// `tm_recipient` is a [`MessageSink`]: a `Recipient<PusPacket>` (e.g. a
+    /// [`PusWriter`](crate::PusWriter)) or a `Recipient<Relay<PusPacket>>`
+    /// (a [`PusServer`](crate::PusServer) or [`PusClient`](crate::PusClient),
+    /// which sends to its current connection).
     ///
     /// If the downstream service handlers send their telemetry to the same
     /// recipient, TM(1,1) is guaranteed to arrive before the handlers'
     /// telemetry for the same TC, because it is queued before the TC is
     /// forwarded.
-    pub fn for_packets(apid: u16, tm_recipient: Recipient<PusPacket>) -> Self {
-        Self::with_recipient(apid, ReportRecipient::Packets(tm_recipient))
+    pub fn for_packets(apid: u16, tm_recipient: impl Into<MessageSink<PusPacket>>) -> Self {
+        Self::with_recipient(apid, ReportRecipient::Packets(tm_recipient.into()))
     }
 
     fn with_recipient(apid: u16, tm_recipient: ReportRecipient) -> Self {
@@ -296,13 +299,13 @@ impl Message<PusPacket> for PusTcAcceptor {
 /// # #[tokio::main]
 /// # async fn main() {
 /// let apid = 0x042;
-/// // The TM packets would typically go to a `PusWriter`, or through a
-/// // `RelayAdapter` to a `PusServer`; here a `TestActor`.
+/// // The TM packets would typically go to a `PusWriter` or, as
+/// // `Recipient<Relay<PusPacket>>`, to a `PusServer`; here a `TestActor`.
 /// let tms = TestActor::<PusPacket>::spawn(TestActor::new());
 ///
-/// let acceptor = PusTcAcceptor::for_packets(apid, tms.clone().recipient());
+/// let acceptor = PusTcAcceptor::for_packets(apid, tms.clone().recipient::<PusPacket>());
 /// let test_service = PusTestServiceActor::spawn(
-///     PusTestServiceActor::new(apid, tms.clone().recipient())
+///     PusTestServiceActor::new(apid, tms.clone().recipient::<PusPacket>())
 ///         .with_sequence_counter(acceptor.sequence_counter()),
 /// );
 /// let acceptor = PusTcAcceptor::spawn(
@@ -326,7 +329,7 @@ impl Message<PusPacket> for PusTcAcceptor {
 /// [`PusTcAcceptor`] has already accepted the TC.
 pub struct PusTestServiceActor {
     apid: u16,
-    tm_recipient: Recipient<PusPacket>,
+    tm_recipient: MessageSink<PusPacket>,
     time_format: CucFormat,
     sequence_counter: SequenceCounter,
     message_type_counters: MessageTypeCounters,
@@ -335,10 +338,13 @@ pub struct PusTestServiceActor {
 impl PusTestServiceActor {
     /// Creates the actor for the application `apid`. The TM packets go to
     /// `tm_recipient`, with time stamps in [`CucFormat::default`].
-    pub fn new(apid: u16, tm_recipient: Recipient<PusPacket>) -> Self {
+    ///
+    /// `tm_recipient` is a [`MessageSink`]: a `Recipient<PusPacket>` or a
+    /// `Recipient<Relay<PusPacket>>` (e.g. a [`PusServer`](crate::PusServer)).
+    pub fn new(apid: u16, tm_recipient: impl Into<MessageSink<PusPacket>>) -> Self {
         PusTestServiceActor {
             apid,
-            tm_recipient,
+            tm_recipient: tm_recipient.into(),
             time_format: CucFormat::default(),
             sequence_counter: SequenceCounter::new(),
             message_type_counters: MessageTypeCounters::default(),
@@ -449,8 +455,11 @@ impl Message<PusTc> for PusTestServiceActor {
 
 /// Adapter actor: converts typed PUS messages `T` (e.g.
 /// [`VerificationReport`]) into a [`PusPacket`] via `TryFrom` and forwards
-/// it to `target`, typically a [`PusWriter`](crate::PusWriter) that sends
-/// it over TCP.
+/// it to `target`, e.g. a [`PusWriter`](crate::PusWriter) or a
+/// [`PusServer`](crate::PusServer) that sends it over TCP.
+///
+/// `target` is a [`MessageSink`], so it can be a `Recipient<PusPacket>` or a
+/// `Recipient<Relay<PusPacket>>`.
 ///
 /// ```
 /// # use std::time::Duration;
@@ -478,14 +487,14 @@ impl Message<PusTc> for PusTestServiceActor {
 ///
 /// Messages that cannot be converted are dropped and logged as an error.
 pub struct PusPacketAdapter<T> {
-    target: Recipient<PusPacket>,
+    target: MessageSink<PusPacket>,
     _marker: PhantomData<fn(T)>,
 }
 
 impl<T> PusPacketAdapter<T> {
     /// Creates an adapter that forwards to `target`.
-    pub fn new(target: Recipient<PusPacket>) -> Self {
-        PusPacketAdapter { target, _marker: PhantomData }
+    pub fn new(target: impl Into<MessageSink<PusPacket>>) -> Self {
+        PusPacketAdapter { target: target.into(), _marker: PhantomData }
     }
 }
 

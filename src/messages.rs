@@ -4,6 +4,7 @@
 use std::io;
 use std::net::SocketAddr;
 
+use kameo::actor::Recipient;
 use tokio_util::codec::{Decoder, Encoder};
 
 /// Why one half of a connection (reading or writing) was closed.
@@ -112,7 +113,101 @@ pub struct PeerHalfClosed(pub ConnectionHalfClosed);
 /// contained message over its current connection.
 ///
 /// Without a connection the message is dropped with a warning.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Relay<M>(pub M);
+
+/// Where an actor sends messages of type `M`: either directly to an actor
+/// that handles `M`, or wrapped in [`Relay<M>`] to a
+/// [`TcpServerActor`](crate::actors::TcpServerActor) or
+/// [`TcpClientActor`](crate::actors::TcpClientActor), which writes them to
+/// its current connection.
+///
+/// Actors that produce messages (e.g. the PUS actors in
+/// [`crate::pus_actors`]) take an `impl Into<MessageSink<M>>`, so they
+/// accept both a `Recipient<M>` and a `Recipient<Relay<M>>` without an
+/// adapter actor in between.
+///
+/// ```
+/// use kameo::actor::Spawn;
+/// use kameo_tcp_example::{GetMessages, MessageSink, Relay, TestActor};
+///
+/// # #[tokio::main]
+/// # async fn main() {
+/// let direct = TestActor::<u32>::spawn(TestActor::new());
+/// let relayed = TestActor::<Relay<u32>>::spawn(TestActor::new());
+///
+/// MessageSink::from(direct.clone().recipient::<u32>()).tell(1).await.unwrap();
+/// MessageSink::from(relayed.clone().recipient::<Relay<u32>>()).tell(2).await.unwrap();
+///
+/// assert_eq!(direct.ask(GetMessages::new()).await.unwrap(), vec![1]);
+/// assert_eq!(relayed.ask(GetMessages::new()).await.unwrap(), vec![Relay(2)]);
+/// # }
+/// ```
+pub enum MessageSink<M: Send + 'static> {
+    /// Send `M` as is.
+    Direct(Recipient<M>),
+    /// Send `M` wrapped in [`Relay<M>`].
+    Relay(Recipient<Relay<M>>),
+}
+
+impl<M: Send + 'static> MessageSink<M> {
+    /// Sends `msg` to the target, wrapping it in [`Relay`] if needed.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the target actor is not running.
+    pub async fn tell(&self, msg: M) -> Result<(), SinkError> {
+        match self {
+            MessageSink::Direct(recipient) => recipient.tell(msg).await.map_err(|err| SinkError(err.to_string())),
+            MessageSink::Relay(recipient) => {
+                recipient.tell(Relay(msg)).await.map_err(|err| SinkError(err.to_string()))
+            }
+        }
+    }
+}
+
+impl<M: Send + 'static> Clone for MessageSink<M> {
+    fn clone(&self) -> Self {
+        match self {
+            MessageSink::Direct(recipient) => MessageSink::Direct(recipient.clone()),
+            MessageSink::Relay(recipient) => MessageSink::Relay(recipient.clone()),
+        }
+    }
+}
+
+impl<M: Send + 'static> std::fmt::Debug for MessageSink<M> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MessageSink::Direct(_) => f.write_str("MessageSink::Direct"),
+            MessageSink::Relay(_) => f.write_str("MessageSink::Relay"),
+        }
+    }
+}
+
+impl<M: Send + 'static> From<Recipient<M>> for MessageSink<M> {
+    fn from(recipient: Recipient<M>) -> Self {
+        MessageSink::Direct(recipient)
+    }
+}
+
+impl<M: Send + 'static> From<Recipient<Relay<M>>> for MessageSink<M> {
+    fn from(recipient: Recipient<Relay<M>>) -> Self {
+        MessageSink::Relay(recipient)
+    }
+}
+
+/// Error of [`MessageSink::tell`]: the message could not be delivered
+/// because the target actor is not running.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SinkError(String);
+
+impl std::fmt::Display for SinkError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for SinkError {}
 
 /// Asks the reader or writer actor for message type `M` to close its half
 /// of the connection in an orderly way and then stop.

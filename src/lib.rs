@@ -1,16 +1,22 @@
 //! Generische TCP-Actors + drei Protokolle.
 //!
 //! Die Bibliothek ist in thematische Module aufgeteilt:
+//! - [`actors`] enthält alle generischen TCP-Actor-Implementierungen,
+//!   Zustands- und Verbindungslogik sowie die Convenience-Typen.
 //! - [`ccsds`] enthält CCSDS-Space-Packet-Typen und den zugehörigen Codec.
 //! - [`cuc`] enthält die CCSDS-CUC-Zeit inkl. Umrechnung von/nach UTC.
+//! - [`messages`] enthält die Nachrichten der TCP-Actors und den
+//!   [`MessageCodec`]-Trait.
 //! - [`pus`] enthält ECSS-PUS-C-Pakete (TC/TM) auf Basis der CCSDS Space
 //!   Packets und den zugehörigen Codec.
 //! - [`pus_actors`] enthält Actors, die PUS-Pakete fachlich verarbeiten
 //!   (z. B. [`PusTcAcceptor`]).
 //! - [`simple_string`] enthält das einfache String-Protokoll.
-//! - [`tcp`] enthält alle generischen TCP-Actor-Implementierungen,
-//!   Zustands- und Verbindungslogik sowie die Convenience-Typen.
-//! - [`test`] enthält den generischen Test-Actor für Assertions in Tests.
+//! - [`test`](mod@test) enthält den generischen Test-Actor für Assertions in Tests.
+//!
+//! Logging erfolgt über [`tracing`]; die Anwendung entscheidet per
+//! Subscriber (z. B. `tracing_subscriber::fmt`), ob und wie die Meldungen
+//! ausgegeben werden.
 //!
 //! Die öffentliche API bleibt kompatibel: Die wichtigsten Symbole werden hier
 //! erneut exportiert, damit bestehender Code unverändert weiterarbeitet.

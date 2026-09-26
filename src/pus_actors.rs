@@ -17,6 +17,7 @@ use std::sync::Arc;
 use kameo::actor::{Actor, ActorRef, Recipient};
 use kameo::error::Infallible;
 use kameo::message::{Context, Message};
+use tracing::{error, warn};
 
 use crate::ccsds::SEQUENCE_COUNT_MAX;
 use crate::cuc::{CucFormat, CucTime};
@@ -61,7 +62,7 @@ impl MessageTypeCounters {
 
 fn now(actor: &str, apid: u16, format: CucFormat) -> Option<CucTime> {
     CucTime::now(format)
-        .inspect_err(|err| eprintln!("{actor} (APID {apid}): Zeitstempel nicht erzeugbar: {err}"))
+        .inspect_err(|err| error!(actor, apid, error = %err, "Zeitstempel nicht erzeugbar"))
         .ok()
 }
 
@@ -164,7 +165,7 @@ impl PusTcAcceptor {
         report.message_type_counter =
             self.message_type_counters.next(crate::pus::service1::SERVICE_TYPE, subtype, report.destination_id);
         if let Err(err) = self.tm_recipient.tell(report).await {
-            eprintln!("PusTcAcceptor (APID {}): Konnte TM(1,{subtype}) nicht senden: {err}", self.apid);
+            warn!(apid = self.apid, error = %err, "Konnte TM(1,{subtype}) nicht senden");
         }
     }
 
@@ -289,7 +290,7 @@ impl PusTestServiceActor {
 
     async fn send(&self, packet: PusPacket, name: &str) {
         if let Err(err) = self.tm_recipient.tell(packet).await {
-            eprintln!("PusTestServiceActor (APID {}): Konnte {name} nicht senden: {err}", self.apid);
+            warn!(apid = self.apid, error = %err, "Konnte {name} nicht senden");
         }
     }
 
@@ -303,7 +304,7 @@ impl PusTestServiceActor {
             self.message_type_counters.next(crate::pus::service1::SERVICE_TYPE, subtype, destination_id);
         match PusPacket::try_from(report) {
             Ok(packet) => self.send(packet, &format!("TM(1,{subtype})")).await,
-            Err(err) => eprintln!("PusTestServiceActor (APID {}): TM(1,{subtype}) nicht kodierbar: {err}", self.apid),
+            Err(err) => error!(apid = self.apid, error = %err, "TM(1,{subtype}) nicht kodierbar"),
         }
     }
 
@@ -425,12 +426,12 @@ where
         let packet = match PusPacket::try_from(msg) {
             Ok(packet) => packet,
             Err(err) => {
-                eprintln!("PusPacketAdapter: Nachricht nicht als PUS-Paket darstellbar: {err}");
+                error!(error = %err, "Nachricht nicht als PUS-Paket darstellbar");
                 return;
             }
         };
         if let Err(err) = self.target.tell(packet).await {
-            eprintln!("PusPacketAdapter: Konnte PUS-Paket nicht weiterleiten: {err}");
+            warn!(error = %err, "Konnte PUS-Paket nicht weiterleiten");
         }
     }
 }

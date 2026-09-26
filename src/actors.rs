@@ -12,6 +12,7 @@ use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tokio_util::codec::{FramedRead, FramedWrite};
+use tracing::{debug, error, info, warn};
 
 use crate::ccsds::{SpacePacket, SpacePacketCodec};
 use crate::pus::{PusCodec, PusPacket};
@@ -54,7 +55,7 @@ where
     async fn on_start(args: Self::Args, actor_ref: ActorRef<Self>) -> Result<Self, Self::Error> {
         let listener = TcpListener::bind(args.bind_addr).await?;
         let local_addr = listener.local_addr()?;
-        println!(
+        info!(
             "TcpListenerActor<{}>: lausche auf {local_addr}",
             std::any::type_name::<M>()
         );
@@ -106,7 +107,7 @@ where
         msg: ConnectionHalfClosed,
         _ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        println!(
+        info!(
             "TCP-Zustand: {} Hälfte {:?} geschlossen ({:?})",
             msg.peer_addr, msg.half, msg.reason
         );
@@ -142,7 +143,7 @@ async fn accept_loop<M, C>(
     loop {
         match listener.accept().await {
             Ok((stream, peer_addr)) => {
-                println!("Neue Verbindung von {peer_addr}");
+                info!("Neue Verbindung von {peer_addr}");
 
                 let (read_half, write_half) = stream.into_split();
 
@@ -164,7 +165,7 @@ async fn accept_loop<M, C>(
                 resume_rx.recv().await;
             }
             Err(err) => {
-                eprintln!("Fehler bei accept(): {err}");
+                error!("Fehler bei accept(): {err}");
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
         }
@@ -247,15 +248,15 @@ where
     ) -> Self::Reply {
         match msg {
             StreamMessage::Started(()) => {
-                println!("Stream für {} angehängt", self.peer_addr);
+                debug!("Stream für {} angehängt", self.peer_addr);
             }
             StreamMessage::Next(ReadOutcome::Item(item)) => {
                 if let Err(err) = self.downstream.tell(item).await {
-                    eprintln!("Konnte Nachricht nicht an Downstream-Actor senden: {err}");
+                    warn!("Konnte Nachricht nicht an Downstream-Actor senden: {err}");
                 }
             }
             StreamMessage::Next(ReadOutcome::Closed(reason)) => {
-                println!("Read-Half von {} geschlossen: {reason:?}", self.peer_addr);
+                info!("Read-Half von {} geschlossen: {reason:?}", self.peer_addr);
                 if let Err(err) = self
                     .listener
                     .tell(ConnectionHalfClosed {
@@ -265,11 +266,11 @@ where
                     })
                     .await
                 {
-                    eprintln!("Konnte Read-Half-Closed nicht an Listener senden: {err}");
+                    warn!("Konnte Read-Half-Closed nicht an Listener senden: {err}");
                 }
 
                 if let Err(err) = self.writer_shutdown.tell(Shutdown::new()).await {
-                    eprintln!("Konnte Shutdown nicht an Writer-Actor senden: {err}");
+                    warn!("Konnte Shutdown nicht an Writer-Actor senden: {err}");
                 }
 
                 ctx.stop();
@@ -293,7 +294,7 @@ where
         _msg: Shutdown<M>,
         ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        println!("Read-Half für {} wird auf Anforderung geschlossen", self.peer_addr);
+        info!("Read-Half für {} wird auf Anforderung geschlossen", self.peer_addr);
 
         if let Err(err) = self
             .listener
@@ -304,7 +305,7 @@ where
             })
             .await
         {
-            eprintln!("Konnte Read-Half-Closed nicht an Listener senden: {err}");
+            warn!("Konnte Read-Half-Closed nicht an Listener senden: {err}");
         }
 
         ctx.stop();
@@ -358,7 +359,7 @@ where
         ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
         if let Err(err) = self.framed.get_mut().shutdown().await {
-            eprintln!(
+            warn!(
                 "Fehler beim geordneten Schließen der write half an {}: {err}",
                 self.peer_addr
             );
@@ -373,7 +374,7 @@ where
             })
             .await
         {
-            eprintln!("Konnte Write-Half-Closed nicht an Listener senden: {send_err}");
+            warn!("Konnte Write-Half-Closed nicht an Listener senden: {send_err}");
         }
 
         ctx.stop();
@@ -389,7 +390,7 @@ where
 
     async fn handle(&mut self, item: M, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         if let Err(err) = self.framed.send(item).await {
-            eprintln!("Fehler beim Schreiben an {}: {err}", self.peer_addr);
+            warn!("Fehler beim Schreiben an {}: {err}", self.peer_addr);
 
             if let Err(send_err) = self
                 .listener
@@ -400,7 +401,7 @@ where
                 })
                 .await
             {
-                eprintln!("Konnte Write-Half-Closed nicht an Listener senden: {send_err}");
+                warn!("Konnte Write-Half-Closed nicht an Listener senden: {send_err}");
             }
 
             ctx.stop();
@@ -483,7 +484,7 @@ where
         let peer_addr = stream.peer_addr()?;
         let (read_half, write_half) = stream.into_split();
 
-        println!(
+        info!(
             "TcpClientActor<{}>: verbunden mit {peer_addr}",
             std::any::type_name::<M>()
         );
@@ -526,15 +527,15 @@ where
 
     async fn handle(&mut self, _msg: Close, _ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let Some(conn) = &self.connection else {
-            println!("TcpClientActor: Close ignoriert, da aktuell keine Verbindung besteht");
+            debug!("TcpClientActor: Close ignoriert, da aktuell keine Verbindung besteht");
             return;
         };
 
         if let Err(err) = conn.reader_ref.tell(Shutdown::<M>::new()).await {
-            eprintln!("TcpClientActor: Konnte Shutdown nicht an Reader senden: {err}");
+            warn!("TcpClientActor: Konnte Shutdown nicht an Reader senden: {err}");
         }
         if let Err(err) = conn.writer_ref.tell(Shutdown::<M>::new()).await {
-            eprintln!("TcpClientActor: Konnte Shutdown nicht an Writer senden: {err}");
+            warn!("TcpClientActor: Konnte Shutdown nicht an Writer senden: {err}");
         }
     }
 }
@@ -549,7 +550,7 @@ where
     async fn handle(&mut self, _msg: CloseRead, _ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         if let Some(conn) = &self.connection {
             if let Err(err) = conn.reader_ref.tell(Shutdown::<M>::new()).await {
-                eprintln!("TcpClientActor: Konnte Shutdown nicht an Reader senden: {err}");
+                warn!("TcpClientActor: Konnte Shutdown nicht an Reader senden: {err}");
             }
         }
     }
@@ -565,7 +566,7 @@ where
     async fn handle(&mut self, _msg: CloseWrite, _ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         if let Some(conn) = &self.connection {
             if let Err(err) = conn.writer_ref.tell(Shutdown::<M>::new()).await {
-                eprintln!("TcpClientActor: Konnte Shutdown nicht an Writer senden: {err}");
+                warn!("TcpClientActor: Konnte Shutdown nicht an Writer senden: {err}");
             }
         }
     }
@@ -583,7 +584,7 @@ where
         msg: ConnectionHalfClosed,
         _ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        println!(
+        info!(
             "TcpClientActor: Hälfte {:?} der Verbindung zu {} geschlossen ({:?})",
             msg.half, msg.peer_addr, msg.reason
         );
@@ -594,14 +595,14 @@ where
                 ConnectionHalf::Write => conn.write_closed = true,
             }
             if conn.read_closed && conn.write_closed {
-                println!("TcpClientActor: Verbindung zu {} vollständig geschlossen", conn.peer_addr);
+                info!("TcpClientActor: Verbindung zu {} vollständig geschlossen", conn.peer_addr);
                 self.connection = None;
             }
         }
 
         if let Some(observer) = &self.on_half_closed {
             if let Err(err) = observer.tell(msg).await {
-                eprintln!("TcpClientActor: Konnte ConnectionHalfClosed nicht weiterleiten: {err}");
+                warn!("TcpClientActor: Konnte ConnectionHalfClosed nicht weiterleiten: {err}");
             }
         }
     }
@@ -626,14 +627,14 @@ where
         match msg.half {
             ConnectionHalf::Read => {
                 if let Err(err) = conn.writer_ref.tell(Shutdown::<M>::new()).await {
-                    eprintln!(
+                    warn!(
                         "TcpClientActor: Konnte Shutdown (via PeerHalfClosed) nicht an Writer senden: {err}"
                     );
                 }
             }
             ConnectionHalf::Write => {
                 if let Err(err) = conn.reader_ref.tell(Shutdown::<M>::new()).await {
-                    eprintln!(
+                    warn!(
                         "TcpClientActor: Konnte Shutdown (via PeerHalfClosed) nicht an Reader senden: {err}"
                     );
                 }
@@ -657,11 +658,11 @@ where
         match &self.connection {
             Some(conn) => {
                 if let Err(err) = conn.writer_ref.tell(item).await {
-                    eprintln!("TcpClientActor: Konnte Nachricht nicht an Writer senden: {err}");
+                    warn!("TcpClientActor: Konnte Nachricht nicht an Writer senden: {err}");
                 }
             }
             None => {
-                eprintln!("TcpClientActor: Nachricht verworfen, da (noch) nicht verbunden");
+                warn!("TcpClientActor: Nachricht verworfen, da (noch) nicht verbunden");
             }
         }
     }
@@ -700,7 +701,7 @@ where
 
     async fn handle(&mut self, item: M, _ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         if let Err(err) = self.target.tell(Relay(item)).await {
-            eprintln!("RelayAdapter: Konnte Nachricht nicht weiterleiten: {err}");
+            warn!("RelayAdapter: Konnte Nachricht nicht weiterleiten: {err}");
         }
     }
 }

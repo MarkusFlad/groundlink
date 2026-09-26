@@ -14,6 +14,7 @@ use tokio::sync::mpsc;
 use tokio_util::codec::{FramedRead, FramedWrite};
 
 use crate::ccsds::{SpacePacket, SpacePacketCodec};
+use crate::pus::{PusCodec, PusPacket};
 use crate::messages::{
     Close, CloseRead, CloseReason, CloseWrite, Connect, ConnectionHalf, ConnectionHalfClosed,
     GetLocalAddr, MessageCodec, PeerHalfClosed, Relay, Shutdown,
@@ -721,3 +722,12 @@ pub type SpacePacketConnection = TcpConnectionActor<SpacePacket, SpacePacketCode
 pub type SpacePacketWriter = TcpWriterActor<SpacePacket, SpacePacketCodec>;
 /// `TcpClientActor` für CCSDS Space Packets.
 pub type SpacePacketClient = TcpClientActor<SpacePacket, SpacePacketCodec>;
+
+/// `TcpListenerActor` für ECSS PUS-C-Pakete.
+pub type PusListener = TcpListenerActor<PusPacket, PusCodec>;
+/// `TcpConnectionActor` für ECSS PUS-C-Pakete.
+pub type PusConnection = TcpConnectionActor<PusPacket, PusCodec>;
+/// `TcpWriterActor` für ECSS PUS-C-Pakete.
+pub type PusWriter = TcpWriterActor<PusPacket, PusCodec>;
+/// `TcpClientActor` für ECSS PUS-C-Pakete.
+pub type PusClient = TcpClientActor<PusPacket, PusCodec>;

@@ -39,7 +39,7 @@ pub enum PacketType {
 }
 
 impl PacketType {
-    fn from_bit(bit: bool) -> Self {
+    pub(crate) fn from_bit(bit: bool) -> Self {
         if bit {
             PacketType::Telecommand
         } else {
@@ -47,7 +47,7 @@ impl PacketType {
         }
     }
 
-    fn to_bit(self) -> bool {
+    pub(crate) fn to_bit(self) -> bool {
         matches!(self, PacketType::Telecommand)
     }
 }
@@ -69,7 +69,7 @@ pub enum SequenceFlags {
 }
 
 impl SequenceFlags {
-    fn from_bits(bits: u8) -> Self {
+    pub(crate) fn from_bits(bits: u8) -> Self {
         match bits & 0b11 {
             0b00 => SequenceFlags::Continuation,
             0b01 => SequenceFlags::FirstSegment,
@@ -78,7 +78,7 @@ impl SequenceFlags {
         }
     }
 
-    fn to_bits(self) -> u8 {
+    pub(crate) fn to_bits(self) -> u8 {
         match self {
             SequenceFlags::Continuation => 0b00,
             SequenceFlags::FirstSegment => 0b01,
@@ -111,7 +111,7 @@ pub struct SpacePacketHeader {
 impl SpacePacketHeader {
     /// Kodiert den Header (6 Byte, Big-Endian) für ein Packet Data Field
     /// der Länge `data_len` an `dst` an.
-    fn encode(&self, data_len: usize, dst: &mut BytesMut) -> io::Result<()> {
+    pub(crate) fn encode(&self, data_len: usize, dst: &mut BytesMut) -> io::Result<()> {
         if self.apid > APID_MAX {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,

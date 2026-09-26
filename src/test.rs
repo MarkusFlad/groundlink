@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use kameo::actor::{Actor, ActorRef, Spawn};
+use kameo::actor::{Actor, ActorRef};
 use kameo::error::Infallible;
 use kameo::message::{Context, Message};
 

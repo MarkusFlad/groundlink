@@ -236,15 +236,38 @@ impl Message<PusPacket> for PusTcAcceptor {
 ///
 /// Gedacht als nachgelagerter Actor eines [`PusTcAcceptor`]:
 ///
-/// ```ignore
-/// let acceptor = PusTcAcceptor::new(apid, reports_recipient);
+/// ```
+/// # use std::time::Duration;
+/// # use kameo::actor::Spawn;
+/// # use kameo_tcp_example::pus::service17;
+/// # use kameo_tcp_example::{
+/// #     AreYouAliveRequest, PusPacket, PusPacketAdapter, PusTc, PusTcAcceptor,
+/// #     PusTestServiceActor, TestActor, VerificationReport,
+/// # };
+/// # #[tokio::main]
+/// # async fn main() {
+/// let apid = 0x042;
+/// // Ziel der TM-Pakete ist typischerweise ein `PusWriter`, hier ein `TestActor`.
+/// let tms = TestActor::<PusPacket>::spawn(TestActor::new());
+/// let reports = PusPacketAdapter::<VerificationReport>::spawn(PusPacketAdapter::new(tms.clone().recipient()));
+///
+/// let acceptor = PusTcAcceptor::new(apid, reports.recipient());
 /// let test_service = PusTestServiceActor::spawn(
-///     PusTestServiceActor::new(apid, writer.recipient::<PusPacket>())
+///     PusTestServiceActor::new(apid, tms.clone().recipient())
 ///         .with_sequence_counter(acceptor.sequence_counter()),
 /// );
 /// let acceptor = PusTcAcceptor::spawn(
 ///     acceptor.with_service_handler(service17::SERVICE_TYPE, &[1], test_service.recipient::<PusTc>()),
 /// );
+///
+/// acceptor.tell(PusTc::from(AreYouAliveRequest::new(apid, 0))).await.unwrap();
+///
+/// // TM(1,1) vom Acceptor, TM(17,2) und TM(1,7) vom Test-Service.
+/// let received = TestActor::assert_received(&tms, 3, Duration::from_secs(1)).await;
+/// let mut types: Vec<_> = received.iter().map(|p| (p.service_type(), p.message_subtype())).collect();
+/// types.sort();
+/// assert_eq!(types, vec![(1, 1), (1, 7), (17, 2)]);
+/// # }
 /// ```
 ///
 /// Verarbeitet [`AreYouAliveRequest`] und [`PusTc`]. Ein TC, das kein
@@ -381,12 +404,28 @@ impl Message<PusTc> for PusTestServiceActor {
 /// leitet es an `target` weiter – typischerweise einen
 /// [`crate::PusWriter`], der es über TCP verschickt.
 ///
-/// ```ignore
-/// let writer = PusWriter::spawn(writer_args);
+/// ```
+/// # use std::time::Duration;
+/// # use kameo::actor::Spawn;
+/// # use kameo_tcp_example::{
+/// #     PusPacket, PusPacketAdapter, PusTc, RequestId, TestActor, VerificationKind,
+/// #     VerificationReport,
+/// # };
+/// # #[tokio::main]
+/// # async fn main() {
+/// // Ziel ist typischerweise ein `PusWriter`, hier ein `TestActor`.
+/// let target = TestActor::<PusPacket>::spawn(TestActor::new());
 /// let adapter = PusPacketAdapter::<VerificationReport>::spawn(
-///     PusPacketAdapter::new(writer.recipient::<PusPacket>()),
+///     PusPacketAdapter::new(target.clone().recipient::<PusPacket>()),
 /// );
-/// let acceptor = PusTcAcceptor::spawn(PusTcAcceptor::new(apid, adapter.recipient()));
+///
+/// let tc = PusTc::new(0x042, 0, 17, 1, bytes::Bytes::new());
+/// let report = VerificationReport::for_tc(0x042, 0, vec![0u8; 7], &tc, VerificationKind::AcceptanceSuccess);
+/// adapter.tell(report.clone()).await.unwrap();
+///
+/// let received = TestActor::assert_received(&target, 1, Duration::from_secs(1)).await;
+/// assert_eq!(received, vec![PusPacket::try_from(report).unwrap()]);
+/// # }
 /// ```
 ///
 /// Nachrichten, die sich nicht umwandeln lassen, werden mit einer

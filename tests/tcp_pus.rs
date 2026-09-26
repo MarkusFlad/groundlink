@@ -20,6 +20,7 @@ async fn pus_packets_are_forwarded_to_downstream_actor() {
     let listener_ref = PusListener::spawn(TcpListenerArgs {
         bind_addr: "127.0.0.1:0".parse().unwrap(),
         downstream,
+        on_connect: None,
     });
     let local_addr = listener_ref.ask(GetLocalAddr).await.unwrap();
 

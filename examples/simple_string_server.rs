@@ -32,6 +32,7 @@ async fn main() -> anyhow::Result<()> {
     let _listener_ref = SimpleStringListener::spawn(TcpListenerArgs {
         bind_addr: "127.0.0.1:9000".parse()?,
         downstream,
+        on_connect: None,
     });
 
     println!("Server running on 127.0.0.1:9000 - press Ctrl+C to stop");

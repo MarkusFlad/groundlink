@@ -108,7 +108,7 @@ fn now(actor: &str, apid: u16, format: CucFormat) -> Option<CucTime> {
 /// [`PusTestServiceActor`] for a complete example.
 pub struct PusTcAcceptor {
     apid: u16,
-    tm_recipient: Recipient<VerificationReport>,
+    tm_recipient: ReportRecipient,
     service_handlers: HashMap<u8, ServiceHandler>,
     time_format: CucFormat,
     sequence_counter: SequenceCounter,
@@ -120,11 +120,34 @@ struct ServiceHandler {
     recipient: Recipient<PusTc>,
 }
 
+/// Where a [`PusTcAcceptor`] sends its verification reports.
+enum ReportRecipient {
+    Reports(Recipient<VerificationReport>),
+    Packets(Recipient<PusPacket>),
+}
+
 impl PusTcAcceptor {
     /// Creates the actor for the application `apid`. The verification
-    /// reports go to `tm_recipient`, with time stamps in
-    /// [`CucFormat::default`].
+    /// reports go to `tm_recipient` as [`VerificationReport`]s, with time
+    /// stamps in [`CucFormat::default`].
     pub fn new(apid: u16, tm_recipient: Recipient<VerificationReport>) -> Self {
+        Self::with_recipient(apid, ReportRecipient::Reports(tm_recipient))
+    }
+
+    /// Like [`new`](Self::new), but sends the verification reports already
+    /// encoded as [`PusPacket`]s, e.g. directly to a
+    /// [`PusWriter`](crate::PusWriter) or
+    /// [`PusWriterProxy`](crate::PusWriterProxy).
+    ///
+    /// If the downstream service handlers send their telemetry to the same
+    /// recipient, TM(1,1) is guaranteed to arrive before the handlers'
+    /// telemetry for the same TC, because it is queued before the TC is
+    /// forwarded.
+    pub fn for_packets(apid: u16, tm_recipient: Recipient<PusPacket>) -> Self {
+        Self::with_recipient(apid, ReportRecipient::Packets(tm_recipient))
+    }
+
+    fn with_recipient(apid: u16, tm_recipient: ReportRecipient) -> Self {
         PusTcAcceptor {
             apid,
             tm_recipient,
@@ -181,7 +204,17 @@ impl PusTcAcceptor {
         let mut report = VerificationReport::for_tc(self.apid, self.sequence_counter.next(), time, tc, kind);
         report.message_type_counter =
             self.message_type_counters.next(crate::pus::service1::SERVICE_TYPE, subtype, report.destination_id);
-        if let Err(err) = self.tm_recipient.tell(report).await {
+        let result = match &self.tm_recipient {
+            ReportRecipient::Reports(recipient) => recipient.tell(report).await.map_err(|err| err.to_string()),
+            ReportRecipient::Packets(recipient) => match PusPacket::try_from(report) {
+                Ok(packet) => recipient.tell(packet).await.map_err(|err| err.to_string()),
+                Err(err) => {
+                    error!(apid = self.apid, error = %err, "cannot encode TM(1,{subtype})");
+                    return;
+                }
+            },
+        };
+        if let Err(err) = result {
             warn!(apid = self.apid, error = %err, "could not send TM(1,{subtype})");
         }
     }
@@ -257,17 +290,16 @@ impl Message<PusPacket> for PusTcAcceptor {
 /// # use kameo::actor::Spawn;
 /// # use kameo_tcp_example::pus::service17;
 /// # use kameo_tcp_example::{
-/// #     AreYouAliveRequest, PusPacket, PusPacketAdapter, PusTc, PusTcAcceptor,
-/// #     PusTestServiceActor, TestActor, VerificationReport,
+/// #     AreYouAliveRequest, PusPacket, PusTc, PusTcAcceptor, PusTestServiceActor, TestActor,
 /// # };
 /// # #[tokio::main]
 /// # async fn main() {
 /// let apid = 0x042;
-/// // The TM packets would typically go to a `PusWriter`; here a `TestActor`.
+/// // The TM packets would typically go to a `PusWriter` or `PusWriterProxy`;
+/// // here a `TestActor`.
 /// let tms = TestActor::<PusPacket>::spawn(TestActor::new());
-/// let reports = PusPacketAdapter::<VerificationReport>::spawn(PusPacketAdapter::new(tms.clone().recipient()));
 ///
-/// let acceptor = PusTcAcceptor::new(apid, reports.recipient());
+/// let acceptor = PusTcAcceptor::for_packets(apid, tms.clone().recipient());
 /// let test_service = PusTestServiceActor::spawn(
 ///     PusTestServiceActor::new(apid, tms.clone().recipient())
 ///         .with_sequence_counter(acceptor.sequence_counter()),
@@ -278,11 +310,10 @@ impl Message<PusPacket> for PusTcAcceptor {
 ///
 /// acceptor.tell(PusTc::from(AreYouAliveRequest::new(apid, 0))).await.unwrap();
 ///
-/// // TM(1,1) from the acceptor, TM(17,2) and TM(1,7) from the test service.
+/// // TM(1,1) from the acceptor, then TM(17,2) and TM(1,7) from the test service.
 /// let received = TestActor::assert_received(&tms, 3, Duration::from_secs(1)).await;
-/// let mut types: Vec<_> = received.iter().map(|p| (p.service_type(), p.message_subtype())).collect();
-/// types.sort();
-/// assert_eq!(types, vec![(1, 1), (1, 7), (17, 2)]);
+/// let types: Vec<_> = received.iter().map(|p| (p.service_type(), p.message_subtype())).collect();
+/// assert_eq!(types, vec![(1, 1), (17, 2), (1, 7)]);
 /// # }
 /// ```
 ///

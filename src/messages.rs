@@ -44,6 +44,27 @@ pub struct ConnectionHalfClosed {
     pub reason: CloseReason,
 }
 
+/// Notification that a [`TcpListenerActor`](crate::actors::TcpListenerActor)
+/// accepted a connection.
+///
+/// Sent to the listener's optional
+/// [`on_connect`](crate::actors::TcpListenerArgs::on_connect) recipient.
+/// `writer` sends messages to the new peer; hand it to a
+/// [`WriterProxy`](crate::actors::WriterProxy) to reply on the current
+/// connection.
+pub struct ConnectionOpened<M: Send + 'static> {
+    /// Address of the remote peer.
+    pub peer_addr: SocketAddr,
+    /// The writer actor of the new connection.
+    pub writer: kameo::actor::Recipient<M>,
+}
+
+impl<M: Send + 'static> std::fmt::Debug for ConnectionOpened<M> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConnectionOpened").field("peer_addr", &self.peer_addr).finish_non_exhaustive()
+    }
+}
+
 /// A codec that can both decode (read) and encode (write) messages of type
 /// `M`.
 ///

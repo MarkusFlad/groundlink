@@ -36,6 +36,21 @@
 //!
 //! The most important items are re-exported at the crate root.
 //!
+//! # Example programs
+//!
+//! - `simple_string_server`: a [`SimpleStringListener`] that records what
+//!   it receives.
+//! - `pus_server <tc_port> <tm_port>`: receives telecommands on one port
+//!   with the actor chain [`PusListener`] → [`PusTcAcceptor`] →
+//!   [`PusTestServiceActor`] and sends all telemetry through a
+//!   [`PusWriterProxy`] to the client connected to a second port.
+//! - `pus_client <address> <tc_port> <tm_port>`: an interactive client with
+//!   two [`PusClient`]s that sends TC(17,1) and prints the received
+//!   telemetry.
+//!
+//! Run them with e.g. `cargo run --example pus_server -- 9000 9001` and
+//! `cargo run --example pus_client -- 127.0.0.1 9000 9001`.
+//!
 //! # Logging
 //!
 //! The crate logs through [`tracing`]. It does not install a subscriber;
@@ -64,6 +79,7 @@
 //! let listener = SimpleStringListener::spawn(TcpListenerArgs {
 //!     bind_addr: "127.0.0.1:0".parse().unwrap(),
 //!     downstream: received.clone().recipient(),
+//!     on_connect: None,
 //! });
 //! let addr = listener.ask(GetLocalAddr).await.unwrap();
 //!
@@ -93,12 +109,13 @@ pub use actors::{
     SimpleStringListener, SimpleStringWriter, SpacePacketClient, SpacePacketConnection,
     SpacePacketListener, SpacePacketWriter, TcpClientActor, TcpClientArgs, TcpConnectionActor,
     TcpConnectionArgs, TcpListenerActor, TcpListenerArgs, TcpWriterActor, TcpWriterArgs,
+    PusWriterProxy, WriterProxy,
 };
 pub use ccsds::{PacketType, SequenceFlags, SpacePacket, SpacePacketCodec, SpacePacketHeader};
 pub use cuc::{CucEpoch, CucFormat, CucTime};
 pub use messages::{
     Close, CloseRead, CloseReason, CloseWrite, Connect, ConnectionHalf, ConnectionHalfClosed,
-    GetLocalAddr, MessageCodec, PeerHalfClosed, Relay, Shutdown,
+    ConnectionOpened, GetLocalAddr, MessageCodec, PeerHalfClosed, Relay, Shutdown,
 };
 pub use pus::{
     AckFlags, PusCodec, PusConfig, PusPacket, PusTc, PusTcSecondaryHeader, PusTm,

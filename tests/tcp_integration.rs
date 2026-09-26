@@ -24,6 +24,7 @@ async fn simple_strings_are_forwarded_to_downstream_actor() {
     let listener_ref = SimpleStringListener::spawn(TcpListenerArgs {
         bind_addr: "127.0.0.1:0".parse().unwrap(),
         downstream,
+        on_connect: None,
     });
     let local_addr = listener_ref.ask(GetLocalAddr).await.unwrap();
 
@@ -54,6 +55,7 @@ async fn assert_received_fails_on_timeout() {
     let listener_ref = SimpleStringListener::spawn(TcpListenerArgs {
         bind_addr: "127.0.0.1:0".parse().unwrap(),
         downstream,
+        on_connect: None,
     });
     let local_addr = listener_ref.ask(GetLocalAddr).await.unwrap();
 

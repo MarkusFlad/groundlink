@@ -9,6 +9,8 @@
 //!   receives).
 //! - [`RelayAdapter`] wraps messages into [`Relay`] for a
 //!   [`TcpClientActor`].
+//! - [`WriterProxy`] forwards messages to the writer of the listener's
+//!   current connection, e.g. to send replies back to the peer.
 //!
 //! The protocols of this crate get type aliases, e.g. [`PusListener`] for
 //! `TcpListenerActor<PusPacket, PusCodec>`.
@@ -37,7 +39,7 @@ use crate::ccsds::{SpacePacket, SpacePacketCodec};
 use crate::pus::{PusCodec, PusPacket};
 use crate::messages::{
     Close, CloseRead, CloseReason, CloseWrite, Connect, ConnectionHalf, ConnectionHalfClosed,
-    GetLocalAddr, MessageCodec, PeerHalfClosed, Relay, Shutdown,
+    ConnectionOpened, GetLocalAddr, MessageCodec, PeerHalfClosed, Relay, Shutdown,
 };
 use crate::simple_string::{SimpleString, SimpleStringCodec};
 
@@ -48,6 +50,9 @@ pub struct TcpListenerArgs<M: Send + 'static> {
     pub bind_addr: SocketAddr,
     /// Actor that receives every message read from any connection.
     pub downstream: Recipient<M>,
+    /// Optional actor that is told about every accepted connection and its
+    /// writer, e.g. a [`WriterProxy`].
+    pub on_connect: Option<Recipient<ConnectionOpened<M>>>,
 }
 
 /// Actor that binds a TCP port and spawns a [`TcpConnectionActor<M, C>`]
@@ -92,6 +97,7 @@ where
         tokio::spawn(accept_loop::<M, C>(
             listener,
             args.downstream,
+            args.on_connect,
             listener_recipient,
             resume_rx,
         ));
@@ -162,6 +168,7 @@ where
 async fn accept_loop<M, C>(
     listener: TcpListener,
     downstream: Recipient<M>,
+    on_connect: Option<Recipient<ConnectionOpened<M>>>,
     listener_recipient: Recipient<ConnectionHalfClosed>,
     mut resume_rx: mpsc::Receiver<()>,
 ) where
@@ -180,7 +187,7 @@ async fn accept_loop<M, C>(
                     peer_addr,
                     listener: listener_recipient.clone(),
                 });
-                let writer_shutdown = writer_ref.recipient::<Shutdown<M>>();
+                let writer_shutdown = writer_ref.clone().recipient::<Shutdown<M>>();
 
                 let _conn_ref = TcpConnectionActor::<M, C>::spawn(TcpConnectionArgs {
                     read_half,
@@ -189,6 +196,13 @@ async fn accept_loop<M, C>(
                     listener: listener_recipient.clone(),
                     writer_shutdown,
                 });
+
+                if let Some(on_connect) = &on_connect {
+                    let writer = writer_ref.clone().recipient::<M>();
+                    if let Err(err) = on_connect.tell(ConnectionOpened { peer_addr, writer }).await {
+                        warn!("could not send ConnectionOpened: {err}");
+                    }
+                }
 
                 resume_rx.recv().await;
             }
@@ -776,6 +790,67 @@ where
     }
 }
 
+/// Actor that forwards messages of type `M` to the writer of the current
+/// connection of a [`TcpListenerActor`].
+///
+/// Register it as the listener's
+/// [`on_connect`](TcpListenerArgs::on_connect) recipient; every
+/// [`ConnectionOpened`] replaces the current writer. Messages that arrive
+/// while there is no connection, or after it has been closed, are dropped
+/// with a warning.
+///
+/// This lets actors that produce replies (e.g. telemetry) send them back
+/// to whichever peer is connected, without knowing about connections.
+pub struct WriterProxy<M: Send + 'static> {
+    writer: Option<Recipient<M>>,
+}
+
+impl<M: Send + 'static> WriterProxy<M> {
+    /// Creates a proxy without a connection.
+    pub fn new() -> Self {
+        WriterProxy { writer: None }
+    }
+}
+
+impl<M: Send + 'static> Default for WriterProxy<M> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<M: Send + 'static> Actor for WriterProxy<M> {
+    type Args = Self;
+    type Error = Infallible;
+
+    async fn on_start(state: Self::Args, _actor_ref: ActorRef<Self>) -> Result<Self, Self::Error> {
+        Ok(state)
+    }
+}
+
+impl<M: Send + 'static> Message<ConnectionOpened<M>> for WriterProxy<M> {
+    type Reply = ();
+
+    async fn handle(&mut self, msg: ConnectionOpened<M>, _ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        debug!("WriterProxy: now writing to {}", msg.peer_addr);
+        self.writer = Some(msg.writer);
+    }
+}
+
+impl<M: Send + 'static> Message<M> for WriterProxy<M> {
+    type Reply = ();
+
+    async fn handle(&mut self, item: M, _ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let Some(writer) = &self.writer else {
+            warn!("WriterProxy: message dropped, no connection");
+            return;
+        };
+        if let Err(err) = writer.tell(item).await {
+            warn!("WriterProxy: message dropped, connection closed: {err}");
+            self.writer = None;
+        }
+    }
+}
+
 /// [`TcpListenerActor`] for the [`SimpleString`] protocol.
 pub type SimpleStringListener = TcpListenerActor<SimpleString, SimpleStringCodec>;
 /// [`TcpConnectionActor`] for the [`SimpleString`] protocol.
@@ -802,3 +877,5 @@ pub type PusConnection = TcpConnectionActor<PusPacket, PusCodec>;
 pub type PusWriter = TcpWriterActor<PusPacket, PusCodec>;
 /// [`TcpClientActor`] for ECSS PUS-C packets ([`PusPacket`]).
 pub type PusClient = TcpClientActor<PusPacket, PusCodec>;
+/// [`WriterProxy`] for ECSS PUS-C packets ([`PusPacket`]).
+pub type PusWriterProxy = WriterProxy<PusPacket>;

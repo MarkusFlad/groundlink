@@ -99,6 +99,7 @@ async fn end_to_end_over_tcp() {
     let listener = PusListener::spawn(TcpListenerArgs {
         bind_addr: "127.0.0.1:0".parse().unwrap(),
         downstream: acceptor.recipient::<PusPacket>(),
+        on_connect: None,
     });
     let addr = listener.ask(GetLocalAddr).await.unwrap();
 

@@ -132,3 +132,45 @@ async fn downstream_of_acceptor_with_shared_sequence_counter() {
     assert_eq!(accepted[0].header.sequence_count, 0);
     assert!(alive.header.sequence_count < completion.header.sequence_count);
 }
+
+#[tokio::test]
+async fn acceptor_for_packets_keeps_tm_order_with_test_service() {
+    let tms = TestActor::<PusPacket>::spawn(TestActor::new());
+
+    let acceptor = PusTcAcceptor::for_packets(APID, tms.clone().recipient());
+    let service = PusTestServiceActor::spawn(
+        PusTestServiceActor::new(APID, tms.clone().recipient())
+            .with_sequence_counter(acceptor.sequence_counter()),
+    );
+    let acceptor = PusTcAcceptor::spawn(acceptor.with_service_handler(17, &[1], service.recipient::<PusTc>()));
+
+    for sequence_count in 0..20 {
+        acceptor.tell(PusTc::from(request(sequence_count))).await.unwrap();
+    }
+
+    let received = TestActor::assert_received(&tms, 60, Duration::from_secs(2)).await;
+    let positions = |service, subtype| -> Vec<usize> {
+        received
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| (p.service_type(), p.message_subtype()) == (service, subtype))
+            .map(|(i, _)| i)
+            .collect()
+    };
+    let (accepted, alive, completed) = (positions(1, 1), positions(17, 2), positions(1, 7));
+    assert_eq!((accepted.len(), alive.len(), completed.len()), (20, 20, 20));
+
+    // For each TC: TM(1,1) before TM(17,2) before TM(1,7). Both actors handle
+    // the TCs in order, so the k-th report of each kind belongs to the k-th TC.
+    for k in 0..20 {
+        assert!(accepted[k] < alive[k] && alive[k] < completed[k], "TC {k}: {received:?}");
+        let request_id = |i: usize| VerificationReport::try_from(received[i].clone()).unwrap().request_id;
+        assert_eq!(request_id(accepted[k]).sequence_count, k as u16);
+        assert_eq!(request_id(completed[k]).sequence_count, k as u16);
+    }
+
+    // All 60 TMs share one packet sequence count without gaps or duplicates.
+    let mut counts: Vec<_> = received.iter().map(|p| p.header().sequence_count).collect();
+    counts.sort();
+    assert_eq!(counts, (0..60).collect::<Vec<u16>>());
+}

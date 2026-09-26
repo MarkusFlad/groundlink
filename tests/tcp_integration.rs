@@ -1,5 +1,5 @@
-//! Integration test: SimpleStringListener (= TcpListenerActor<SimpleString,
-//! SimpleStringCodec>) + TcpConnectionActor with a TestActor<SimpleString>
+//! Integration test: SimpleStringServer (= TcpServerActor<SimpleString,
+//! SimpleStringCodec>) + TcpReaderActor with a TestActor<SimpleString>
 //! as downstream. A real TCP connection is opened, length-prefixed ASCII
 //! strings are sent, and `TestActor::assert_received` then waits for and
 //! checks the SimpleString messages recorded by the TestActor.
@@ -9,7 +9,7 @@ use std::time::Duration;
 use futures::FutureExt;
 use kameo::actor::{Recipient, Spawn};
 use kameo_tcp_example::{
-    encode_frame, GetLocalAddr, SimpleString, SimpleStringListener, TcpListenerArgs, TestActor,
+    encode_frame, GetLocalAddr, SimpleString, SimpleStringServer, TcpServerArgs, TestActor,
 };
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
@@ -21,10 +21,9 @@ async fn simple_strings_are_forwarded_to_downstream_actor() {
     let downstream: Recipient<SimpleString> = test_actor_ref.clone().recipient::<SimpleString>();
 
     // Port 0 -> the OS picks a free port; GetLocalAddr tells us which.
-    let listener_ref = SimpleStringListener::spawn(TcpListenerArgs {
+    let listener_ref = SimpleStringServer::spawn(TcpServerArgs {
         bind_addr: "127.0.0.1:0".parse().unwrap(),
         downstream,
-        on_connect: None,
     });
     let local_addr = listener_ref.ask(GetLocalAddr).await.unwrap();
 
@@ -52,10 +51,9 @@ async fn assert_received_fails_on_timeout() {
     let test_actor_ref = TestActor::<SimpleString>::spawn(TestActor::new());
     let downstream: Recipient<SimpleString> = test_actor_ref.clone().recipient::<SimpleString>();
 
-    let listener_ref = SimpleStringListener::spawn(TcpListenerArgs {
+    let listener_ref = SimpleStringServer::spawn(TcpServerArgs {
         bind_addr: "127.0.0.1:0".parse().unwrap(),
         downstream,
-        on_connect: None,
     });
     let local_addr = listener_ref.ask(GetLocalAddr).await.unwrap();
 

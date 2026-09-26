@@ -10,9 +10,9 @@
 //!
 //! | Protocol | Message | Codec | Actors |
 //! |---|---|---|---|
-//! | [`simple_string`] | [`SimpleString`] | [`SimpleStringCodec`] | [`SimpleStringListener`], [`SimpleStringClient`], … |
-//! | [`ccsds`] | [`SpacePacket`] | [`SpacePacketCodec`] | [`SpacePacketListener`], [`SpacePacketClient`], … |
-//! | [`pus`] | [`PusPacket`] | [`PusCodec`] | [`PusListener`], [`PusClient`], … |
+//! | [`simple_string`] | [`SimpleString`] | [`SimpleStringCodec`] | [`SimpleStringServer`], [`SimpleStringClient`], … |
+//! | [`ccsds`] | [`SpacePacket`] | [`SpacePacketCodec`] | [`SpacePacketServer`], [`SpacePacketClient`], … |
+//! | [`pus`] | [`PusPacket`] | [`PusCodec`] | [`PusServer`], [`PusClient`], … |
 //!
 //! On top of the PUS packets, [`pus_actors`] provides actors that handle
 //! telecommands for an application process: [`PusTcAcceptor`] performs
@@ -21,7 +21,7 @@
 //!
 //! # Modules
 //!
-//! - [`actors`]: generic TCP listener, connection, writer and client actors
+//! - [`actors`]: generic TCP server, client, reader and writer actors
 //!   and the per-protocol type aliases.
 //! - [`ccsds`]: CCSDS Space Packet types and codec (CCSDS 133.0-B-2).
 //! - [`cuc`]: CCSDS Unsegmented Time Code with conversion from and to UTC.
@@ -38,12 +38,13 @@
 //!
 //! # Example programs
 //!
-//! - `simple_string_server`: a [`SimpleStringListener`] that records what
+//! - `simple_string_server`: a [`SimpleStringServer`] that records what
 //!   it receives.
 //! - `pus_server <tc_port> <tm_port>`: receives telecommands on one port
-//!   with the actor chain [`PusListener`] → [`PusTcAcceptor`] →
+//!   with the actor chain [`PusServer`] → [`PusTcAcceptor`] →
 //!   [`PusTestServiceActor`] and sends all telemetry through a
-//!   [`PusWriterProxy`] to the client connected to a second port.
+//!   [`RelayAdapter`] and a second [`PusServer`] to the client connected
+//!   to a second port.
 //! - `pus_client <address> <tc_port> <tm_port>`: an interactive client with
 //!   two [`PusClient`]s that sends TC(17,1) and prints the received
 //!   telemetry.
@@ -59,7 +60,7 @@
 //!
 //! # Example
 //!
-//! A listener that forwards every received [`SimpleString`] to a
+//! A server that forwards every received [`SimpleString`] to a
 //! [`TestActor`]:
 //!
 //! ```
@@ -68,7 +69,7 @@
 //! use futures::SinkExt;
 //! use kameo::actor::Spawn;
 //! use kameo_tcp_example::{
-//!     GetLocalAddr, SimpleString, SimpleStringCodec, SimpleStringListener, TcpListenerArgs,
+//!     GetLocalAddr, SimpleString, SimpleStringCodec, SimpleStringServer, TcpServerArgs,
 //!     TestActor,
 //! };
 //! use tokio_util::codec::Framed;
@@ -76,12 +77,11 @@
 //! # #[tokio::main]
 //! # async fn main() {
 //! let received = TestActor::<SimpleString>::spawn(TestActor::new());
-//! let listener = SimpleStringListener::spawn(TcpListenerArgs {
+//! let server = SimpleStringServer::spawn(TcpServerArgs {
 //!     bind_addr: "127.0.0.1:0".parse().unwrap(),
 //!     downstream: received.clone().recipient(),
-//!     on_connect: None,
 //! });
-//! let addr = listener.ask(GetLocalAddr).await.unwrap();
+//! let addr = server.ask(GetLocalAddr).await.unwrap();
 //!
 //! let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
 //! let mut client = Framed::new(stream, SimpleStringCodec::default());
@@ -104,18 +104,17 @@ pub mod simple_string;
 pub mod test;
 
 pub use actors::{
-    PusClient, PusConnection, PusListener, PusWriter, RelayAdapter, RelayAdapterArgs,
-    SimpleStringClient, SimpleStringConnection,
-    SimpleStringListener, SimpleStringWriter, SpacePacketClient, SpacePacketConnection,
-    SpacePacketListener, SpacePacketWriter, TcpClientActor, TcpClientArgs, TcpConnectionActor,
-    TcpConnectionArgs, TcpListenerActor, TcpListenerArgs, TcpWriterActor, TcpWriterArgs,
-    PusWriterProxy, WriterProxy,
+    PusClient, PusReader, PusServer, PusWriter, RelayAdapter, RelayAdapterArgs,
+    SimpleStringClient, SimpleStringReader,
+    SimpleStringServer, SimpleStringWriter, SpacePacketClient, SpacePacketReader,
+    SpacePacketServer, SpacePacketWriter, TcpClientActor, TcpClientArgs, TcpReaderActor,
+    TcpReaderArgs, TcpServerActor, TcpServerArgs, TcpWriterActor, TcpWriterArgs,
 };
 pub use ccsds::{PacketType, SequenceFlags, SpacePacket, SpacePacketCodec, SpacePacketHeader};
 pub use cuc::{CucEpoch, CucFormat, CucTime};
 pub use messages::{
     Close, CloseRead, CloseReason, CloseWrite, Connect, ConnectionHalf, ConnectionHalfClosed,
-    ConnectionOpened, GetLocalAddr, MessageCodec, PeerHalfClosed, Relay, Shutdown,
+    GetLocalAddr, MessageCodec, PeerHalfClosed, Relay, Shutdown,
 };
 pub use pus::{
     AckFlags, PusCodec, PusConfig, PusPacket, PusTc, PusTcSecondaryHeader, PusTm,

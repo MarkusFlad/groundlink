@@ -1,13 +1,13 @@
 //! Shows that the generic TCP actors also work with ECSS PUS-C packets,
-//! here through the alias `PusListener`
-//! (`TcpListenerActor<PusPacket, PusCodec>`).
+//! here through the alias `PusServer`
+//! (`TcpServerActor<PusPacket, PusCodec>`).
 
 use std::time::Duration;
 
 use futures::SinkExt;
 use kameo::actor::{Recipient, Spawn};
 use kameo_tcp_example::{
-    GetLocalAddr, PusCodec, PusListener, PusPacket, PusTc, PusTm, TcpListenerArgs, TestActor,
+    GetLocalAddr, PusCodec, PusServer, PusPacket, PusTc, PusTm, TcpServerArgs, TestActor,
 };
 use tokio::net::TcpStream;
 use tokio_util::codec::Framed;
@@ -17,10 +17,9 @@ async fn pus_packets_are_forwarded_to_downstream_actor() {
     let test_actor_ref = TestActor::<PusPacket>::spawn(TestActor::new());
     let downstream: Recipient<PusPacket> = test_actor_ref.clone().recipient::<PusPacket>();
 
-    let listener_ref = PusListener::spawn(TcpListenerArgs {
+    let listener_ref = PusServer::spawn(TcpServerArgs {
         bind_addr: "127.0.0.1:0".parse().unwrap(),
         downstream,
-        on_connect: None,
     });
     let local_addr = listener_ref.ask(GetLocalAddr).await.unwrap();
 

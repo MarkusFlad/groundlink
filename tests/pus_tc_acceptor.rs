@@ -8,8 +8,8 @@ use bytes::Bytes;
 use futures::SinkExt;
 use kameo::actor::{ActorRef, Recipient, Spawn};
 use kameo_tcp_example::{
-    AckFlags, CucFormat, CucTime, FailureCode, GetLocalAddr, GetMessages, PusCodec, PusListener,
-    PusPacket, PusTc, PusTcAcceptor, PusTm, RequestId, TcpListenerArgs, TestActor,
+    AckFlags, CucFormat, CucTime, FailureCode, GetLocalAddr, GetMessages, PusCodec, PusServer,
+    PusPacket, PusTc, PusTcAcceptor, PusTm, RequestId, TcpServerArgs, TestActor,
     VerificationKind, VerificationReport,
 };
 use tokio::net::TcpStream;
@@ -96,12 +96,11 @@ async fn end_to_end_over_tcp() {
     let (acceptor, _handler) = acceptor(reports.clone().recipient());
     let acceptor = PusTcAcceptor::spawn(acceptor);
 
-    let listener = PusListener::spawn(TcpListenerArgs {
+    let server = PusServer::spawn(TcpServerArgs {
         bind_addr: "127.0.0.1:0".parse().unwrap(),
         downstream: acceptor.recipient::<PusPacket>(),
-        on_connect: None,
     });
-    let addr = listener.ask(GetLocalAddr).await.unwrap();
+    let addr = server.ask(GetLocalAddr).await.unwrap();
 
     let mut client = Framed::new(TcpStream::connect(addr).await.unwrap(), PusCodec::default());
     client.send(PusTc::new(APID, 5, 17, 1, Bytes::new()).into()).await.unwrap();

@@ -3,18 +3,18 @@
 //! `Message<SimpleString>` (here generically through `TestActor<M>`) can
 //! be the target.
 //!
-//! `SimpleStringListener` is a type alias for
-//! `TcpListenerActor<SimpleString, SimpleStringCodec>`; the CCSDS Space
-//! Packet protocol has `SpacePacketListener`
-//! (`TcpListenerActor<SpacePacket, SpacePacketCodec>`) and PUS has
-//! `PusListener`.
+//! `SimpleStringServer` is a type alias for
+//! `TcpServerActor<SimpleString, SimpleStringCodec>`; the CCSDS Space
+//! Packet protocol has `SpacePacketServer`
+//! (`TcpServerActor<SpacePacket, SpacePacketCodec>`) and PUS has
+//! `PusServer`.
 //!
 //! The library logs through `tracing`; set the log level with `RUST_LOG`,
 //! e.g. `RUST_LOG=debug cargo run --example simple_string_server`.
 
 use kameo::actor::{Recipient, Spawn};
 use kameo_tcp_example::{
-    GetMessages, SimpleString, SimpleStringListener, TcpListenerArgs, TestActor,
+    GetMessages, SimpleString, SimpleStringServer, TcpServerArgs, TestActor,
 };
 use tracing_subscriber::EnvFilter;
 
@@ -29,10 +29,9 @@ async fn main() -> anyhow::Result<()> {
     let test_actor_ref = TestActor::<SimpleString>::spawn(TestActor::new());
     let downstream: Recipient<SimpleString> = test_actor_ref.clone().recipient::<SimpleString>();
 
-    let _listener_ref = SimpleStringListener::spawn(TcpListenerArgs {
+    let _listener_ref = SimpleStringServer::spawn(TcpServerArgs {
         bind_addr: "127.0.0.1:9000".parse()?,
         downstream,
-        on_connect: None,
     });
 
     println!("Server running on 127.0.0.1:9000 - press Ctrl+C to stop");

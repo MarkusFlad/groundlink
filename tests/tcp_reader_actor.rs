@@ -1,5 +1,5 @@
-//! Tests for `TcpConnectionActor<M, C>` (here for the `SimpleString`
-//! protocol through the alias `SimpleStringConnection`): when the client
+//! Tests for `TcpReaderActor<M, C>` (here for the `SimpleString`
+//! protocol through the alias `SimpleStringReader`): when the client
 //! closes the connection (EOF), the actor reports
 //! `ConnectionHalfClosed { half: Read, reason: Graceful }` to the given
 //! `listener` and also sends a `Shutdown<M>` message to its writer actor
@@ -11,12 +11,12 @@ use std::time::Duration;
 use kameo::actor::Spawn;
 use kameo_tcp_example::{
     CloseReason, ConnectionHalf, ConnectionHalfClosed, Shutdown, SimpleString,
-    SimpleStringConnection, TcpConnectionArgs, TestActor,
+    SimpleStringReader, TcpReaderArgs, TestActor,
 };
 use tokio::net::{TcpListener, TcpStream};
 
 #[tokio::test]
-async fn connection_actor_reports_read_half_closed_and_shuts_down_writer() {
+async fn reader_actor_reports_read_half_closed_and_shuts_down_writer() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
 
@@ -34,11 +34,11 @@ async fn connection_actor_reports_read_half_closed_and_shuts_down_writer() {
     let listener_recipient = listener_ref.clone().recipient::<ConnectionHalfClosed>();
 
     // Stands in for the TcpWriterActor<SimpleString, _>: we only check that
-    // the connection actor sends it a Shutdown message.
+    // the reader actor sends it a Shutdown message.
     let writer_stub_ref = TestActor::<Shutdown<SimpleString>>::spawn(TestActor::new());
     let writer_shutdown = writer_stub_ref.clone().recipient::<Shutdown<SimpleString>>();
 
-    let _conn_ref = SimpleStringConnection::spawn(TcpConnectionArgs {
+    let _reader_ref = SimpleStringReader::spawn(TcpReaderArgs {
         read_half: server_read,
         peer_addr,
         downstream,
@@ -57,7 +57,7 @@ async fn connection_actor_reports_read_half_closed_and_shuts_down_writer() {
     assert_eq!(received_closed[0].half, ConnectionHalf::Read);
     assert_eq!(received_closed[0].reason, CloseReason::Graceful);
 
-    // The connection actor must also have sent a Shutdown message to the
+    // The reader actor must also have sent a Shutdown message to the
     // writer actor.
     let received_shutdowns =
         TestActor::assert_received(&writer_stub_ref, 1, Duration::from_secs(1)).await;

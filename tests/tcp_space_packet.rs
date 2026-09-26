@@ -1,8 +1,8 @@
-//! Shows that the same generic TCP actors (`TcpListenerActor<M, C>`,
-//! `TcpConnectionActor<M, C>`, `TcpWriterActor<M, C>`) that are used with
+//! Shows that the same generic TCP actors (`TcpServerActor<M, C>`,
+//! `TcpReaderActor<M, C>`, `TcpWriterActor<M, C>`) that are used with
 //! `SimpleString`/`SimpleStringCodec` also work unchanged for CCSDS Space
-//! Packets, here through the aliases `SpacePacketListener` and
-//! `SpacePacketWriter` (`TcpListenerActor<SpacePacket, SpacePacketCodec>`
+//! Packets, here through the aliases `SpacePacketServer` and
+//! `SpacePacketWriter` (`TcpServerActor<SpacePacket, SpacePacketCodec>`
 //! and `TcpWriterActor<SpacePacket, SpacePacketCodec>`).
 
 use std::time::Duration;
@@ -11,7 +11,7 @@ use futures::{SinkExt, StreamExt};
 use kameo::actor::{Recipient, Spawn};
 use kameo_tcp_example::{
     ConnectionHalfClosed, GetLocalAddr, PacketType, SpacePacket, SpacePacketCodec,
-    SpacePacketListener, SpacePacketWriter, TcpListenerArgs, TcpWriterArgs, TestActor,
+    SpacePacketServer, SpacePacketWriter, TcpServerArgs, TcpWriterArgs, TestActor,
 };
 use tokio::net::{TcpListener, TcpStream};
 use tokio_util::codec::Framed;
@@ -21,10 +21,9 @@ async fn space_packets_are_forwarded_to_downstream_actor() {
     let test_actor_ref = TestActor::<SpacePacket>::spawn(TestActor::new());
     let downstream: Recipient<SpacePacket> = test_actor_ref.clone().recipient::<SpacePacket>();
 
-    let listener_ref = SpacePacketListener::spawn(TcpListenerArgs {
+    let listener_ref = SpacePacketServer::spawn(TcpServerArgs {
         bind_addr: "127.0.0.1:0".parse().unwrap(),
         downstream,
-        on_connect: None,
     });
     let local_addr = listener_ref.ask(GetLocalAddr).await.unwrap();
 

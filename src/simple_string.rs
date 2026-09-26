@@ -27,7 +27,7 @@ pub struct SimpleString(pub String);
 ///
 /// Implements both [`Decoder`] and [`Encoder<SimpleString>`], so it is a
 /// [`MessageCodec<SimpleString>`](crate::MessageCodec) usable with the
-/// generic TCP actors (see [`SimpleStringListener`](crate::SimpleStringListener)
+/// generic TCP actors (see [`SimpleStringServer`](crate::SimpleStringServer)
 /// and friends) or directly with [`tokio_util::codec::Framed`].
 ///
 /// Decoding fails with [`io::ErrorKind::InvalidData`] if a payload is not

@@ -29,9 +29,9 @@ pub enum ConnectionHalf {
 
 /// Notification that one half of a connection was closed.
 ///
-/// Sent to the [`TcpListenerActor`](crate::actors::TcpListenerActor) (or
+/// Sent to the [`TcpServerActor`](crate::actors::TcpServerActor) (or
 /// [`TcpClientActor`](crate::actors::TcpClientActor)) by the
-/// [`TcpConnectionActor`](crate::actors::TcpConnectionActor) for the read
+/// [`TcpReaderActor`](crate::actors::TcpReaderActor) for the read
 /// half and by the [`TcpWriterActor`](crate::actors::TcpWriterActor) for
 /// the write half.
 #[derive(Debug, Clone, PartialEq)]
@@ -44,32 +44,11 @@ pub struct ConnectionHalfClosed {
     pub reason: CloseReason,
 }
 
-/// Notification that a [`TcpListenerActor`](crate::actors::TcpListenerActor)
-/// accepted a connection.
-///
-/// Sent to the listener's optional
-/// [`on_connect`](crate::actors::TcpListenerArgs::on_connect) recipient.
-/// `writer` sends messages to the new peer; hand it to a
-/// [`WriterProxy`](crate::actors::WriterProxy) to reply on the current
-/// connection.
-pub struct ConnectionOpened<M: Send + 'static> {
-    /// Address of the remote peer.
-    pub peer_addr: SocketAddr,
-    /// The writer actor of the new connection.
-    pub writer: kameo::actor::Recipient<M>,
-}
-
-impl<M: Send + 'static> std::fmt::Debug for ConnectionOpened<M> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ConnectionOpened").field("peer_addr", &self.peer_addr).finish_non_exhaustive()
-    }
-}
-
 /// A codec that can both decode (read) and encode (write) messages of type
 /// `M`.
 ///
 /// This is the requirement for using `M` with
-/// [`TcpConnectionActor<M, C>`](crate::actors::TcpConnectionActor) and
+/// [`TcpReaderActor<M, C>`](crate::actors::TcpReaderActor) and
 /// [`TcpWriterActor<M, C>`](crate::actors::TcpWriterActor). The trait has
 /// a blanket implementation, so any codec satisfying the bounds implements
 /// it automatically; the actors create their codec via [`Default`].
@@ -93,7 +72,8 @@ impl<M, C> MessageCodec<M> for C where
 {
 }
 
-/// Asks for the local address the listener is actually bound to.
+/// Asks a [`TcpServerActor`](crate::actors::TcpServerActor) for the local
+/// address it is actually bound to.
 ///
 /// Useful after binding to port 0 (e.g. in tests) to learn the port chosen
 /// by the operating system.
@@ -127,8 +107,11 @@ pub struct CloseWrite;
 #[derive(Debug)]
 pub struct PeerHalfClosed(pub ConnectionHalfClosed);
 
-/// Asks the [`TcpClientActor<M, C>`](crate::actors::TcpClientActor) to
-/// send the contained message over its current connection.
+/// Asks a [`TcpClientActor<M, C>`](crate::actors::TcpClientActor) or
+/// [`TcpServerActor<M, C>`](crate::actors::TcpServerActor) to send the
+/// contained message over its current connection.
+///
+/// Without a connection the message is dropped with a warning.
 pub struct Relay<M>(pub M);
 
 /// Asks the reader or writer actor for message type `M` to close its half

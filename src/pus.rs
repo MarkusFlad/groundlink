@@ -485,7 +485,7 @@ impl Default for PusConfig {
 }
 
 /// Codec for PUS-C packets, usable with [`tokio_util::codec::Framed`] and
-/// the generic TCP actors (see [`PusListener`](crate::PusListener) and
+/// the generic TCP actors (see [`PusServer`](crate::PusServer) and
 /// friends).
 ///
 /// [`SpacePacketCodec`] does the framing; this codec only converts between

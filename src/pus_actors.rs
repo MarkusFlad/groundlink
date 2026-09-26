@@ -3,7 +3,7 @@
 //! Typical chain for an application with a fixed APID:
 //!
 //! ```text
-//! PusListener ──PusPacket──▶ PusTcAcceptor ──TM(1,1)──▶ …
+//! PusServer ──PusPacket──▶ PusTcAcceptor ──TM(1,1)──▶ …
 //!                                 │
 //!                                 └─PusTc (Service 17)──▶ PusTestServiceActor ──TM(17,2), TM(1,7)──▶ …
 //! ```
@@ -104,7 +104,7 @@ fn now(actor: &str, apid: u16, format: CucFormat) -> Option<CucTime> {
 /// destination ID, and the current time as [`CucTime`].
 ///
 /// Handles both [`PusPacket`] (e.g. directly as the `downstream` of a
-/// [`PusListener`](crate::PusListener)) and [`PusTc`]. See
+/// [`PusServer`](crate::PusServer)) and [`PusTc`]. See
 /// [`PusTestServiceActor`] for a complete example.
 pub struct PusTcAcceptor {
     apid: u16,
@@ -136,8 +136,9 @@ impl PusTcAcceptor {
 
     /// Like [`new`](Self::new), but sends the verification reports already
     /// encoded as [`PusPacket`]s, e.g. directly to a
-    /// [`PusWriter`](crate::PusWriter) or
-    /// [`PusWriterProxy`](crate::PusWriterProxy).
+    /// [`PusWriter`](crate::PusWriter), or to a
+    /// [`RelayAdapter`](crate::RelayAdapter) in front of a
+    /// [`PusServer`](crate::PusServer) or [`PusClient`](crate::PusClient).
     ///
     /// If the downstream service handlers send their telemetry to the same
     /// recipient, TM(1,1) is guaranteed to arrive before the handlers'
@@ -295,8 +296,8 @@ impl Message<PusPacket> for PusTcAcceptor {
 /// # #[tokio::main]
 /// # async fn main() {
 /// let apid = 0x042;
-/// // The TM packets would typically go to a `PusWriter` or `PusWriterProxy`;
-/// // here a `TestActor`.
+/// // The TM packets would typically go to a `PusWriter`, or through a
+/// // `RelayAdapter` to a `PusServer`; here a `TestActor`.
 /// let tms = TestActor::<PusPacket>::spawn(TestActor::new());
 ///
 /// let acceptor = PusTcAcceptor::for_packets(apid, tms.clone().recipient());

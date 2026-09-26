@@ -1,11 +1,12 @@
 //! PUS server with separate TCP ports for telecommands and telemetry.
 //!
 //! ```text
-//! TC port: PusListener ──PusPacket──▶ PusTcAcceptor ──────────TM(1,x)──────────┐
-//!                                          │                                   ├──▶ PusWriterProxy
-//!                                          └──TC(17,1)──▶ PusTestServiceActor ─┘          │
-//!                                                                                         ▼
-//! TM port: PusListener ──ConnectionOpened──▶ PusWriterProxy ──────────────────────▶ TM client
+//! TC port: PusServer ──PusPacket──▶ PusTcAcceptor ──────────TM(1,x)──────────┐
+//!                                          │                                   ├──▶ RelayAdapter
+//!                                          └──TC(17,1)──▶ PusTestServiceActor ─┘         │
+//!                                                                              Relay<PusPacket>
+//!                                                                                        ▼
+//! TM port:                                                     TM client ◀── PusServer
 //! ```
 //!
 //! Telecommands are received on the TC port. The application process has
@@ -26,8 +27,8 @@ use kameo::error::Infallible;
 use kameo::message::{Context, Message};
 use kameo_tcp_example::pus::service17;
 use kameo_tcp_example::{
-    ConnectionOpened, GetLocalAddr, PusListener, PusPacket, PusTc, PusTcAcceptor,
-    PusTestServiceActor, PusWriterProxy, TcpListenerArgs,
+    GetLocalAddr, PusServer, PusPacket, PusTc, PusTcAcceptor, PusTestServiceActor, Relay,
+    RelayAdapter, RelayAdapterArgs, TcpServerArgs,
 };
 use tracing::warn;
 use tracing_subscriber::EnvFilter;
@@ -74,12 +75,14 @@ async fn main() -> anyhow::Result<()> {
     let tc_port = parse_port(args.next(), usage)?;
     let tm_port = parse_port(args.next(), usage)?;
 
-    // Telemetry: all TMs go to the writer of the current TM connection.
-    let telemetry = PusWriterProxy::spawn(PusWriterProxy::new());
-    let tm_listener = PusListener::spawn(TcpListenerArgs {
+    // Telemetry: the TM server sends every `Relay<PusPacket>` to its
+    // connected client. The adapter lets the PUS actors send plain packets.
+    let tm_server = PusServer::spawn(TcpServerArgs {
         bind_addr: SocketAddr::from(([0, 0, 0, 0], tm_port)),
         downstream: IgnoreIncoming::spawn(IgnoreIncoming).recipient::<PusPacket>(),
-        on_connect: Some(telemetry.clone().recipient::<ConnectionOpened<PusPacket>>()),
+    });
+    let telemetry = RelayAdapter::spawn(RelayAdapterArgs {
+        target: tm_server.clone().recipient::<Relay<PusPacket>>(),
     });
 
     // Telecommands: acceptance check, then service 17.
@@ -93,17 +96,16 @@ async fn main() -> anyhow::Result<()> {
         &[service17::ARE_YOU_ALIVE_REQUEST_SUBTYPE],
         test_service.recipient::<PusTc>(),
     ));
-    let tc_listener = PusListener::spawn(TcpListenerArgs {
+    let tc_server = PusServer::spawn(TcpServerArgs {
         bind_addr: SocketAddr::from(([0, 0, 0, 0], tc_port)),
         downstream: acceptor.recipient::<PusPacket>(),
-        on_connect: None,
     });
 
-    let tc_addr = tc_listener
+    let tc_addr = tc_server
         .ask(GetLocalAddr)
         .await
         .map_err(|err| anyhow!("cannot listen on TC port {tc_port}: {err}"))?;
-    let tm_addr = tm_listener
+    let tm_addr = tm_server
         .ask(GetLocalAddr)
         .await
         .map_err(|err| anyhow!("cannot listen on TM port {tm_port}: {err}"))?;

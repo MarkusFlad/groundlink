@@ -41,7 +41,7 @@ pub use pus::{
     AckFlags, PusCodec, PusConfig, PusPacket, PusTc, PusTcSecondaryHeader, PusTm,
     PusTmSecondaryHeader,
 };
-pub use pus::service1::{FailureNotice, RequestId, VerificationKind, VerificationReport};
+pub use pus::service1::{FailureCode, FailureNotice, RequestId, VerificationKind, VerificationReport};
 pub use pus::service17::{AreYouAliveReport, AreYouAliveRequest};
 pub use pus_actors::{PusPacketAdapter, PusTcAcceptor, PusTestServiceActor, SequenceCounter};
 pub use simple_string::{encode_frame, SimpleString, SimpleStringCodec};

@@ -116,6 +116,46 @@ impl FailureNotice {
     }
 }
 
+/// Failure Codes, die die Actors dieser Bibliothek verwenden. Die Werte
+/// sind missionsspezifisch; bei Bedarf hier anpassen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u16)]
+pub enum FailureCode {
+    /// Für den Service Type des TC ist kein Handler registriert.
+    UnsupportedService = 1,
+    /// Der Message Subtype wird vom Service nicht unterstützt.
+    UnsupportedSubtype = 2,
+    /// Die Application Data passen nicht zum Telekommando.
+    InvalidApplicationData = 3,
+    /// Das TC konnte nicht an den Service-Handler weitergeleitet werden.
+    RoutingFailed = 4,
+}
+
+impl FailureCode {
+    /// Der Failure Code zum Zahlenwert, falls bekannt.
+    pub fn from_code(code: u16) -> Option<Self> {
+        [
+            FailureCode::UnsupportedService,
+            FailureCode::UnsupportedSubtype,
+            FailureCode::InvalidApplicationData,
+            FailureCode::RoutingFailed,
+        ]
+        .into_iter()
+        .find(|c| *c as u16 == code)
+    }
+
+    /// Failure Notice mit diesem Code und den gegebenen Zusatzdaten.
+    pub fn notice(self, data: impl Into<Bytes>) -> FailureNotice {
+        FailureNotice::new(self as u16, data)
+    }
+}
+
+impl From<FailureCode> for u16 {
+    fn from(code: FailureCode) -> Self {
+        code as u16
+    }
+}
+
 /// Art des Verifikationsberichts inkl. der subtype-spezifischen Daten.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VerificationKind {
@@ -501,6 +541,20 @@ mod tests {
         request_id.apid = APID_MAX + 1;
         let report = VerificationReport::new(1, 1, time(), request_id, VerificationKind::AcceptanceSuccess);
         assert!(PusPacket::try_from(report).is_err());
+    }
+
+    #[test]
+    fn failure_code_roundtrip() {
+        for code in [
+            FailureCode::UnsupportedService,
+            FailureCode::UnsupportedSubtype,
+            FailureCode::InvalidApplicationData,
+            FailureCode::RoutingFailed,
+        ] {
+            assert_eq!(FailureCode::from_code(code.into()), Some(code));
+            assert_eq!(code.notice(Bytes::new()).code, u16::from(code));
+        }
+        assert_eq!(FailureCode::from_code(0), None);
     }
 
     #[test]

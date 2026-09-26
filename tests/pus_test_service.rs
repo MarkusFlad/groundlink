@@ -6,8 +6,8 @@ use std::time::Duration;
 use bytes::Bytes;
 use kameo::actor::Spawn;
 use kameo_tcp_example::{
-    AckFlags, AreYouAliveReport, AreYouAliveRequest, GetMessages, PusPacket, PusTc, PusTcAcceptor,
-    PusTestServiceActor, RequestId, TestActor, VerificationKind, VerificationReport,
+    AckFlags, AreYouAliveReport, AreYouAliveRequest, FailureCode, GetMessages, PusPacket, PusTc,
+    PusTcAcceptor, PusTestServiceActor, RequestId, TestActor, VerificationKind, VerificationReport,
 };
 
 const APID: u16 = 0x042;
@@ -56,13 +56,30 @@ async fn ohne_completion_flag_nur_tm_17_2() {
 }
 
 #[tokio::test]
-async fn verwirft_andere_tcs() {
+async fn ungueltige_tcs_werden_mit_tm_1_4_beantwortet() {
     let tms = TestActor::<PusPacket>::spawn(TestActor::new());
     let service = PusTestServiceActor::spawn(PusTestServiceActor::new(APID, tms.clone().recipient()));
 
-    service.ask(PusTc::new(APID, 0, 17, 3, Bytes::new())).await.unwrap();
+    let unknown_subtype = PusTc::new(APID, 0, 17, 3, Bytes::new());
+    let with_app_data = PusTc::new(APID, 1, 17, 1, &b"x"[..]);
+    service.ask(unknown_subtype.clone()).await.unwrap();
+    service.ask(with_app_data.clone()).await.unwrap();
 
-    assert!(tms.ask(GetMessages::new()).await.unwrap().is_empty());
+    let received = tms.ask(GetMessages::new()).await.unwrap();
+    let expected = [
+        (&unknown_subtype, FailureCode::UnsupportedSubtype, [17u8, 3]),
+        (&with_app_data, FailureCode::InvalidApplicationData, [17, 1]),
+    ];
+    assert_eq!(received.len(), expected.len());
+    for (packet, (tc, code, data)) in received.iter().zip(expected) {
+        let report = VerificationReport::try_from(packet.clone()).unwrap();
+        let VerificationKind::StartFailure(failure) = &report.kind else {
+            panic!("TM(1,4) erwartet, erhalten: {:?}", report.kind);
+        };
+        assert_eq!(report.request_id, RequestId::from(tc));
+        assert_eq!(FailureCode::from_code(failure.code), Some(code));
+        assert_eq!(&failure.data[..], &data);
+    }
 }
 
 #[tokio::test]
@@ -76,13 +93,13 @@ async fn nachgelagert_zum_acceptor_mit_gemeinsamem_sequence_counter() {
             .with_sequence_counter(acceptor.sequence_counter()),
     );
     let acceptor = PusTcAcceptor::spawn(
-        acceptor.with_service_handler(17, service.recipient::<PusTc>()),
+        acceptor.with_service_handler(17, &[1], service.recipient::<PusTc>()),
     );
 
     // TC(17,1) wird bestätigt und an den Test-Service weitergereicht.
     let tc: PusTc = request(3).into();
     acceptor.ask(PusPacket::from(tc.clone())).await.unwrap();
-    // TC eines Services ohne Handler wird nur bestätigt.
+    // TC eines Services ohne Handler wird mit TM(1,2) abgelehnt.
     acceptor.ask(PusPacket::from(PusTc::new(APID, 4, 3, 1, Bytes::new()))).await.unwrap();
     // TC an fremde APID wird weder bestätigt noch weitergereicht.
     acceptor.ask(PusPacket::from(PusTc::new(APID + 1, 5, 17, 1, Bytes::new()))).await.unwrap();
@@ -93,7 +110,8 @@ async fn nachgelagert_zum_acceptor_mit_gemeinsamem_sequence_counter() {
     assert_eq!(tms.ask(GetMessages::new()).await.unwrap().len(), 2, "keine weiteren TMs");
 
     assert_eq!(accepted.iter().map(|r| r.request_id.sequence_count).collect::<Vec<_>>(), vec![3, 4]);
-    assert!(accepted.iter().all(|r| r.kind == VerificationKind::AcceptanceSuccess));
+    assert_eq!(accepted[0].kind, VerificationKind::AcceptanceSuccess);
+    assert!(matches!(accepted[1].kind, VerificationKind::AcceptanceFailure(_)));
 
     let alive = AreYouAliveReport::try_from(service_tms[0].clone()).unwrap();
     let completion = VerificationReport::try_from(service_tms[1].clone()).unwrap();
@@ -101,7 +119,7 @@ async fn nachgelagert_zum_acceptor_mit_gemeinsamem_sequence_counter() {
     assert_eq!(completion.request_id, RequestId::from(&tc));
 
     // Alle TMs der APID sind fortlaufend nummeriert: TM(1,1) für das erste
-    // TC, dann TM(17,2) und TM(1,7), dann TM(1,1) für das zweite TC.
+    // TC, dann TM(17,2) und TM(1,7), dazwischen TM(1,2) für das zweite TC.
     let mut counts = vec![
         accepted[0].header.sequence_count,
         alive.header.sequence_count,

@@ -1,19 +1,19 @@
-//! CCSDS Unsegmented Time Code (CUC, CCSDS 301.0-B-4, Abschnitt 3.2).
+//! CCSDS Unsegmented Time Code (CUC, CCSDS 301.0-B-4, section 3.2).
 //!
-//! Eine CUC-Zeit zählt Sekunden (Coarse Time, 1–4 Byte) und
-//! Sekundenbruchteile (Fine Time, 0–3 Byte, Einheit `2^-(8·fine_len)` s)
-//! seit einer Epoche. Optional steht davor ein 1 Byte langes P-Field, das
-//! Epoche und Feldlängen beschreibt.
+//! A CUC time counts seconds (coarse time, 1–4 bytes) and fractions of a
+//! second (fine time, 0–3 bytes, unit `2^-(8·fine_len)` s) since an epoch.
+//! It can be preceded by a 1-byte P-field that describes the epoch and the
+//! field lengths.
 //!
-//! Unterstützte Epochen ([`CucEpoch`]):
-//! - [`CucEpoch::Ccsds`]: 1958-01-01T00:00:00 TAI. Die Zählung läuft in
-//!   TAI, d. h. bei der Umrechnung von bzw. nach UTC werden Schaltsekunden
-//!   über eine eingebaute Tabelle ([`tai_minus_utc`]) berücksichtigt.
-//! - [`CucEpoch::Agency`]: eine missionsspezifische Epoche in UTC. Gezählt
-//!   wird wie bei Unix-Zeit ohne Schaltsekunden.
+//! Supported epochs ([`CucEpoch`]):
+//! - [`CucEpoch::Ccsds`]: 1958-01-01T00:00:00 TAI. The count runs in TAI,
+//!   so leap seconds are applied from a built-in table ([`tai_minus_utc`])
+//!   when converting from or to UTC.
+//! - [`CucEpoch::Agency`]: a mission-specific epoch in UTC. Counted like
+//!   Unix time, without leap seconds.
 //!
-//! Das Standardformat ([`CucFormat::default`]) ist CCSDS-Epoche, 4 Byte
-//! Coarse, 2 Byte Fine, mit P-Field – zusammen 7 Byte, passend zu
+//! The default format ([`CucFormat::default`]) is the CCSDS epoch, 4 bytes
+//! coarse, 2 bytes fine, with P-field: 7 bytes in total, matching
 //! [`crate::pus::DEFAULT_TM_TIME_LEN`].
 //!
 //! ```
@@ -32,11 +32,12 @@ use std::fmt;
 use std::io;
 use std::str::FromStr;
 
-/// Sekunden von 1958-01-01 bis 1970-01-01 (4383 Tage).
+/// Seconds from 1958-01-01 to 1970-01-01 (4383 days).
 const SECONDS_1958_TO_1970: i64 = 4383 * 86_400;
 
-/// TAI−UTC in Sekunden, gültig ab dem jeweiligen UTC-Zeitpunkt (Unix-Zeit).
-/// Quelle: IERS Bulletin C. Muss bei neuen Schaltsekunden ergänzt werden.
+/// TAI−UTC in seconds, valid from the given UTC instant (Unix time).
+/// Source: IERS Bulletin C. Must be extended when a new leap second is
+/// announced.
 const LEAP_SECONDS: &[(i64, i64)] = &[
     (63_072_000, 10),    // 1972-01-01
     (78_796_800, 11),    // 1972-07-01
@@ -68,8 +69,22 @@ const LEAP_SECONDS: &[(i64, i64)] = &[
     (1_483_228_800, 37), // 2017-01-01
 ];
 
-/// TAI−UTC in Sekunden für den UTC-Zeitpunkt `utc`, oder `None` vor
-/// 1972-01-01 (davor gab es keine ganzzahligen Schaltsekunden).
+/// TAI−UTC in seconds at the UTC instant `utc`.
+///
+/// Returns `None` before 1972-01-01, when TAI−UTC was not an integer number
+/// of seconds.
+///
+/// The value comes from a built-in leap second table that ends with the
+/// leap second of 2017-01-01 (TAI−UTC = 37 s); it has to be extended when
+/// IERS announces a new one.
+///
+/// ```
+/// use chrono::{TimeZone, Utc};
+/// use kameo_tcp_example::cuc::tai_minus_utc;
+///
+/// assert_eq!(tai_minus_utc(&Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap()), Some(37));
+/// assert_eq!(tai_minus_utc(&Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap()), None);
+/// ```
 pub fn tai_minus_utc(utc: &DateTime<Utc>) -> Option<i64> {
     let unix = utc.timestamp();
     LEAP_SECONDS.iter().rev().find(|(since, _)| unix >= *since).map(|&(_, offset)| offset)
@@ -83,43 +98,47 @@ fn invalid_data(msg: String) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, msg)
 }
 
-/// Epoche, ab der eine [`CucTime`] zählt.
+/// Epoch from which a [`CucTime`] counts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CucEpoch {
-    /// CCSDS-Epoche 1958-01-01 TAI; Zählung in TAI (P-Field Time Code ID `0b001`).
+    /// CCSDS epoch 1958-01-01 TAI; counting in TAI (P-field time code ID `0b001`).
     Ccsds,
-    /// Missionsspezifische Epoche in UTC; Zählung ohne Schaltsekunden
-    /// (P-Field Time Code ID `0b010`).
+    /// Mission-specific epoch in UTC; counting without leap seconds
+    /// (P-field time code ID `0b010`).
     Agency(DateTime<Utc>),
 }
 
-/// Format einer CUC-Zeit: Epoche, Feldlängen und ob ein P-Field
-/// vorangestellt wird.
+/// Format of a CUC time: epoch, field lengths and whether a P-field is
+/// prepended.
+///
+/// The P-field can describe the agency epoch only by its time code ID, not
+/// by its date; decoding therefore always needs the full format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CucFormat {
+    /// Epoch the time counts from.
     pub epoch: CucEpoch,
-    /// Länge der Coarse Time in Byte (`1..=4`).
+    /// Length of the coarse time in bytes (`1..=4`).
     pub coarse_len: u8,
-    /// Länge der Fine Time in Byte (`0..=3`).
+    /// Length of the fine time in bytes (`0..=3`).
     pub fine_len: u8,
-    /// Ob das 1 Byte lange P-Field vorangestellt wird.
+    /// Whether the 1-byte P-field is prepended.
     pub p_field: bool,
 }
 
 impl Default for CucFormat {
-    /// CCSDS-Epoche, 4 Byte Coarse, 2 Byte Fine, mit P-Field (7 Byte).
+    /// CCSDS epoch, 4 bytes coarse, 2 bytes fine, with P-field (7 bytes).
     fn default() -> Self {
         CucFormat { epoch: CucEpoch::Ccsds, coarse_len: 4, fine_len: 2, p_field: true }
     }
 }
 
 impl CucFormat {
-    /// Gesamtlänge der kodierten Zeit in Byte (inkl. P-Field).
+    /// Total length of the encoded time in bytes, including the P-field.
     pub fn len(&self) -> usize {
         self.p_field as usize + self.coarse_len as usize + self.fine_len as usize
     }
 
-    /// Das P-Field-Byte zu diesem Format.
+    /// The P-field byte for this format.
     pub fn p_field_byte(&self) -> u8 {
         let time_code_id: u8 = match self.epoch {
             CucEpoch::Ccsds => 0b001,
@@ -131,7 +150,7 @@ impl CucFormat {
     fn validate(&self) -> io::Result<()> {
         if !(1..=4).contains(&self.coarse_len) || self.fine_len > 3 {
             return Err(invalid_input(format!(
-                "ungültiges CUC-Format: coarse_len {} (erlaubt 1..=4), fine_len {} (erlaubt 0..=3)",
+                "invalid CUC format: coarse_len {} (allowed 1..=4), fine_len {} (allowed 0..=3)",
                 self.coarse_len, self.fine_len
             )));
         }
@@ -143,37 +162,62 @@ impl CucFormat {
     }
 }
 
-/// Eine Zeit im CCSDS Unsegmented Time Code.
+/// A time in the CCSDS Unsegmented Time Code.
+///
+/// Created from UTC with [`now`](Self::now), [`from_utc`](Self::from_utc),
+/// [`from_utc_str`](Self::from_utc_str) or [`str::parse`], or from its
+/// binary form with [`from_bytes`](Self::from_bytes). Converts back with
+/// [`to_utc`](Self::to_utc), [`to_bytes`](Self::to_bytes) and
+/// [`Display`](fmt::Display).
+///
+/// ```
+/// use kameo_tcp_example::{CucFormat, CucTime};
+///
+/// let t = CucTime::from_utc_str("2026-09-26T12:00:00.25Z", CucFormat::default()).unwrap();
+/// assert_eq!(t.fine, 0x4000); // 0.25 s in units of 2^-16 s
+///
+/// let bytes = t.to_bytes().unwrap();
+/// assert_eq!(bytes[0], 0x1E); // P-field: CCSDS epoch, 4 + 2 bytes
+/// assert_eq!(CucTime::from_bytes(&bytes, CucFormat::default()).unwrap(), t);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CucTime {
+    /// Format of this time.
     pub format: CucFormat,
-    /// Ganze Sekunden seit der Epoche.
+    /// Whole seconds since the epoch.
     pub coarse: u32,
-    /// Sekundenbruchteil in Einheiten von `2^-(8·fine_len)` s.
+    /// Fraction of a second in units of `2^-(8·fine_len)` s.
     pub fine: u32,
 }
 
 impl CucTime {
-    /// Die aktuelle Systemzeit als CUC-Zeit.
+    /// The current system time as a CUC time.
+    ///
+    /// # Errors
+    ///
+    /// See [`from_utc`](Self::from_utc).
     pub fn now(format: CucFormat) -> io::Result<Self> {
         Self::from_utc(&Utc::now(), format)
     }
 
-    /// Wandelt einen UTC-Zeitpunkt in eine CUC-Zeit um. Der
-    /// Sekundenbruchteil wird auf die Auflösung der Fine Time abgeschnitten.
+    /// Converts a UTC instant to a CUC time. The fraction of a second is
+    /// truncated to the resolution of the fine time.
     ///
-    /// Schlägt fehl, wenn der Zeitpunkt vor der Epoche (bei
-    /// [`CucEpoch::Ccsds`]: vor 1972, siehe [`tai_minus_utc`]) liegt oder
-    /// nicht in `coarse_len` Byte passt.
+    /// # Errors
+    ///
+    /// Fails with [`io::ErrorKind::InvalidInput`] if `format` is invalid,
+    /// if the instant lies before the epoch (for [`CucEpoch::Ccsds`]:
+    /// before 1972, see [`tai_minus_utc`]), or if it does not fit into
+    /// `coarse_len` bytes.
     pub fn from_utc(utc: &DateTime<Utc>, format: CucFormat) -> io::Result<Self> {
         format.validate()?;
 
-        // Während einer Schaltsekunde liefert chrono nanos >= 10^9.
+        // During a leap second chrono reports nanos >= 10^9.
         let nanos = utc.timestamp_subsec_nanos().min(999_999_999) as i64;
         let (mut seconds, mut nanos) = match format.epoch {
             CucEpoch::Ccsds => {
                 let leap = tai_minus_utc(utc).ok_or_else(|| {
-                    invalid_input(format!("{utc} liegt vor 1972; TAI−UTC ist dort nicht ganzzahlig definiert"))
+                    invalid_input(format!("{utc} is before 1972, where TAI−UTC is not an integer number of seconds"))
                 })?;
                 (utc.timestamp() + SECONDS_1958_TO_1970 + leap, nanos)
             }
@@ -189,7 +233,7 @@ impl CucTime {
         let coarse_max = (1u64 << (8 * format.coarse_len as u32)) - 1;
         if seconds < 0 || seconds as u64 > coarse_max {
             return Err(invalid_input(format!(
-                "{utc} liegt außerhalb des darstellbaren Bereichs ({seconds} s seit Epoche, max {coarse_max})"
+                "{utc} is outside the representable range ({seconds} s since epoch, max {coarse_max})"
             )));
         }
 
@@ -197,19 +241,29 @@ impl CucTime {
         Ok(CucTime { format, coarse: seconds as u32, fine: fine as u32 })
     }
 
-    /// Wandelt einen lesbaren UTC-Zeitstempel in eine CUC-Zeit um.
+    /// Converts a human-readable UTC timestamp to a CUC time.
     ///
-    /// Akzeptierte Formate (Bruchteile optional, `Z` optional):
-    /// - RFC 3339 / ISO 8601, z. B. `2026-09-26T12:34:56.789Z` oder mit
-    ///   Offset `2026-09-26T14:34:56+02:00`
-    /// - CCSDS ASCII Time Code B (Tag im Jahr), z. B. `2026-269T12:34:56.789Z`
-    /// - Leerzeichen statt `T`, z. B. `2026-09-26 12:34:56`
+    /// Accepted formats (fraction of a second and trailing `Z` optional):
+    /// - RFC 3339 / ISO 8601, e.g. `2026-09-26T12:34:56.789Z`, or with an
+    ///   offset such as `2026-09-26T14:34:56+02:00`
+    /// - CCSDS ASCII time code B (day of year), e.g. `2026-269T12:34:56.789Z`
+    /// - a space instead of `T`, e.g. `2026-09-26 12:34:56`
+    ///
+    /// # Errors
+    ///
+    /// Fails with [`io::ErrorKind::InvalidInput`] if `s` has none of these
+    /// formats, or for the reasons listed at [`from_utc`](Self::from_utc).
     pub fn from_utc_str(s: &str, format: CucFormat) -> io::Result<Self> {
         Self::from_utc(&parse_utc(s)?, format)
     }
 
-    /// Wandelt die CUC-Zeit in einen UTC-Zeitpunkt um (auf Nanosekunden
-    /// gerundet).
+    /// Converts the CUC time to a UTC instant, rounded to nanoseconds.
+    ///
+    /// # Errors
+    ///
+    /// Fails with [`io::ErrorKind::InvalidInput`] if the format is invalid,
+    /// or with [`io::ErrorKind::InvalidData`] if the time lies before 1972
+    /// (CCSDS epoch) or cannot be represented as a UTC instant.
     pub fn to_utc(&self) -> io::Result<DateTime<Utc>> {
         self.format.validate()?;
 
@@ -228,7 +282,7 @@ impl CucTime {
                     .rev()
                     .find(|(since, offset)| tai_unix >= since + offset)
                     .map(|&(_, offset)| offset)
-                    .ok_or_else(|| invalid_data(format!("CUC-Zeit {} s liegt vor 1972", self.coarse)))?;
+                    .ok_or_else(|| invalid_data(format!("CUC time {} s is before 1972", self.coarse)))?;
                 tai_unix - leap
             }
             CucEpoch::Agency(epoch) => {
@@ -238,19 +292,24 @@ impl CucTime {
             }
         };
         DateTime::from_timestamp(unix, nanos)
-            .ok_or_else(|| invalid_data(format!("CUC-Zeit {} s nicht als UTC darstellbar", self.coarse)))
+            .ok_or_else(|| invalid_data(format!("CUC time {} s cannot be represented as UTC", self.coarse)))
     }
 
-    /// Kodiert die Zeit (ggf. mit P-Field) an `dst`.
+    /// Appends the encoded time (with P-field, if configured) to `dst`.
+    ///
+    /// # Errors
+    ///
+    /// Fails with [`io::ErrorKind::InvalidInput`] if the format is invalid
+    /// or `coarse`/`fine` do not fit into their configured lengths.
     pub fn encode(&self, dst: &mut BytesMut) -> io::Result<()> {
         self.format.validate()?;
         let coarse_len = self.format.coarse_len as usize;
         let fine_len = self.format.fine_len as usize;
         if coarse_len < 4 && self.coarse >> (8 * coarse_len) != 0 {
-            return Err(invalid_input(format!("coarse {} passt nicht in {coarse_len} Byte", self.coarse)));
+            return Err(invalid_input(format!("coarse {} does not fit into {coarse_len} bytes", self.coarse)));
         }
         if self.fine >> (8 * fine_len) != 0 {
-            return Err(invalid_input(format!("fine {} passt nicht in {fine_len} Byte", self.fine)));
+            return Err(invalid_input(format!("fine {} does not fit into {fine_len} bytes", self.fine)));
         }
 
         dst.reserve(self.format.len());
@@ -262,21 +321,30 @@ impl CucTime {
         Ok(())
     }
 
-    /// Kodiert die Zeit (ggf. mit P-Field) als eigenständigen Puffer.
+    /// Encodes the time (with P-field, if configured) into a new buffer.
+    ///
+    /// # Errors
+    ///
+    /// See [`encode`](Self::encode).
     pub fn to_bytes(&self) -> io::Result<Bytes> {
         let mut buf = BytesMut::new();
         self.encode(&mut buf)?;
         Ok(buf.freeze())
     }
 
-    /// Dekodiert eine CUC-Zeit im gegebenen Format. `src` muss genau
-    /// [`CucFormat::len`] Byte lang sein; ein vorhandenes P-Field muss zum
-    /// Format passen.
+    /// Decodes a CUC time in the given format.
+    ///
+    /// # Errors
+    ///
+    /// Fails with [`io::ErrorKind::InvalidInput`] if `format` is invalid, and
+    /// with [`io::ErrorKind::InvalidData`] if `src` is not exactly
+    /// [`CucFormat::len`] bytes long or its P-field does not match
+    /// `format`.
     pub fn from_bytes(src: &[u8], format: CucFormat) -> io::Result<Self> {
         format.validate()?;
         if src.len() != format.len() {
             return Err(invalid_data(format!(
-                "CUC-Zeit hat {} Byte, erwartet werden {} Byte",
+                "CUC time has {} bytes, expected {} bytes",
                 src.len(),
                 format.len()
             )));
@@ -286,7 +354,7 @@ impl CucTime {
         if format.p_field {
             if src[0] != format.p_field_byte() {
                 return Err(invalid_data(format!(
-                    "P-Field 0x{:02X} passt nicht zum erwarteten Format (0x{:02X})",
+                    "P-field 0x{:02X} does not match the expected format (0x{:02X})",
                     src[0],
                     format.p_field_byte()
                 )));
@@ -300,7 +368,8 @@ impl CucTime {
     }
 }
 
-/// Erlaubt `"…".parse::<CucTime>()` mit [`CucFormat::default`].
+/// Enables `"…".parse::<CucTime>()` with [`CucFormat::default`]; see
+/// [`CucTime::from_utc_str`] for the accepted formats.
 impl FromStr for CucTime {
     type Err = io::Error;
 
@@ -309,7 +378,9 @@ impl FromStr for CucTime {
     }
 }
 
-/// Gibt die Zeit lesbar als UTC aus (RFC 3339, Mikrosekunden).
+/// Formats the time as UTC in RFC 3339 with microseconds, e.g.
+/// `2026-09-26T12:00:00.500000Z`. Times that cannot be converted are shown
+/// as `CUC(coarse=…, fine=…)`.
 impl fmt::Display for CucTime {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.to_utc() {
@@ -319,15 +390,17 @@ impl fmt::Display for CucTime {
     }
 }
 
-/// Die kodierten Bytes (inkl. P-Field), z. B. als Zeitstempel für
-/// [`crate::PusTm::new`].
+/// The encoded bytes (including the P-field), e.g. as the time stamp for
+/// [`PusTm::new`](crate::PusTm::new).
 ///
 /// # Panics
-/// Bei ungültigem Format oder zu großen Werten; mit [`CucTime::from_utc`]
-/// bzw. [`CucTime::from_bytes`] erzeugte Zeiten sind stets gültig.
+///
+/// Panics if the format is invalid or the values are too large; times
+/// created with [`CucTime::from_utc`] or [`CucTime::from_bytes`] are always
+/// valid.
 impl From<CucTime> for Bytes {
     fn from(time: CucTime) -> Self {
-        time.to_bytes().expect("ungültige CucTime")
+        time.to_bytes().expect("invalid CucTime")
     }
 }
 
@@ -341,7 +414,7 @@ fn parse_utc(s: &str) -> io::Result<DateTime<Utc>> {
         .iter()
         .find_map(|fmt| NaiveDateTime::parse_from_str(naive, fmt).ok())
         .map(|dt| dt.and_utc())
-        .ok_or_else(|| invalid_input(format!("'{s}' ist kein unterstützter UTC-Zeitstempel")))
+        .ok_or_else(|| invalid_input(format!("'{s}' is not a supported UTC timestamp")))
 }
 
 #[cfg(test)]
@@ -354,7 +427,7 @@ mod tests {
     }
 
     #[test]
-    fn schaltsekundentabelle_stimmt_mit_kalenderdaten_ueberein() {
+    fn leap_second_table_matches_calendar_dates() {
         let dates = [
             (1972, 1), (1972, 7), (1973, 1), (1974, 1), (1975, 1), (1976, 1), (1977, 1),
             (1978, 1), (1979, 1), (1980, 1), (1981, 7), (1982, 7), (1983, 7), (1985, 7),
@@ -369,7 +442,7 @@ mod tests {
     }
 
     #[test]
-    fn ccsds_epoche_beruecksichtigt_schaltsekunden() {
+    fn ccsds_epoch_applies_leap_seconds() {
         let t = CucTime::from_utc(&utc("2017-01-01T00:00:00Z"), CucFormat::default()).unwrap();
         let days = NaiveDate::from_ymd_opt(2017, 1, 1)
             .unwrap()
@@ -380,7 +453,7 @@ mod tests {
     }
 
     #[test]
-    fn fine_time_als_binaerer_bruchteil() {
+    fn fine_time_is_binary_fraction() {
         let t: CucTime = "2026-09-26T12:00:00.5Z".parse().unwrap();
         assert_eq!(t.fine, 0x8000);
         let t: CucTime = "2026-09-26T12:00:00.25Z".parse().unwrap();
@@ -388,14 +461,14 @@ mod tests {
     }
 
     #[test]
-    fn kodierung_mit_p_field() {
+    fn encoding_with_p_field() {
         let t = CucTime { format: CucFormat::default(), coarse: 0x0102_0304, fine: 0x0506 };
         assert_eq!(&t.to_bytes().unwrap()[..], &[0x1E, 1, 2, 3, 4, 5, 6]);
         assert_eq!(CucTime::from_bytes(&[0x1E, 1, 2, 3, 4, 5, 6], CucFormat::default()).unwrap(), t);
     }
 
     #[test]
-    fn kodierung_ohne_p_field_und_andere_laengen() {
+    fn encoding_without_p_field_and_other_lengths() {
         let format = CucFormat { coarse_len: 2, fine_len: 1, p_field: false, ..CucFormat::default() };
         let t = CucTime { format, coarse: 0xABCD, fine: 0xEF };
         assert_eq!(&t.to_bytes().unwrap()[..], &[0xAB, 0xCD, 0xEF]);
@@ -403,7 +476,7 @@ mod tests {
     }
 
     #[test]
-    fn utc_roundtrip_innerhalb_der_aufloesung() {
+    fn utc_roundtrip_within_resolution() {
         for s in ["2026-09-26T12:34:56.789123Z", "2016-12-31T23:59:59.999Z", "1999-01-01T00:00:00Z"] {
             let original = utc(s);
             let back = CucTime::from_utc(&original, CucFormat::default()).unwrap().to_utc().unwrap();
@@ -412,7 +485,7 @@ mod tests {
     }
 
     #[test]
-    fn verschiedene_eingabeformate_ergeben_dieselbe_zeit() {
+    fn different_input_formats_give_same_time() {
         let expected: CucTime = "2026-09-26T12:34:56.5Z".parse().unwrap();
         for s in [
             "2026-09-26T14:34:56.5+02:00",
@@ -426,7 +499,7 @@ mod tests {
     }
 
     #[test]
-    fn agency_epoche_ohne_schaltsekunden() {
+    fn agency_epoch_without_leap_seconds() {
         let format = CucFormat { epoch: CucEpoch::Agency(utc("2000-01-01T12:00:00Z")), ..CucFormat::default() };
         let t = CucTime::from_utc_str("2000-01-02T12:00:01.5Z", format).unwrap();
         assert_eq!((t.coarse, t.fine), (86_401, 0x8000));
@@ -436,7 +509,7 @@ mod tests {
     }
 
     #[test]
-    fn fehlerfaelle() {
+    fn error_cases() {
         assert!(CucTime::from_utc_str("1970-01-01T00:00:00Z", CucFormat::default()).is_err());
         let small = CucFormat { coarse_len: 1, ..CucFormat::default() };
         assert!(CucTime::from_utc_str("2026-01-01T00:00:00Z", small).is_err());
@@ -446,7 +519,7 @@ mod tests {
     }
 
     #[test]
-    fn now_liefert_aktuelle_zeit() {
+    fn now_returns_current_time() {
         let t = CucTime::now(CucFormat::default()).unwrap();
         assert!((t.to_utc().unwrap() - Utc::now()).abs() < Duration::seconds(1));
     }

@@ -1,6 +1,6 @@
-//! Actors, die PUS-Pakete fachlich verarbeiten.
+//! Actors that process PUS packets for an application process.
 //!
-//! Typische Kette für eine Applikation mit fester APID:
+//! Typical chain for an application with a fixed APID:
 //!
 //! ```text
 //! PusListener ──PusPacket──▶ PusTcAcceptor ──TM(1,1)──▶ …
@@ -25,29 +25,41 @@ use crate::pus::service1::{FailureCode, RequestId, VerificationKind, Verificatio
 use crate::pus::service17::{AreYouAliveReport, AreYouAliveRequest};
 use crate::pus::{PusPacket, PusTc};
 
-/// Packet Sequence Count einer APID, den sich mehrere Actors teilen
-/// können, damit alle TM-Pakete dieser APID fortlaufend nummeriert sind.
-/// Läuft nach [`SEQUENCE_COUNT_MAX`] auf 0 über.
+/// Packet sequence count of an APID that several actors can share, so that
+/// all TM packets of that APID are numbered consecutively.
+///
+/// Clones share the same counter. It wraps around to 0 after
+/// [`SEQUENCE_COUNT_MAX`].
+///
+/// ```
+/// use kameo_tcp_example::SequenceCounter;
+///
+/// let counter = SequenceCounter::new();
+/// let shared = counter.clone();
+/// assert_eq!(counter.next(), 0);
+/// assert_eq!(shared.next(), 1);
+/// ```
 #[derive(Debug, Clone, Default)]
 pub struct SequenceCounter(Arc<AtomicU16>);
 
 impl SequenceCounter {
+    /// Creates a counter starting at 0.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Liefert den aktuellen Wert und zählt weiter.
+    /// Returns the current value and advances the counter.
     pub fn next(&self) -> u16 {
         self.0
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
                 Some(if count >= SEQUENCE_COUNT_MAX { 0 } else { count + 1 })
             })
-            .expect("Update-Funktion liefert immer Some")
+            .expect("update function always returns Some")
     }
 }
 
-/// Message Type Counter je (Service Type, Subtype, Destination ID), wie
-/// von PUS-C vorgesehen.
+/// Message type counters per (service type, subtype, destination ID), as
+/// PUS-C specifies.
 #[derive(Debug, Default)]
 struct MessageTypeCounters(HashMap<(u8, u8, u16), u16>);
 
@@ -62,38 +74,38 @@ impl MessageTypeCounters {
 
 fn now(actor: &str, apid: u16, format: CucFormat) -> Option<CucTime> {
     CucTime::now(format)
-        .inspect_err(|err| error!(actor, apid, error = %err, "Zeitstempel nicht erzeugbar"))
+        .inspect_err(|err| error!(actor, apid, error = %err, "cannot create time stamp"))
         .ok()
 }
 
-/// Actor für eine Applikation mit fester APID: prüft jedes an seine APID
-/// adressierte PUS-Telekommando auf Annahme, meldet das Ergebnis per
-/// Service 1 an `tm_recipient` und leitet angenommene TCs an den für ihren
-/// Service Type registrierten, nachgelagerten Actor weiter (siehe
+/// Actor for an application with a fixed APID: performs the acceptance
+/// check for every PUS telecommand addressed to its APID, reports the
+/// result via service 1 to `tm_recipient`, and forwards accepted TCs to the
+/// downstream actor registered for their service type (see
 /// [`with_service_handler`](Self::with_service_handler)).
 ///
-/// Ablauf je TC:
-/// 1. Kein Handler für den Service Type → TM(1,2) mit
-///    [`FailureCode::UnsupportedService`]; Subtype nicht unterstützt →
-///    TM(1,2) mit [`FailureCode::UnsupportedSubtype`]. Das TC wird
-///    verworfen.
-/// 2. Sonst TM(1,1), sofern im TC das Acknowledgement Flag `acceptance`
-///    gesetzt ist.
-/// 3. Weiterleitung an den Handler; scheitert sie (Handler-Actor beendet),
-///    folgt TM(1,10) mit [`FailureCode::RoutingFailed`].
+/// For each TC:
+/// 1. No handler for the service type → TM(1,2) with
+///    [`FailureCode::UnsupportedService`]; subtype not supported → TM(1,2)
+///    with [`FailureCode::UnsupportedSubtype`]. The TC is dropped.
+/// 2. Otherwise TM(1,1), if the TC has the acknowledgement flag
+///    `acceptance` set.
+/// 3. The TC is forwarded to the handler. If that fails (the handler actor
+///    has stopped), TM(1,10) with [`FailureCode::RoutingFailed`] follows.
 ///
-/// Fehlerberichte werden wie von PUS-C vorgesehen unabhängig von den
-/// Acknowledgement Flags erzeugt; ihre Failure Data enthalten Service
-/// Type und Subtype des TC. TCs an andere APIDs und Telemetriepakete
-/// werden ignoriert.
+/// As PUS-C specifies, failure reports are generated regardless of the
+/// acknowledgement flags; their failure data contain the service type and
+/// subtype of the TC. TCs for other APIDs and telemetry packets are
+/// ignored.
 ///
-/// Die Berichte tragen die eigene APID, den Packet Sequence Count aus
-///   [`sequence_counter`](Self::sequence_counter), einen Message Type
-///   Counter je Destination ID, die Source ID des TC als Destination ID
-///   und die aktuelle Zeit als [`CucTime`].
+/// The reports carry the actor's own APID, the packet sequence count from
+/// [`sequence_counter`](Self::sequence_counter), a message type counter per
+/// (service type, subtype, destination ID), the source ID of the TC as
+/// destination ID, and the current time as [`CucTime`].
 ///
-/// Verarbeitet sowohl [`PusPacket`] (z. B. direkt als `downstream` eines
-/// [`crate::PusListener`]) als auch [`PusTc`].
+/// Handles both [`PusPacket`] (e.g. directly as the `downstream` of a
+/// [`PusListener`](crate::PusListener)) and [`PusTc`]. See
+/// [`PusTestServiceActor`] for a complete example.
 pub struct PusTcAcceptor {
     apid: u16,
     tm_recipient: Recipient<VerificationReport>,
@@ -109,8 +121,9 @@ struct ServiceHandler {
 }
 
 impl PusTcAcceptor {
-    /// Erstellt den Actor für die Applikation `apid`; die TM(1,1)-Berichte
-    /// gehen an `tm_recipient`. Zeitstempel im [`CucFormat::default`].
+    /// Creates the actor for the application `apid`. The verification
+    /// reports go to `tm_recipient`, with time stamps in
+    /// [`CucFormat::default`].
     pub fn new(apid: u16, tm_recipient: Recipient<VerificationReport>) -> Self {
         PusTcAcceptor {
             apid,
@@ -122,39 +135,43 @@ impl PusTcAcceptor {
         }
     }
 
-    /// Nimmt TCs mit Service Type `service_type` und einem der
-    /// `subtypes` an und leitet sie an `handler` weiter. TCs anderer
-    /// Services oder Subtypes werden mit TM(1,2) abgelehnt.
+    /// Accepts TCs with service type `service_type` and one of `subtypes`
+    /// and forwards them to `handler`. TCs of other services or subtypes are
+    /// rejected with TM(1,2).
+    ///
+    /// Registering the same service type again replaces the previous
+    /// handler.
     pub fn with_service_handler(mut self, service_type: u8, subtypes: &[u8], handler: Recipient<PusTc>) -> Self {
         self.service_handlers
             .insert(service_type, ServiceHandler { subtypes: subtypes.to_vec(), recipient: handler });
         self
     }
 
-    /// Verwendet `format` für die Zeitstempel der Berichte.
+    /// Uses `format` for the time stamps of the reports.
     pub fn with_time_format(mut self, format: CucFormat) -> Self {
         self.time_format = format;
         self
     }
 
-    /// Verwendet `counter` als Packet Sequence Count, z. B. um ihn mit
-    /// anderen Actors derselben APID zu teilen.
+    /// Uses `counter` as packet sequence count, e.g. to share it with other
+    /// actors of the same APID.
     pub fn with_sequence_counter(mut self, counter: SequenceCounter) -> Self {
         self.sequence_counter = counter;
         self
     }
 
+    /// The APID this actor is responsible for.
     pub fn apid(&self) -> u16 {
         self.apid
     }
 
-    /// Der Packet Sequence Count dieses Actors, zum Teilen mit
-    /// nachgelagerten Actors derselben APID.
+    /// The packet sequence count of this actor, for sharing with downstream
+    /// actors of the same APID.
     pub fn sequence_counter(&self) -> SequenceCounter {
         self.sequence_counter.clone()
     }
 
-    /// Erzeugt einen Verifikationsbericht zu `tc` und schickt ihn an
+    /// Creates a verification report for `tc` and sends it to
     /// `tm_recipient`.
     async fn report(&mut self, tc: &PusTc, kind: VerificationKind) {
         let Some(time) = now("PusTcAcceptor", self.apid, self.time_format) else {
@@ -165,7 +182,7 @@ impl PusTcAcceptor {
         report.message_type_counter =
             self.message_type_counters.next(crate::pus::service1::SERVICE_TYPE, subtype, report.destination_id);
         if let Err(err) = self.tm_recipient.tell(report).await {
-            warn!(apid = self.apid, error = %err, "Konnte TM(1,{subtype}) nicht senden");
+            warn!(apid = self.apid, error = %err, "could not send TM(1,{subtype})");
         }
     }
 
@@ -227,14 +244,13 @@ impl Message<PusPacket> for PusTcAcceptor {
     }
 }
 
-/// Actor für PUS Service 17 "Test": beantwortet jedes TC(17,1)
-/// "Are-You-Alive" zuerst mit TM(17,2) "Are-You-Alive Connection Report"
-/// und danach – falls im TC das Acknowledgement Flag `completion` gesetzt
-/// ist – mit TM(1,7) "Successful Completion of Execution Verification
-/// Report". Beide Pakete gehen an denselben `tm_recipient`, damit ihre
-/// Reihenfolge erhalten bleibt.
+/// Actor for PUS service 17 "Test": answers every TC(17,1) "Are-You-Alive"
+/// first with TM(17,2) "Are-You-Alive Connection Report" and then, if the
+/// TC has the acknowledgement flag `completion` set, with TM(1,7)
+/// "Successful Completion of Execution Verification Report". Both packets
+/// go to the same `tm_recipient` so that their order is preserved.
 ///
-/// Gedacht als nachgelagerter Actor eines [`PusTcAcceptor`]:
+/// Intended as a downstream actor of a [`PusTcAcceptor`]:
 ///
 /// ```
 /// # use std::time::Duration;
@@ -247,7 +263,7 @@ impl Message<PusPacket> for PusTcAcceptor {
 /// # #[tokio::main]
 /// # async fn main() {
 /// let apid = 0x042;
-/// // Ziel der TM-Pakete ist typischerweise ein `PusWriter`, hier ein `TestActor`.
+/// // The TM packets would typically go to a `PusWriter`; here a `TestActor`.
 /// let tms = TestActor::<PusPacket>::spawn(TestActor::new());
 /// let reports = PusPacketAdapter::<VerificationReport>::spawn(PusPacketAdapter::new(tms.clone().recipient()));
 ///
@@ -262,7 +278,7 @@ impl Message<PusPacket> for PusTcAcceptor {
 ///
 /// acceptor.tell(PusTc::from(AreYouAliveRequest::new(apid, 0))).await.unwrap();
 ///
-/// // TM(1,1) vom Acceptor, TM(17,2) und TM(1,7) vom Test-Service.
+/// // TM(1,1) from the acceptor, TM(17,2) and TM(1,7) from the test service.
 /// let received = TestActor::assert_received(&tms, 3, Duration::from_secs(1)).await;
 /// let mut types: Vec<_> = received.iter().map(|p| (p.service_type(), p.message_subtype())).collect();
 /// types.sort();
@@ -270,12 +286,12 @@ impl Message<PusPacket> for PusTcAcceptor {
 /// # }
 /// ```
 ///
-/// Verarbeitet [`AreYouAliveRequest`] und [`PusTc`]. Ein TC, das kein
-/// gültiges TC(17,1) ist, wird mit TM(1,4) "Failed Start of Execution"
-/// beantwortet ([`FailureCode::UnsupportedSubtype`] bzw.
-/// [`FailureCode::InvalidApplicationData`], Failure Data: Service Type und
-/// Subtype) – TM(1,4) statt TM(1,2), weil der vorgelagerte
-/// [`PusTcAcceptor`] das TC bereits angenommen hat.
+/// Handles [`AreYouAliveRequest`] and [`PusTc`]. A TC that is not a valid
+/// TC(17,1) is answered with TM(1,4) "Failed Start of Execution"
+/// ([`FailureCode::UnsupportedSubtype`] or
+/// [`FailureCode::InvalidApplicationData`]; failure data: service type and
+/// subtype). It is TM(1,4) rather than TM(1,2) because the upstream
+/// [`PusTcAcceptor`] has already accepted the TC.
 pub struct PusTestServiceActor {
     apid: u16,
     tm_recipient: Recipient<PusPacket>,
@@ -285,8 +301,8 @@ pub struct PusTestServiceActor {
 }
 
 impl PusTestServiceActor {
-    /// Erstellt den Actor für die Applikation `apid`; die TM-Pakete gehen
-    /// an `tm_recipient`. Zeitstempel im [`CucFormat::default`].
+    /// Creates the actor for the application `apid`. The TM packets go to
+    /// `tm_recipient`, with time stamps in [`CucFormat::default`].
     pub fn new(apid: u16, tm_recipient: Recipient<PusPacket>) -> Self {
         PusTestServiceActor {
             apid,
@@ -297,14 +313,14 @@ impl PusTestServiceActor {
         }
     }
 
-    /// Verwendet `format` für die Zeitstempel der Berichte.
+    /// Uses `format` for the time stamps of the reports.
     pub fn with_time_format(mut self, format: CucFormat) -> Self {
         self.time_format = format;
         self
     }
 
-    /// Verwendet `counter` als Packet Sequence Count – typischerweise den
-    /// des vorgelagerten [`PusTcAcceptor`] (siehe
+    /// Uses `counter` as packet sequence count, typically the one of the
+    /// upstream [`PusTcAcceptor`] (see
     /// [`PusTcAcceptor::sequence_counter`]).
     pub fn with_sequence_counter(mut self, counter: SequenceCounter) -> Self {
         self.sequence_counter = counter;
@@ -313,12 +329,12 @@ impl PusTestServiceActor {
 
     async fn send(&self, packet: PusPacket, name: &str) {
         if let Err(err) = self.tm_recipient.tell(packet).await {
-            warn!(apid = self.apid, error = %err, "Konnte {name} nicht senden");
+            warn!(apid = self.apid, error = %err, "could not send {name}");
         }
     }
 
-    /// Erzeugt einen Verifikationsbericht zum TC `request_id` und schickt
-    /// ihn an `tm_recipient`.
+    /// Creates a verification report for the TC `request_id` and sends it
+    /// to `tm_recipient`.
     async fn report(&mut self, request_id: RequestId, destination_id: u16, time: CucTime, kind: VerificationKind) {
         let subtype = kind.subtype();
         let mut report = VerificationReport::new(self.apid, self.sequence_counter.next(), time, request_id, kind);
@@ -327,7 +343,7 @@ impl PusTestServiceActor {
             self.message_type_counters.next(crate::pus::service1::SERVICE_TYPE, subtype, destination_id);
         match PusPacket::try_from(report) {
             Ok(packet) => self.send(packet, &format!("TM(1,{subtype})")).await,
-            Err(err) => error!(apid = self.apid, error = %err, "TM(1,{subtype}) nicht kodierbar"),
+            Err(err) => error!(apid = self.apid, error = %err, "cannot encode TM(1,{subtype})"),
         }
     }
 
@@ -399,10 +415,10 @@ impl Message<PusTc> for PusTestServiceActor {
     }
 }
 
-/// Adapter-Actor: wandelt typisierte PUS-Nachrichten `T` (z. B.
-/// [`VerificationReport`]) per `TryFrom` in ein [`PusPacket`] um und
-/// leitet es an `target` weiter – typischerweise einen
-/// [`crate::PusWriter`], der es über TCP verschickt.
+/// Adapter actor: converts typed PUS messages `T` (e.g.
+/// [`VerificationReport`]) into a [`PusPacket`] via `TryFrom` and forwards
+/// it to `target`, typically a [`PusWriter`](crate::PusWriter) that sends
+/// it over TCP.
 ///
 /// ```
 /// # use std::time::Duration;
@@ -413,7 +429,7 @@ impl Message<PusTc> for PusTestServiceActor {
 /// # };
 /// # #[tokio::main]
 /// # async fn main() {
-/// // Ziel ist typischerweise ein `PusWriter`, hier ein `TestActor`.
+/// // The target would typically be a `PusWriter`; here a `TestActor`.
 /// let target = TestActor::<PusPacket>::spawn(TestActor::new());
 /// let adapter = PusPacketAdapter::<VerificationReport>::spawn(
 ///     PusPacketAdapter::new(target.clone().recipient::<PusPacket>()),
@@ -428,14 +444,14 @@ impl Message<PusTc> for PusTestServiceActor {
 /// # }
 /// ```
 ///
-/// Nachrichten, die sich nicht umwandeln lassen, werden mit einer
-/// Fehlermeldung verworfen.
+/// Messages that cannot be converted are dropped and logged as an error.
 pub struct PusPacketAdapter<T> {
     target: Recipient<PusPacket>,
     _marker: PhantomData<fn(T)>,
 }
 
 impl<T> PusPacketAdapter<T> {
+    /// Creates an adapter that forwards to `target`.
     pub fn new(target: Recipient<PusPacket>) -> Self {
         PusPacketAdapter { target, _marker: PhantomData }
     }
@@ -465,12 +481,12 @@ where
         let packet = match PusPacket::try_from(msg) {
             Ok(packet) => packet,
             Err(err) => {
-                error!(error = %err, "Nachricht nicht als PUS-Paket darstellbar");
+                error!(error = %err, "message cannot be converted into a PUS packet");
                 return;
             }
         };
         if let Err(err) = self.target.tell(packet).await {
-            warn!(error = %err, "Konnte PUS-Paket nicht weiterleiten");
+            warn!(error = %err, "could not forward PUS packet");
         }
     }
 }

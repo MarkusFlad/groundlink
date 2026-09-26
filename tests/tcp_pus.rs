@@ -1,5 +1,5 @@
-//! Zeigt, dass die generischen TCP-Actors auch mit ECSS-PUS-C-Paketen
-//! funktionieren – hier über den Alias `PusListener`
+//! Shows that the generic TCP actors also work with ECSS PUS-C packets,
+//! here through the alias `PusListener`
 //! (`TcpListenerActor<PusPacket, PusCodec>`).
 
 use std::time::Duration;
@@ -13,7 +13,7 @@ use tokio::net::TcpStream;
 use tokio_util::codec::Framed;
 
 #[tokio::test]
-async fn pus_pakete_werden_an_downstream_actor_weitergeleitet() {
+async fn pus_packets_are_forwarded_to_downstream_actor() {
     let test_actor_ref = TestActor::<PusPacket>::spawn(TestActor::new());
     let downstream: Recipient<PusPacket> = test_actor_ref.clone().recipient::<PusPacket>();
 

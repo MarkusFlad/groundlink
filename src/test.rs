@@ -1,22 +1,36 @@
+//! A generic actor that records every message it receives, for assertions
+//! in tests.
+
 use std::time::Duration;
 
 use kameo::actor::{Actor, ActorRef};
 use kameo::error::Infallible;
 use kameo::message::{Context, Message};
 
-/// Actor, der beliebige Kameo-Nachrichten vom Typ `M` entgegennimmt, im
-/// internen Vektor speichert und per [`GetMessages`] eine Kopie dieses
-/// Vektors zurückgeben kann.
+/// Actor that accepts messages of type `M`, stores them in an internal
+/// vector and returns a copy of that vector on [`GetMessages`].
 ///
-/// Welcher Nachrichtentyp gehandhabt wird, legt der generische Parameter
-/// `M` fest, z. B. `TestActor<SimpleString>`. `TestActor<M>` implementiert
-/// `Message<M>` einmalig und generisch – es ist also kein weiterer
-/// Boilerplate-Code pro Nachrichtentyp nötig.
+/// The generic parameter selects the message type, e.g.
+/// `TestActor<SimpleString>`. `TestActor<M>` implements `Message<M>` once,
+/// generically, so no boilerplate is needed per message type.
+///
+/// ```
+/// use kameo::actor::Spawn;
+/// use kameo_tcp_example::{GetMessages, TestActor};
+///
+/// # #[tokio::main]
+/// # async fn main() {
+/// let actor = TestActor::<u32>::spawn(TestActor::new());
+/// actor.tell(42).await.unwrap();
+/// assert_eq!(actor.ask(GetMessages::new()).await.unwrap(), vec![42]);
+/// # }
+/// ```
 pub struct TestActor<M> {
     received: Vec<M>,
 }
 
 impl<M> TestActor<M> {
+    /// Creates an actor that has not received any messages yet.
     pub fn new() -> Self {
         Self {
             received: Vec::new(),
@@ -42,7 +56,7 @@ where
     }
 }
 
-/// Speichert jede eingehende Nachricht vom Typ `M` im internen Vektor.
+/// Stores every incoming message of type `M` in the internal vector.
 impl<M> Message<M> for TestActor<M>
 where
     M: Send + 'static,
@@ -54,12 +68,15 @@ where
     }
 }
 
-/// Query-Nachricht: liefert per `ask` eine Kopie aller bisher empfangenen
-/// Nachrichten. Über `PhantomData<fn() -> M>` an `M` gebunden – aus
-/// denselben Kohärenzgründen wie bei [`crate::Shutdown`].
+/// Query message: replies (via `ask`) with a copy of all messages received
+/// so far.
+///
+/// Tied to `M` through `PhantomData<fn() -> M>`, for the same coherence
+/// reasons as [`Shutdown`](crate::Shutdown).
 pub struct GetMessages<M>(std::marker::PhantomData<fn() -> M>);
 
 impl<M> GetMessages<M> {
+    /// Creates the query.
     pub fn new() -> Self {
         GetMessages(std::marker::PhantomData)
     }
@@ -90,13 +107,16 @@ impl<M> TestActor<M>
 where
     M: Clone + std::fmt::Debug + Send + 'static,
 {
-    /// Wartet, bis der `TestActor` mindestens `expected_count` Nachrichten
-    /// empfangen hat, und gibt dann eine Kopie des bisher aufgezeichneten
-    /// Vektors zurück, damit der Aufrufer weitere Prüfungen (Inhalt,
-    /// Reihenfolge, ...) darauf durchführen kann.
+    /// Waits until the actor has received at least `expected_count`
+    /// messages and returns a copy of everything recorded so far, so the
+    /// caller can check contents, order, etc.
     ///
-    /// Schlägt mit `panic!` fehl (wie ein `assert!`), wenn `timeout`
-    /// überschritten wird, bevor genügend Nachrichten eingetroffen sind.
+    /// Polls the actor every 10 ms.
+    ///
+    /// # Panics
+    ///
+    /// Panics (like an `assert!`) if `timeout` elapses before enough
+    /// messages have arrived, or if the actor is no longer running.
     pub async fn assert_received(
         actor_ref: &ActorRef<Self>,
         expected_count: usize,
@@ -109,7 +129,7 @@ where
             let received = actor_ref
                 .ask(GetMessages::<M>::new())
                 .await
-                .expect("TestActor nicht erreichbar (bereits gestoppt?)");
+                .expect("TestActor not reachable (already stopped?)");
 
             if received.len() >= expected_count {
                 return received;
@@ -117,8 +137,8 @@ where
 
             if tokio::time::Instant::now() >= deadline {
                 panic!(
-                    "TestActor: erwartete mindestens {expected_count} Nachricht(en) \
-                     innerhalb von {timeout:?}, aber nur {} empfangen: {received:?}",
+                    "TestActor: expected at least {expected_count} message(s) \
+                     within {timeout:?}, but received only {}: {received:?}",
                     received.len()
                 );
             }

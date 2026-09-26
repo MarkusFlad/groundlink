@@ -1,25 +1,82 @@
-//! Generische TCP-Actors + drei Protokolle.
+//! Generic TCP actors built on [`kameo`], plus three protocols that plug
+//! into them: a simple length-prefixed string protocol, CCSDS Space
+//! Packets and ECSS PUS-C packets.
 //!
-//! Die Bibliothek ist in thematische Module aufgeteilt:
-//! - [`actors`] enthält alle generischen TCP-Actor-Implementierungen,
-//!   Zustands- und Verbindungslogik sowie die Convenience-Typen.
-//! - [`ccsds`] enthält CCSDS-Space-Packet-Typen und den zugehörigen Codec.
-//! - [`cuc`] enthält die CCSDS-CUC-Zeit inkl. Umrechnung von/nach UTC.
-//! - [`messages`] enthält die Nachrichten der TCP-Actors und den
-//!   [`MessageCodec`]-Trait.
-//! - [`pus`] enthält ECSS-PUS-C-Pakete (TC/TM) auf Basis der CCSDS Space
-//!   Packets und den zugehörigen Codec.
-//! - [`pus_actors`] enthält Actors, die PUS-Pakete fachlich verarbeiten
-//!   (z. B. [`PusTcAcceptor`]).
-//! - [`simple_string`] enthält das einfache String-Protokoll.
-//! - [`test`](mod@test) enthält den generischen Test-Actor für Assertions in Tests.
+//! # Overview
 //!
-//! Logging erfolgt über [`tracing`]; die Anwendung entscheidet per
-//! Subscriber (z. B. `tracing_subscriber::fmt`), ob und wie die Meldungen
-//! ausgegeben werden.
+//! The TCP actors in [`actors`] are generic over a message type `M` and a
+//! codec `C` implementing [`MessageCodec<M>`]. Every protocol therefore gets
+//! the same set of actors through type aliases:
 //!
-//! Die öffentliche API bleibt kompatibel: Die wichtigsten Symbole werden hier
-//! erneut exportiert, damit bestehender Code unverändert weiterarbeitet.
+//! | Protocol | Message | Codec | Actors |
+//! |---|---|---|---|
+//! | [`simple_string`] | [`SimpleString`] | [`SimpleStringCodec`] | [`SimpleStringListener`], [`SimpleStringClient`], … |
+//! | [`ccsds`] | [`SpacePacket`] | [`SpacePacketCodec`] | [`SpacePacketListener`], [`SpacePacketClient`], … |
+//! | [`pus`] | [`PusPacket`] | [`PusCodec`] | [`PusListener`], [`PusClient`], … |
+//!
+//! On top of the PUS packets, [`pus_actors`] provides actors that handle
+//! telecommands for an application process: [`PusTcAcceptor`] performs
+//! the acceptance check and reports it via PUS service 1, and
+//! [`PusTestServiceActor`] implements PUS service 17.
+//!
+//! # Modules
+//!
+//! - [`actors`]: generic TCP listener, connection, writer and client actors
+//!   and the per-protocol type aliases.
+//! - [`ccsds`]: CCSDS Space Packet types and codec (CCSDS 133.0-B-2).
+//! - [`cuc`]: CCSDS Unsegmented Time Code with conversion from and to UTC.
+//! - [`messages`]: messages exchanged with the TCP actors and the
+//!   [`MessageCodec`] trait.
+//! - [`pus`]: ECSS PUS-C telecommand and telemetry packets on top of Space
+//!   Packets, their codec and typed service messages.
+//! - [`pus_actors`]: actors that process PUS packets.
+//! - [`simple_string`]: the simple string protocol.
+//! - [`test`](mod@test): a generic actor that records messages, for
+//!   assertions in tests.
+//!
+//! The most important items are re-exported at the crate root.
+//!
+//! # Logging
+//!
+//! The crate logs through [`tracing`]. It does not install a subscriber;
+//! the application decides whether and how messages are emitted, e.g. with
+//! `tracing_subscriber::fmt`.
+//!
+//! # Example
+//!
+//! A listener that forwards every received [`SimpleString`] to a
+//! [`TestActor`]:
+//!
+//! ```
+//! use std::time::Duration;
+//!
+//! use futures::SinkExt;
+//! use kameo::actor::Spawn;
+//! use kameo_tcp_example::{
+//!     GetLocalAddr, SimpleString, SimpleStringCodec, SimpleStringListener, TcpListenerArgs,
+//!     TestActor,
+//! };
+//! use tokio_util::codec::Framed;
+//!
+//! # #[tokio::main]
+//! # async fn main() {
+//! let received = TestActor::<SimpleString>::spawn(TestActor::new());
+//! let listener = SimpleStringListener::spawn(TcpListenerArgs {
+//!     bind_addr: "127.0.0.1:0".parse().unwrap(),
+//!     downstream: received.clone().recipient(),
+//! });
+//! let addr = listener.ask(GetLocalAddr).await.unwrap();
+//!
+//! let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+//! let mut client = Framed::new(stream, SimpleStringCodec::default());
+//! client.send(SimpleString("hello".into())).await.unwrap();
+//!
+//! let messages = TestActor::assert_received(&received, 1, Duration::from_secs(1)).await;
+//! assert_eq!(messages, vec![SimpleString("hello".into())]);
+//! # }
+//! ```
+
+#![warn(missing_docs)]
 
 pub mod actors;
 pub mod ccsds;

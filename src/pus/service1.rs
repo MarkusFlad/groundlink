@@ -1,14 +1,36 @@
-//! PUS Service 1 "Request Verification" (ECSS-E-ST-70-41C, Abschnitt 6.1).
+//! PUS service 1 "Request Verification" (ECSS-E-ST-70-41C, section 6.1).
 //!
-//! Alle Verifikationsberichte TM(1,1) bis TM(1,10) werden durch den
-//! gemeinsamen Typ [`VerificationReport`] abgebildet; welcher Bericht
-//! vorliegt, bestimmt [`VerificationKind`]. Er lässt sich in die
-//! generischen [`PusTm`]/[`PusPacket`]-Typen und zurück wandeln, sodass er
-//! mit dem [`crate::PusCodec`] und den PUS-Actors übertragen werden kann.
+//! All verification reports TM(1,1) to TM(1,10) are represented by the
+//! common type [`VerificationReport`]; [`VerificationKind`] tells which
+//! report it is. It converts to and from the generic
+//! [`PusTm`]/[`PusPacket`] types, so it can be sent with
+//! [`PusCodec`](crate::PusCodec) and the PUS actors.
 //!
-//! Missionsspezifische Feldbreiten: Step ID und Failure Code sind hier je
-//! 2 Byte (Big-Endian) lang; die Failure Data umfassen alle restlichen
-//! Byte der Source Data.
+//! Mission-specific field widths: the step ID and the failure code are 2
+//! bytes (big-endian) each; the failure data take up all remaining bytes
+//! of the source data.
+//!
+//! | Subtype | [`VerificationKind`] | Source data after the request ID |
+//! |---|---|---|
+//! | 1 / 2 | `AcceptanceSuccess` / `AcceptanceFailure` | – / failure notice |
+//! | 3 / 4 | `StartSuccess` / `StartFailure` | – / failure notice |
+//! | 5 / 6 | `ProgressSuccess` / `ProgressFailure` | step ID / step ID + failure notice |
+//! | 7 / 8 | `CompletionSuccess` / `CompletionFailure` | – / failure notice |
+//! | 10 | `RoutingFailure` | failure notice |
+//!
+//! ```
+//! use kameo_tcp_example::{
+//!     FailureCode, PusPacket, PusTc, VerificationKind, VerificationReport,
+//! };
+//!
+//! let tc = PusTc::new(0x042, 7, 17, 1, &b""[..]);
+//! let kind = VerificationKind::StartFailure(FailureCode::InvalidApplicationData.notice(vec![17, 1]));
+//! let report = VerificationReport::for_tc(0x042, 0, vec![0u8; 7], &tc, kind);
+//!
+//! let packet = PusPacket::try_from(report.clone()).unwrap();
+//! assert_eq!((packet.service_type(), packet.message_subtype()), (1, 4));
+//! assert_eq!(VerificationReport::try_from(packet).unwrap(), report);
+//! ```
 
 use bytes::{BufMut, Bytes, BytesMut};
 use std::io;
@@ -16,13 +38,13 @@ use std::io;
 use super::{PusPacket, PusTc, PusTm, PusTmSecondaryHeader};
 use crate::ccsds::{PacketType, SequenceFlags, SpacePacketHeader, APID_MAX, SEQUENCE_COUNT_MAX};
 
-/// Service Type des Request-Verification-Service.
+/// Service type of the request verification service.
 pub const SERVICE_TYPE: u8 = 1;
-/// Länge der Request ID in Byte.
+/// Length of the request ID in bytes.
 pub const REQUEST_ID_LEN: usize = 4;
-/// Länge der Step ID in Byte.
+/// Length of the step ID in bytes.
 pub const STEP_ID_LEN: usize = 2;
-/// Länge des Failure Code in Byte.
+/// Length of the failure code in bytes.
 pub const FAILURE_CODE_LEN: usize = 2;
 
 fn invalid_data(msg: String) -> io::Error {
@@ -33,24 +55,26 @@ fn invalid_input(msg: String) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, msg)
 }
 
-/// Request ID: identifiziert das Telekommando, auf das sich ein
-/// Verifikationsbericht bezieht. Entspricht den ersten 4 Byte des
-/// Primary Headers dieses Telekommandos.
+/// Request ID: identifies the telecommand a verification report refers
+/// to. It equals the first 4 bytes of that telecommand's primary header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RequestId {
-    /// Packet Version Number, 3 Bit (für CCSDS Space Packets immer 0).
+    /// Packet version number, 3 bits (always 0 for CCSDS Space Packets).
     pub packet_version: u8,
+    /// Packet type of the telecommand.
     pub packet_type: PacketType,
+    /// Secondary header flag of the telecommand.
     pub secondary_header_flag: bool,
-    /// APID, 11 Bit.
+    /// APID, 11 bits.
     pub apid: u16,
+    /// Sequence flags of the telecommand.
     pub sequence_flags: SequenceFlags,
-    /// Packet Sequence Count, 14 Bit.
+    /// Packet sequence count, 14 bits.
     pub sequence_count: u16,
 }
 
 impl RequestId {
-    /// Die Request ID zu einem Primary Header.
+    /// The request ID for a primary header.
     pub fn from_header(header: &SpacePacketHeader) -> Self {
         RequestId {
             packet_version: 0,
@@ -62,10 +86,15 @@ impl RequestId {
         }
     }
 
-    /// Kodiert die Request ID (4 Byte, Big-Endian) an `dst`.
+    /// Appends the request ID (4 bytes, big-endian) to `dst`.
+    ///
+    /// # Errors
+    ///
+    /// Fails with [`io::ErrorKind::InvalidInput`] if a field exceeds its bit
+    /// width.
     pub fn encode(&self, dst: &mut BytesMut) -> io::Result<()> {
         if self.packet_version > 0b111 || self.apid > APID_MAX || self.sequence_count > SEQUENCE_COUNT_MAX {
-            return Err(invalid_input(format!("Request ID mit Werten außerhalb der Bitbreiten: {self:?}")));
+            return Err(invalid_input(format!("request ID with values exceeding their bit widths: {self:?}")));
         }
         dst.put_u16(
             (self.packet_version as u16) << 13
@@ -77,10 +106,15 @@ impl RequestId {
         Ok(())
     }
 
-    /// Dekodiert eine 4 Byte lange Request ID.
+    /// Decodes a 4-byte request ID.
+    ///
+    /// # Errors
+    ///
+    /// Fails with [`io::ErrorKind::InvalidData`] if `src` is not exactly
+    /// [`REQUEST_ID_LEN`] bytes long.
     pub fn decode(src: &[u8]) -> io::Result<Self> {
         let bytes: [u8; REQUEST_ID_LEN] = src.try_into().map_err(|_| {
-            invalid_data(format!("Request ID hat {} Byte, erwartet werden {REQUEST_ID_LEN}", src.len()))
+            invalid_data(format!("request ID has {} bytes, expected {REQUEST_ID_LEN}", src.len()))
         })?;
         let word0 = u16::from_be_bytes([bytes[0], bytes[1]]);
         let word1 = u16::from_be_bytes([bytes[2], bytes[3]]);
@@ -101,38 +135,41 @@ impl From<&PusTc> for RequestId {
     }
 }
 
-/// Failure Notice eines Fehlerberichts: missionsspezifischer Fehlercode
-/// und zugehörige Zusatzdaten.
+/// Failure notice of a failure report: a mission-specific failure code and
+/// related data.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FailureNotice {
+    /// Failure code; see [`FailureCode`] for the codes used by this crate.
     pub code: u16,
-    /// Zusatzdaten zum Fehler (dürfen leer sein).
+    /// Additional data about the failure (may be empty).
     pub data: Bytes,
 }
 
 impl FailureNotice {
+    /// Creates a failure notice.
     pub fn new(code: u16, data: impl Into<Bytes>) -> Self {
         FailureNotice { code, data: data.into() }
     }
 }
 
-/// Failure Codes, die die Actors dieser Bibliothek verwenden. Die Werte
-/// sind missionsspezifisch; bei Bedarf hier anpassen.
+/// Failure codes used by the actors of this crate.
+///
+/// The values are mission-specific; adapt them here if needed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u16)]
 pub enum FailureCode {
-    /// Für den Service Type des TC ist kein Handler registriert.
+    /// No handler is registered for the service type of the TC.
     UnsupportedService = 1,
-    /// Der Message Subtype wird vom Service nicht unterstützt.
+    /// The service does not support the message subtype.
     UnsupportedSubtype = 2,
-    /// Die Application Data passen nicht zum Telekommando.
+    /// The application data do not match the telecommand.
     InvalidApplicationData = 3,
-    /// Das TC konnte nicht an den Service-Handler weitergeleitet werden.
+    /// The TC could not be forwarded to the service handler.
     RoutingFailed = 4,
 }
 
 impl FailureCode {
-    /// Der Failure Code zum Zahlenwert, falls bekannt.
+    /// The failure code for a numeric value, if known.
     pub fn from_code(code: u16) -> Option<Self> {
         [
             FailureCode::UnsupportedService,
@@ -144,7 +181,7 @@ impl FailureCode {
         .find(|c| *c as u16 == code)
     }
 
-    /// Failure Notice mit diesem Code und den gegebenen Zusatzdaten.
+    /// A failure notice with this code and the given data.
     pub fn notice(self, data: impl Into<Bytes>) -> FailureNotice {
         FailureNotice::new(self as u16, data)
     }
@@ -156,7 +193,7 @@ impl From<FailureCode> for u16 {
     }
 }
 
-/// Art des Verifikationsberichts inkl. der subtype-spezifischen Daten.
+/// Kind of verification report, including its subtype-specific data.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VerificationKind {
     /// TM(1,1) Successful Acceptance Verification Report.
@@ -168,9 +205,17 @@ pub enum VerificationKind {
     /// TM(1,4) Failed Start of Execution Verification Report.
     StartFailure(FailureNotice),
     /// TM(1,5) Successful Progress of Execution Verification Report.
-    ProgressSuccess { step_id: u16 },
+    ProgressSuccess {
+        /// The step that was completed.
+        step_id: u16,
+    },
     /// TM(1,6) Failed Progress of Execution Verification Report.
-    ProgressFailure { step_id: u16, failure: FailureNotice },
+    ProgressFailure {
+        /// The step that failed.
+        step_id: u16,
+        /// Why it failed.
+        failure: FailureNotice,
+    },
     /// TM(1,7) Successful Completion of Execution Verification Report.
     CompletionSuccess,
     /// TM(1,8) Failed Completion of Execution Verification Report.
@@ -180,7 +225,7 @@ pub enum VerificationKind {
 }
 
 impl VerificationKind {
-    /// Der zugehörige Message Subtype.
+    /// The message subtype of this kind.
     pub fn subtype(&self) -> u8 {
         match self {
             VerificationKind::AcceptanceSuccess => 1,
@@ -195,12 +240,12 @@ impl VerificationKind {
         }
     }
 
-    /// Ob es sich um einen Fehlerbericht handelt.
+    /// Whether this is a failure report.
     pub fn is_failure(&self) -> bool {
         self.failure().is_some()
     }
 
-    /// Die Failure Notice, falls es sich um einen Fehlerbericht handelt.
+    /// The failure notice, if this is a failure report.
     pub fn failure(&self) -> Option<&FailureNotice> {
         match self {
             VerificationKind::AcceptanceFailure(f)
@@ -212,7 +257,7 @@ impl VerificationKind {
         }
     }
 
-    /// Kodiert die Daten nach der Request ID (Step ID, Failure Notice).
+    /// Encodes the data after the request ID (step ID, failure notice).
     fn encode(&self, dst: &mut BytesMut) {
         if let VerificationKind::ProgressSuccess { step_id } | VerificationKind::ProgressFailure { step_id, .. } = self {
             dst.put_u16(*step_id);
@@ -223,11 +268,11 @@ impl VerificationKind {
         }
     }
 
-    /// Dekodiert die Daten nach der Request ID anhand des Subtypes.
+    /// Decodes the data after the request ID according to the subtype.
     fn decode(subtype: u8, mut rest: Bytes) -> io::Result<Self> {
         let too_short = |needed: usize, rest: &Bytes| {
             invalid_data(format!(
-                "TM(1,{subtype}): {} Byte nach der Request ID, mindestens {needed} erwartet",
+                "TM(1,{subtype}): {} bytes after the request ID, expected at least {needed}",
                 rest.len()
             ))
         };
@@ -244,12 +289,12 @@ impl VerificationKind {
             Ok(FailureNotice { code, data: rest })
         };
 
-        // Erfolgsberichte tragen nach Request ID bzw. Step ID keine Daten mehr.
+        // Success reports carry no data after the request ID or step ID.
         let success = |kind: VerificationKind, rest: &Bytes| {
             if rest.is_empty() {
                 Ok(kind)
             } else {
-                Err(invalid_data(format!("TM(1,{subtype}) enthält {} unerwartete zusätzliche Byte", rest.len())))
+                Err(invalid_data(format!("TM(1,{subtype}) contains {} unexpected extra bytes", rest.len())))
             }
         };
 
@@ -272,35 +317,38 @@ impl VerificationKind {
             7 => success(VerificationKind::CompletionSuccess, &rest),
             8 => Ok(VerificationKind::CompletionFailure(failure(rest)?)),
             10 => Ok(VerificationKind::RoutingFailure(failure(rest)?)),
-            _ => Err(invalid_data(format!("TM(1,{subtype}) ist kein Verifikationsbericht"))),
+            _ => Err(invalid_data(format!("TM(1,{subtype}) is not a verification report"))),
         }
     }
 }
 
-/// Ein Verifikationsbericht TM(1,x): meldet Erfolg oder Fehlschlag einer
-/// Verarbeitungsstufe des durch [`request_id`](Self::request_id)
-/// bezeichneten Telekommandos.
+/// A verification report TM(1,x): reports success or failure of one stage
+/// in processing the telecommand identified by
+/// [`request_id`](Self::request_id).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerificationReport {
-    /// Primary Header des zugrunde liegenden Space Packets.
-    /// `packet_type` und `secondary_header_flag` werden beim Kodieren
-    /// stets auf `Telemetry` bzw. `true` gesetzt.
+    /// Primary header of the underlying Space Packet. `packet_type` and
+    /// `secondary_header_flag` are always set to `Telemetry` and `true`
+    /// when encoding.
     pub header: SpacePacketHeader,
-    /// Spacecraft Time Reference Status, 4 Bit.
+    /// Spacecraft time reference status, 4 bits.
     pub time_reference_status: u8,
+    /// Message type counter of the TM secondary header.
     pub message_type_counter: u16,
-    /// Destination ID: Empfänger des Berichts, üblicherweise die Source ID
-    /// des verifizierten Telekommandos.
+    /// Destination ID: receiver of the report, usually the source ID of the
+    /// verified telecommand.
     pub destination_id: u16,
-    /// Zeitstempel, roh (z. B. eine [`crate::CucTime`]).
+    /// Time stamp as raw bytes (e.g. a [`CucTime`](crate::CucTime)).
     pub time: Bytes,
+    /// The verified telecommand.
     pub request_id: RequestId,
+    /// Which report this is, with its subtype-specific data.
     pub kind: VerificationKind,
 }
 
 impl VerificationReport {
-    /// Erstellt einen unsegmentierten Bericht mit Time Reference Status 0,
-    /// Message Type Counter 0 und Destination ID 0.
+    /// Creates an unsegmented report with time reference status 0, message
+    /// type counter 0 and destination ID 0.
     pub fn new(
         apid: u16,
         sequence_count: u16,
@@ -325,8 +373,8 @@ impl VerificationReport {
         }
     }
 
-    /// Erstellt den Bericht zu einem empfangenen Telekommando: Request ID
-    /// aus dessen Header, Destination ID = dessen Source ID.
+    /// Creates the report for a received telecommand: the request ID is
+    /// taken from its header and the destination ID is its source ID.
     pub fn for_tc(
         apid: u16,
         sequence_count: u16,
@@ -343,8 +391,7 @@ impl VerificationReport {
 impl TryFrom<VerificationReport> for PusTm {
     type Error = io::Error;
 
-    /// Schlägt fehl, wenn die Request ID Werte außerhalb ihrer Bitbreiten
-    /// enthält.
+    /// Fails if a field of the request ID exceeds its bit width.
     fn try_from(report: VerificationReport) -> io::Result<Self> {
         let mut source_data = BytesMut::new();
         report.request_id.encode(&mut source_data)?;
@@ -375,19 +422,19 @@ impl TryFrom<VerificationReport> for PusPacket {
 impl TryFrom<PusTm> for VerificationReport {
     type Error = io::Error;
 
-    /// Schlägt fehl, wenn das Paket kein Verifikationsbericht ist oder die
-    /// Source Data nicht zum Subtype passen.
+    /// Fails if the packet is not a verification report or its source data
+    /// do not match the subtype.
     fn try_from(tm: PusTm) -> io::Result<Self> {
         let sec = tm.secondary_header;
         if sec.service_type != SERVICE_TYPE {
             return Err(invalid_data(format!(
-                "TM({},{}) ist kein Verifikationsbericht (Service {SERVICE_TYPE})",
+                "TM({},{}) is not a verification report (service {SERVICE_TYPE})",
                 sec.service_type, sec.message_subtype
             )));
         }
         if tm.source_data.len() < REQUEST_ID_LEN {
             return Err(invalid_data(format!(
-                "TM(1,{}): Source Data ({} Byte) zu kurz für die Request ID",
+                "TM(1,{}): source data ({} bytes) too short for the request ID",
                 sec.message_subtype,
                 tm.source_data.len()
             )));
@@ -412,7 +459,7 @@ impl TryFrom<PusPacket> for VerificationReport {
     fn try_from(packet: PusPacket) -> io::Result<Self> {
         match packet {
             PusPacket::Tm(tm) => tm.try_into(),
-            PusPacket::Tc(_) => Err(invalid_data("Telekommando ist kein Verifikationsbericht".into())),
+            PusPacket::Tc(_) => Err(invalid_data("telecommand is not a verification report".into())),
         }
     }
 }
@@ -453,7 +500,7 @@ mod tests {
     }
 
     #[test]
-    fn request_id_entspricht_den_ersten_4_header_bytes_des_tc() {
+    fn request_id_equals_first_4_header_bytes_of_tc() {
         let tc = PusTc::new(0x0AB, 0x1234, 17, 1, Bytes::new());
         let mut tc_bytes = BytesMut::new();
         PusCodec::default().encode(tc.clone().into(), &mut tc_bytes).unwrap();
@@ -466,13 +513,13 @@ mod tests {
     }
 
     #[test]
-    fn tm_1_1_erzeugt_die_exakten_erwarteten_bytes() {
+    fn tm_1_1_produces_exact_expected_bytes() {
         let report = VerificationReport::new(0x010, 5, time(), RequestId::from(&tc()), VerificationKind::AcceptanceSuccess);
 
         let mut buf = BytesMut::new();
         PusCodec::default().encode(report.try_into().unwrap(), &mut buf).unwrap();
 
-        // Data Length = 7 (Sec. Header) + 7 (CUC) + 4 (Request ID) + 2 (CRC) - 1 = 19
+        // Data length = 7 (sec. header) + 7 (CUC) + 4 (request ID) + 2 (CRC) - 1 = 19
         assert_eq!(&buf[..6], &[0x08, 0x10, 0xC0, 0x05, 0x00, 19]);
         assert_eq!(&buf[6..13], &[0x20, 1, 1, 0, 0, 0, 0]);
         assert_eq!(&buf[20..24], &[0x18, 0xAB, 0xC0, 0x01]);
@@ -480,7 +527,7 @@ mod tests {
     }
 
     #[test]
-    fn source_data_layout_je_subtype() {
+    fn source_data_layout_per_subtype() {
         let id = [0x18, 0xAB, 0xC0, 0x01];
         assert_eq!(&source_data(VerificationKind::CompletionSuccess)[..], &id);
         assert_eq!(&source_data(VerificationKind::ProgressSuccess { step_id: 0x0102 })[..], &[&id[..], &[1, 2]].concat()[..]);
@@ -495,7 +542,7 @@ mod tests {
     }
 
     #[test]
-    fn roundtrip_aller_berichte_ueber_pus_codec() {
+    fn roundtrip_of_all_reports_through_pus_codec() {
         let mut tc = tc();
         tc.secondary_header.source_id = 0x0815;
         let mut codec = PusCodec::default();
@@ -517,18 +564,18 @@ mod tests {
     }
 
     #[test]
-    fn lehnt_ungueltige_pakete_ab() {
+    fn rejects_invalid_packets() {
         let id = [0x18, 0xAB, 0xC0, 0x01];
         let tm = |service, subtype, data: &[u8]| PusTm::new(1, 1, service, subtype, time(), data.to_vec());
 
         for (service, subtype, data) in [
-            (17, 1, &id[..]),              // falscher Service
-            (1, 9, &id[..]),               // TM(1,9) gibt es nicht
-            (1, 1, &id[..3]),              // Request ID zu kurz
-            (1, 1, &[&id[..], &[0]].concat()[..]), // zusätzliche Byte
-            (1, 2, &id[..]),               // Failure Code fehlt
-            (1, 5, &[&id[..], &[0]].concat()[..]), // Step ID zu kurz
-            (1, 6, &[&id[..], &[0, 1]].concat()[..]), // Failure Code fehlt
+            (17, 1, &id[..]),              // wrong service
+            (1, 9, &id[..]),               // TM(1,9) does not exist
+            (1, 1, &id[..3]),              // request ID too short
+            (1, 1, &[&id[..], &[0]].concat()[..]), // extra bytes
+            (1, 2, &id[..]),               // failure code missing
+            (1, 5, &[&id[..], &[0]].concat()[..]), // step ID too short
+            (1, 6, &[&id[..], &[0, 1]].concat()[..]), // failure code missing
         ] {
             assert!(VerificationReport::try_from(tm(service, subtype, data)).is_err(), "TM({service},{subtype}) {data:?}");
         }
@@ -536,7 +583,7 @@ mod tests {
     }
 
     #[test]
-    fn lehnt_ungueltige_request_id_ab() {
+    fn rejects_invalid_request_id() {
         let mut request_id = RequestId::from(&tc());
         request_id.apid = APID_MAX + 1;
         let report = VerificationReport::new(1, 1, time(), request_id, VerificationKind::AcceptanceSuccess);
@@ -558,7 +605,7 @@ mod tests {
     }
 
     #[test]
-    fn failure_hilfsmethoden() {
+    fn failure_helpers() {
         for kind in all_kinds() {
             assert_eq!(kind.is_failure(), kind.subtype() % 2 == 0, "{kind:?}");
         }

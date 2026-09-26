@@ -1,9 +1,20 @@
-//! PUS Service 17 "Test" (ECSS-E-ST-70-41C, Abschnitt 6.17).
+//! PUS service 17 "Test" (ECSS-E-ST-70-41C, section 6.17).
 //!
-//! Enthält typisierte Nachrichten, die sich verlustfrei in die
-//! generischen [`PusTc`]/[`PusPacket`]-Typen und zurück wandeln lassen,
-//! sodass sie mit dem [`crate::PusCodec`] und den PUS-Actors übertragen
-//! werden können.
+//! Contains typed messages that convert losslessly to and from the generic
+//! [`PusTc`]/[`PusTm`]/[`PusPacket`] types, so they can be sent with
+//! [`PusCodec`](crate::PusCodec) and the PUS actors.
+//!
+//! ```
+//! use kameo_tcp_example::{AreYouAliveReport, AreYouAliveRequest, PusPacket};
+//!
+//! let request = AreYouAliveRequest::new(0x042, 1);
+//! let packet = PusPacket::from(request.clone());
+//! assert_eq!(AreYouAliveRequest::try_from(packet).unwrap(), request);
+//!
+//! let report = AreYouAliveReport::for_request(0x042, 0, vec![0u8; 7], &request);
+//! let packet = PusPacket::from(report);
+//! assert_eq!((packet.service_type(), packet.message_subtype()), (17, 2));
+//! ```
 
 use bytes::Bytes;
 use std::io;
@@ -11,30 +22,30 @@ use std::io;
 use super::{AckFlags, PusPacket, PusTc, PusTcSecondaryHeader, PusTm, PusTmSecondaryHeader};
 use crate::ccsds::{PacketType, SequenceFlags, SpacePacketHeader};
 
-/// Service Type des Test-Service.
+/// Service type of the test service.
 pub const SERVICE_TYPE: u8 = 17;
-/// Message Subtype von TC(17,1) "Are-You-Alive Connection Test".
+/// Message subtype of TC(17,1) "Perform an Are-You-Alive Connection Test".
 pub const ARE_YOU_ALIVE_REQUEST_SUBTYPE: u8 = 1;
-/// Message Subtype von TM(17,2) "Are-You-Alive Connection Report".
+/// Message subtype of TM(17,2) "Are-You-Alive Connection Report".
 pub const ARE_YOU_ALIVE_REPORT_SUBTYPE: u8 = 2;
 
-/// TC(17,1) "Perform an Are-You-Alive Connection Test": fordert den
-/// Empfänger auf, mit TM(17,2) zu antworten. Das Telekommando trägt keine
-/// Application Data.
+/// TC(17,1) "Perform an Are-You-Alive Connection Test": asks the receiver
+/// to answer with TM(17,2). The telecommand carries no application data.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AreYouAliveRequest {
-    /// Primary Header des zugrunde liegenden Space Packets.
-    /// `packet_type` und `secondary_header_flag` werden beim Kodieren
-    /// stets auf `Telecommand` bzw. `true` gesetzt.
+    /// Primary header of the underlying Space Packet. `packet_type` and
+    /// `secondary_header_flag` are always set to `Telecommand` and `true`
+    /// when encoding.
     pub header: SpacePacketHeader,
+    /// Which successful verification reports are requested.
     pub ack_flags: AckFlags,
-    /// Source ID: Kennung der sendenden Applikation.
+    /// Source ID: identifies the sending application.
     pub source_id: u16,
 }
 
 impl AreYouAliveRequest {
-    /// Erstellt ein unsegmentiertes TC(17,1) mit allen Acknowledgement
-    /// Flags gesetzt und Source ID 0.
+    /// Creates an unsegmented TC(17,1) with all acknowledgement flags set
+    /// and source ID 0.
     pub fn new(apid: u16, sequence_count: u16) -> Self {
         AreYouAliveRequest {
             header: SpacePacketHeader {
@@ -74,15 +85,15 @@ impl From<AreYouAliveRequest> for PusPacket {
 impl TryFrom<PusTc> for AreYouAliveRequest {
     type Error = io::Error;
 
-    /// Schlägt fehl, wenn das Telekommando nicht TC(17,1) ist oder
-    /// Application Data enthält.
+    /// Fails if the telecommand is not TC(17,1) or carries application
+    /// data.
     fn try_from(tc: PusTc) -> io::Result<Self> {
         let sec = &tc.secondary_header;
         if (sec.service_type, sec.message_subtype) != (SERVICE_TYPE, ARE_YOU_ALIVE_REQUEST_SUBTYPE) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!(
-                    "TC({},{}) ist kein Are-You-Alive-Request TC({SERVICE_TYPE},{ARE_YOU_ALIVE_REQUEST_SUBTYPE})",
+                    "TC({},{}) is not an are-you-alive request TC({SERVICE_TYPE},{ARE_YOU_ALIVE_REQUEST_SUBTYPE})",
                     sec.service_type, sec.message_subtype
                 ),
             ));
@@ -90,7 +101,7 @@ impl TryFrom<PusTc> for AreYouAliveRequest {
         if !tc.app_data.is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("TC(17,1) darf keine Application Data enthalten ({} Byte empfangen)", tc.app_data.len()),
+                format!("TC(17,1) must not contain application data (received {} bytes)", tc.app_data.len()),
             ));
         }
         Ok(AreYouAliveRequest { header: tc.header, ack_flags: sec.ack_flags, source_id: sec.source_id })
@@ -105,33 +116,34 @@ impl TryFrom<PusPacket> for AreYouAliveRequest {
             PusPacket::Tc(tc) => tc.try_into(),
             PusPacket::Tm(_) => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "Telemetriepaket ist kein Are-You-Alive-Request",
+                "telemetry packet is not an are-you-alive request",
             )),
         }
     }
 }
 
-/// TM(17,2) "Are-You-Alive Connection Report": Antwort auf TC(17,1).
-/// Der Bericht trägt keine Source Data.
+/// TM(17,2) "Are-You-Alive Connection Report": the answer to TC(17,1).
+/// The report carries no source data.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AreYouAliveReport {
-    /// Primary Header des zugrunde liegenden Space Packets.
-    /// `packet_type` und `secondary_header_flag` werden beim Kodieren
-    /// stets auf `Telemetry` bzw. `true` gesetzt.
+    /// Primary header of the underlying Space Packet. `packet_type` and
+    /// `secondary_header_flag` are always set to `Telemetry` and `true`
+    /// when encoding.
     pub header: SpacePacketHeader,
-    /// Spacecraft Time Reference Status, 4 Bit.
+    /// Spacecraft time reference status, 4 bits.
     pub time_reference_status: u8,
+    /// Message type counter of the TM secondary header.
     pub message_type_counter: u16,
-    /// Destination ID: Empfänger des Berichts, üblicherweise die Source ID
-    /// des TC(17,1).
+    /// Destination ID: receiver of the report, usually the source ID of the
+    /// TC(17,1).
     pub destination_id: u16,
-    /// Zeitstempel, roh (z. B. eine [`crate::CucTime`]).
+    /// Time stamp as raw bytes (e.g. a [`CucTime`](crate::CucTime)).
     pub time: Bytes,
 }
 
 impl AreYouAliveReport {
-    /// Erstellt einen unsegmentierten Bericht mit Time Reference Status 0,
-    /// Message Type Counter 0 und Destination ID 0.
+    /// Creates an unsegmented report with time reference status 0, message
+    /// type counter 0 and destination ID 0.
     pub fn new(apid: u16, sequence_count: u16, time: impl Into<Bytes>) -> Self {
         AreYouAliveReport {
             header: SpacePacketHeader {
@@ -148,8 +160,8 @@ impl AreYouAliveReport {
         }
     }
 
-    /// Erstellt die Antwort auf ein TC(17,1): Destination ID = dessen
-    /// Source ID.
+    /// Creates the answer to a TC(17,1): the destination ID is the
+    /// request's source ID.
     pub fn for_request(
         apid: u16,
         sequence_count: u16,
@@ -188,15 +200,14 @@ impl From<AreYouAliveReport> for PusPacket {
 impl TryFrom<PusTm> for AreYouAliveReport {
     type Error = io::Error;
 
-    /// Schlägt fehl, wenn das Paket nicht TM(17,2) ist oder Source Data
-    /// enthält.
+    /// Fails if the packet is not TM(17,2) or carries source data.
     fn try_from(tm: PusTm) -> io::Result<Self> {
         let sec = tm.secondary_header;
         if (sec.service_type, sec.message_subtype) != (SERVICE_TYPE, ARE_YOU_ALIVE_REPORT_SUBTYPE) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!(
-                    "TM({},{}) ist kein Are-You-Alive-Report TM({SERVICE_TYPE},{ARE_YOU_ALIVE_REPORT_SUBTYPE})",
+                    "TM({},{}) is not an are-you-alive report TM({SERVICE_TYPE},{ARE_YOU_ALIVE_REPORT_SUBTYPE})",
                     sec.service_type, sec.message_subtype
                 ),
             ));
@@ -204,7 +215,7 @@ impl TryFrom<PusTm> for AreYouAliveReport {
         if !tm.source_data.is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("TM(17,2) darf keine Source Data enthalten ({} Byte empfangen)", tm.source_data.len()),
+                format!("TM(17,2) must not contain source data (received {} bytes)", tm.source_data.len()),
             ));
         }
         Ok(AreYouAliveReport {
@@ -225,7 +236,7 @@ impl TryFrom<PusPacket> for AreYouAliveReport {
             PusPacket::Tm(tm) => tm.try_into(),
             PusPacket::Tc(_) => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "Telekommando ist kein Are-You-Alive-Report",
+                "telecommand is not an are-you-alive report",
             )),
         }
     }
@@ -240,21 +251,21 @@ mod tests {
     use tokio_util::codec::{Decoder, Encoder};
 
     #[test]
-    fn encode_erzeugt_die_exakten_erwarteten_bytes() {
+    fn encode_produces_exact_expected_bytes() {
         let mut request = AreYouAliveRequest::new(0x0AB, 1);
         request.source_id = 0x1234;
 
         let mut buf = BytesMut::new();
         PusCodec::default().encode(request.into(), &mut buf).unwrap();
 
-        // Data Length = 5 (Sec. Header) + 0 (Daten) + 2 (CRC) - 1 = 6
+        // Data length = 5 (sec. header) + 0 (data) + 2 (CRC) - 1 = 6
         assert_eq!(&buf[..6], &[0x18, 0xAB, 0xC0, 0x01, 0x00, 0x06]);
         assert_eq!(&buf[6..11], &[0x2F, 17, 1, 0x12, 0x34]);
-        assert_eq!(buf.len(), 13, "nur noch die CRC folgt");
+        assert_eq!(buf.len(), 13, "only the CRC follows");
     }
 
     #[test]
-    fn roundtrip_ueber_pus_codec() {
+    fn roundtrip_through_pus_codec() {
         let mut original = AreYouAliveRequest::new(42, 7);
         original.ack_flags = AckFlags { acceptance: true, ..AckFlags::NONE };
         original.source_id = 5;
@@ -262,25 +273,25 @@ mod tests {
         let mut codec = PusCodec::default();
         let mut buf = BytesMut::new();
         codec.encode(original.clone().into(), &mut buf).unwrap();
-        let decoded = codec.decode(&mut buf).unwrap().expect("vollständig");
+        let decoded = codec.decode(&mut buf).unwrap().expect("complete");
 
         assert_eq!(AreYouAliveRequest::try_from(decoded).unwrap(), original);
     }
 
     #[test]
-    fn lehnt_anderen_service_ab() {
+    fn rejects_other_service() {
         let tc = PusTc::new(1, 1, 17, 3, Bytes::new());
         assert!(AreYouAliveRequest::try_from(tc).is_err());
     }
 
     #[test]
-    fn lehnt_application_data_ab() {
+    fn rejects_application_data() {
         let tc = PusTc::new(1, 1, 17, 1, &b"x"[..]);
         assert!(AreYouAliveRequest::try_from(tc).is_err());
     }
 
     #[test]
-    fn lehnt_telemetrie_ab() {
+    fn rejects_telemetry() {
         let tm = PusTm::new(1, 1, 17, 1, vec![0u8; 7], Bytes::new());
         assert!(AreYouAliveRequest::try_from(PusPacket::Tm(tm)).is_err());
     }
@@ -290,7 +301,7 @@ mod tests {
     }
 
     #[test]
-    fn report_encode_erzeugt_die_exakten_erwarteten_bytes() {
+    fn report_encode_produces_exact_expected_bytes() {
         let mut report = AreYouAliveReport::new(0x0AB, 2, time());
         report.message_type_counter = 0x0102;
         report.destination_id = 0x1234;
@@ -298,14 +309,14 @@ mod tests {
         let mut buf = BytesMut::new();
         PusCodec::default().encode(report.into(), &mut buf).unwrap();
 
-        // Data Length = 7 (Sec. Header) + 7 (CUC) + 0 (Daten) + 2 (CRC) - 1 = 15
+        // Data length = 7 (sec. header) + 7 (CUC) + 0 (data) + 2 (CRC) - 1 = 15
         assert_eq!(&buf[..6], &[0x08, 0xAB, 0xC0, 0x02, 0x00, 15]);
         assert_eq!(&buf[6..13], &[0x20, 17, 2, 0x01, 0x02, 0x12, 0x34]);
-        assert_eq!(buf.len(), 22, "nur noch Zeitstempel und CRC folgen");
+        assert_eq!(buf.len(), 22, "only time stamp and CRC follow");
     }
 
     #[test]
-    fn report_roundtrip_ueber_pus_codec() {
+    fn report_roundtrip_through_pus_codec() {
         let mut request = AreYouAliveRequest::new(1, 1);
         request.source_id = 0x0815;
         let mut original = AreYouAliveReport::for_request(42, 7, time(), &request);
@@ -322,7 +333,7 @@ mod tests {
     }
 
     #[test]
-    fn report_lehnt_ungueltige_pakete_ab() {
+    fn report_rejects_invalid_packets() {
         let tm = |subtype, data: &[u8]| PusTm::new(1, 1, 17, subtype, time(), data.to_vec());
         assert!(AreYouAliveReport::try_from(tm(1, &[])).is_err());
         assert!(AreYouAliveReport::try_from(tm(2, &[0])).is_err());

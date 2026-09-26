@@ -1,3 +1,22 @@
+//! Generic TCP actors, parameterised by a message type `M` and a codec `C`
+//! implementing [`MessageCodec<M>`].
+//!
+//! - [`TcpListenerActor`] accepts incoming connections.
+//! - [`TcpClientActor`] opens outgoing connections.
+//! - Each connection is served by a [`TcpConnectionActor`] (read half,
+//!   forwards decoded messages to a `downstream` recipient) and a
+//!   [`TcpWriterActor`] (write half, encodes and sends every `M` it
+//!   receives).
+//! - [`RelayAdapter`] wraps messages into [`Relay`] for a
+//!   [`TcpClientActor`].
+//!
+//! The protocols of this crate get type aliases, e.g. [`PusListener`] for
+//! `TcpListenerActor<PusPacket, PusCodec>`.
+//!
+//! Closing is tracked per connection half: the reader and the writer report
+//! [`ConnectionHalfClosed`] to their listener or client. When the read half
+//! ends, the reader also asks the writer to shut down.
+
 use std::io;
 use std::marker::PhantomData;
 use std::net::SocketAddr;
@@ -22,17 +41,24 @@ use crate::messages::{
 };
 use crate::simple_string::{SimpleString, SimpleStringCodec};
 
-/// Argumente zum Starten des `TcpListenerActor<M, C>`.
+/// Arguments for spawning a [`TcpListenerActor<M, C>`].
 pub struct TcpListenerArgs<M: Send + 'static> {
+    /// Address to bind to. Use port 0 to let the operating system choose a
+    /// port and query it with [`GetLocalAddr`].
     pub bind_addr: SocketAddr,
-    /// Ziel-Actor, an den alle empfangenen Nachrichten weitergeleitet werden.
+    /// Actor that receives every message read from any connection.
     pub downstream: Recipient<M>,
 }
 
-/// Actor, der einen TCP-Port bindet und für jede eingehende Verbindung
-/// einen `TcpConnectionActor<M, C>` (Lesen) und einen `TcpWriterActor<M, C>`
-/// (Schreiben) erzeugt. `M` ist der Nachrichtentyp, `C` der zugehörige
-/// [`MessageCodec<M>`].
+/// Actor that binds a TCP port and spawns a [`TcpConnectionActor<M, C>`]
+/// (reading) and a [`TcpWriterActor<M, C>`] (writing) for each incoming
+/// connection. `M` is the message type, `C` its [`MessageCodec<M>`].
+///
+/// Connections are served one at a time: the next connection is accepted
+/// only after both halves of the current one have been closed.
+///
+/// Spawning fails with the I/O error of binding the address. Handles
+/// [`GetLocalAddr`] and [`ConnectionHalfClosed`].
 pub struct TcpListenerActor<M, C>
 where
     M: Send + 'static,
@@ -56,7 +82,7 @@ where
         let listener = TcpListener::bind(args.bind_addr).await?;
         let local_addr = listener.local_addr()?;
         info!(
-            "TcpListenerActor<{}>: lausche auf {local_addr}",
+            "TcpListenerActor<{}>: listening on {local_addr}",
             std::any::type_name::<M>()
         );
 
@@ -108,7 +134,7 @@ where
         _ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
         info!(
-            "TCP-Zustand: {} Hälfte {:?} geschlossen ({:?})",
+            "TCP state: {} half {:?} closed ({:?})",
             msg.peer_addr, msg.half, msg.reason
         );
 
@@ -131,6 +157,8 @@ where
     }
 }
 
+/// Accepts connections and spawns reader and writer actors for each, one
+/// connection at a time (waits on `resume_rx` until it has been closed).
 async fn accept_loop<M, C>(
     listener: TcpListener,
     downstream: Recipient<M>,
@@ -143,7 +171,7 @@ async fn accept_loop<M, C>(
     loop {
         match listener.accept().await {
             Ok((stream, peer_addr)) => {
-                info!("Neue Verbindung von {peer_addr}");
+                info!("new connection from {peer_addr}");
 
                 let (read_half, write_half) = stream.into_split();
 
@@ -165,24 +193,36 @@ async fn accept_loop<M, C>(
                 resume_rx.recv().await;
             }
             Err(err) => {
-                error!("Fehler bei accept(): {err}");
+                error!("accept() failed: {err}");
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
         }
     }
 }
 
-/// Argumente zum Starten eines `TcpConnectionActor<M, C>`.
+/// Arguments for spawning a [`TcpConnectionActor<M, C>`].
 pub struct TcpConnectionArgs<M: Send + 'static> {
+    /// Read half of the connection.
     pub read_half: OwnedReadHalf,
+    /// Address of the remote peer.
     pub peer_addr: SocketAddr,
+    /// Actor that receives every decoded message.
     pub downstream: Recipient<M>,
+    /// Receives [`ConnectionHalfClosed`] when the read half ends.
     pub listener: Recipient<ConnectionHalfClosed>,
+    /// Writer of the same connection; asked to shut down when the read half
+    /// ends.
     pub writer_shutdown: Recipient<Shutdown<M>>,
 }
 
-/// Actor, der die Lese-Hälfte (`OwnedReadHalf`) einer TCP-Verbindung hält
-/// und über den Codec `C` Nachrichten vom Typ `M` liest.
+/// Actor that owns the read half ([`OwnedReadHalf`]) of a TCP connection and
+/// reads messages of type `M` with the codec `C`.
+///
+/// Every decoded message is forwarded to `downstream`. When the peer closes
+/// the connection or a read or decode error occurs, the actor reports
+/// [`ConnectionHalfClosed`] with [`ConnectionHalf::Read`] to its listener,
+/// sends [`Shutdown<M>`] to the writer and stops. [`Shutdown<M>`] sent to
+/// this actor closes the read half on request.
 pub struct TcpConnectionActor<M, C>
 where
     M: Send + 'static,
@@ -195,6 +235,7 @@ where
     _codec: PhantomData<fn() -> C>,
 }
 
+/// Item of the read stream attached to a [`TcpConnectionActor`].
 enum ReadOutcome<M> {
     Item(M),
     Closed(CloseReason),
@@ -248,15 +289,15 @@ where
     ) -> Self::Reply {
         match msg {
             StreamMessage::Started(()) => {
-                debug!("Stream für {} angehängt", self.peer_addr);
+                debug!("stream attached for {}", self.peer_addr);
             }
             StreamMessage::Next(ReadOutcome::Item(item)) => {
                 if let Err(err) = self.downstream.tell(item).await {
-                    warn!("Konnte Nachricht nicht an Downstream-Actor senden: {err}");
+                    warn!("could not send message to downstream actor: {err}");
                 }
             }
             StreamMessage::Next(ReadOutcome::Closed(reason)) => {
-                info!("Read-Half von {} geschlossen: {reason:?}", self.peer_addr);
+                info!("read half of {} closed: {reason:?}", self.peer_addr);
                 if let Err(err) = self
                     .listener
                     .tell(ConnectionHalfClosed {
@@ -266,11 +307,11 @@ where
                     })
                     .await
                 {
-                    warn!("Konnte Read-Half-Closed nicht an Listener senden: {err}");
+                    warn!("could not send read-half-closed to listener: {err}");
                 }
 
                 if let Err(err) = self.writer_shutdown.tell(Shutdown::new()).await {
-                    warn!("Konnte Shutdown nicht an Writer-Actor senden: {err}");
+                    warn!("could not send shutdown to writer actor: {err}");
                 }
 
                 ctx.stop();
@@ -294,7 +335,7 @@ where
         _msg: Shutdown<M>,
         ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        info!("Read-Half für {} wird auf Anforderung geschlossen", self.peer_addr);
+        info!("closing read half of {} on request", self.peer_addr);
 
         if let Err(err) = self
             .listener
@@ -305,22 +346,31 @@ where
             })
             .await
         {
-            warn!("Konnte Read-Half-Closed nicht an Listener senden: {err}");
+            warn!("could not send read-half-closed to listener: {err}");
         }
 
         ctx.stop();
     }
 }
 
-/// Argumente zum Starten eines `TcpWriterActor<M, C>`.
+/// Arguments for spawning a [`TcpWriterActor<M, C>`].
 pub struct TcpWriterArgs {
+    /// Write half of the connection.
     pub write_half: OwnedWriteHalf,
+    /// Address of the remote peer.
     pub peer_addr: SocketAddr,
+    /// Receives [`ConnectionHalfClosed`] when the write half is closed.
     pub listener: Recipient<ConnectionHalfClosed>,
 }
 
-/// Actor, der die Schreib-Hälfte (`OwnedWriteHalf`) einer TCP-Verbindung
-/// hält und über den Codec `C` Nachrichten vom Typ `M` schreibt.
+/// Actor that owns the write half ([`OwnedWriteHalf`]) of a TCP connection
+/// and writes messages of type `M` with the codec `C`.
+///
+/// Every `M` sent to this actor is encoded and written. If writing fails,
+/// the actor reports [`ConnectionHalfClosed`] with
+/// [`CloseReason::Error`] and stops. [`Shutdown<M>`] shuts the write half
+/// down in an orderly way, reports it as [`CloseReason::Graceful`] and
+/// stops the actor.
 pub struct TcpWriterActor<M, C> {
     framed: FramedWrite<OwnedWriteHalf, C>,
     peer_addr: SocketAddr,
@@ -360,7 +410,7 @@ where
     ) -> Self::Reply {
         if let Err(err) = self.framed.get_mut().shutdown().await {
             warn!(
-                "Fehler beim geordneten Schließen der write half an {}: {err}",
+                "error while shutting down the write half to {}: {err}",
                 self.peer_addr
             );
         }
@@ -374,7 +424,7 @@ where
             })
             .await
         {
-            warn!("Konnte Write-Half-Closed nicht an Listener senden: {send_err}");
+            warn!("could not send write-half-closed to listener: {send_err}");
         }
 
         ctx.stop();
@@ -390,7 +440,7 @@ where
 
     async fn handle(&mut self, item: M, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         if let Err(err) = self.framed.send(item).await {
-            warn!("Fehler beim Schreiben an {}: {err}", self.peer_addr);
+            warn!("error while writing to {}: {err}", self.peer_addr);
 
             if let Err(send_err) = self
                 .listener
@@ -401,7 +451,7 @@ where
                 })
                 .await
             {
-                warn!("Konnte Write-Half-Closed nicht an Listener senden: {send_err}");
+                warn!("could not send write-half-closed to listener: {send_err}");
             }
 
             ctx.stop();
@@ -409,17 +459,30 @@ where
     }
 }
 
-/// Argumente zum Starten eines `TcpClientActor<M, C>`.
+/// Arguments for spawning a [`TcpClientActor<M, C>`].
 pub struct TcpClientArgs<M: Send + 'static> {
+    /// Address to connect to on [`Connect`].
     pub remote_addr: SocketAddr,
+    /// Actor that receives every message read from the connection.
     pub downstream: Recipient<M>,
+    /// Optional observer that is notified of every [`ConnectionHalfClosed`].
     pub on_half_closed: Option<Recipient<ConnectionHalfClosed>>,
 }
 
-/// Baut bei [`Connect`] eine ausgehende TCP-Verbindung zu `remote_addr`
-/// auf und spawnt dafür – genau wie `TcpListenerActor` nach einem
-/// `accept()` – einen [`TcpConnectionActor<M, C>`] (liest) und
-/// [`TcpWriterActor<M, C>`] (schreibt).
+/// Actor that opens an outgoing TCP connection to `remote_addr` on
+/// [`Connect`] and, just like [`TcpListenerActor`] after an `accept()`,
+/// spawns a [`TcpConnectionActor<M, C>`] (reading) and a
+/// [`TcpWriterActor<M, C>`] (writing) for it.
+///
+/// Messages:
+/// - [`Connect`]: connects; replies with the peer address, or an error of
+///   kind [`io::ErrorKind::AlreadyExists`] if already connected.
+/// - [`Relay<M>`]: sends a message over the connection (dropped with a
+///   warning if not connected).
+/// - [`Close`], [`CloseRead`], [`CloseWrite`]: close both or one half.
+/// - [`PeerHalfClosed`]: mirrors a half-close of a coupled connection.
+/// - [`ConnectionHalfClosed`]: sent by the reader and writer; once both
+///   halves are closed, the actor can connect again.
 pub struct TcpClientActor<M, C>
 where
     M: Send + 'static,
@@ -431,6 +494,8 @@ where
     connection: Option<ClientConnection<M, C>>,
 }
 
+/// The reader and writer of the current connection and which halves are
+/// closed.
 struct ClientConnection<M, C>
 where
     M: Send + 'static,
@@ -476,7 +541,7 @@ where
         if self.connection.is_some() {
             return Err(io::Error::new(
                 io::ErrorKind::AlreadyExists,
-                "TcpClientActor ist bereits verbunden",
+                "TcpClientActor is already connected",
             ));
         }
 
@@ -485,7 +550,7 @@ where
         let (read_half, write_half) = stream.into_split();
 
         info!(
-            "TcpClientActor<{}>: verbunden mit {peer_addr}",
+            "TcpClientActor<{}>: connected to {peer_addr}",
             std::any::type_name::<M>()
         );
 
@@ -527,15 +592,15 @@ where
 
     async fn handle(&mut self, _msg: Close, _ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let Some(conn) = &self.connection else {
-            debug!("TcpClientActor: Close ignoriert, da aktuell keine Verbindung besteht");
+            debug!("TcpClientActor: Close ignored, not connected");
             return;
         };
 
         if let Err(err) = conn.reader_ref.tell(Shutdown::<M>::new()).await {
-            warn!("TcpClientActor: Konnte Shutdown nicht an Reader senden: {err}");
+            warn!("TcpClientActor: could not send shutdown to reader: {err}");
         }
         if let Err(err) = conn.writer_ref.tell(Shutdown::<M>::new()).await {
-            warn!("TcpClientActor: Konnte Shutdown nicht an Writer senden: {err}");
+            warn!("TcpClientActor: could not send shutdown to writer: {err}");
         }
     }
 }
@@ -550,7 +615,7 @@ where
     async fn handle(&mut self, _msg: CloseRead, _ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         if let Some(conn) = &self.connection {
             if let Err(err) = conn.reader_ref.tell(Shutdown::<M>::new()).await {
-                warn!("TcpClientActor: Konnte Shutdown nicht an Reader senden: {err}");
+                warn!("TcpClientActor: could not send shutdown to reader: {err}");
             }
         }
     }
@@ -566,7 +631,7 @@ where
     async fn handle(&mut self, _msg: CloseWrite, _ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         if let Some(conn) = &self.connection {
             if let Err(err) = conn.writer_ref.tell(Shutdown::<M>::new()).await {
-                warn!("TcpClientActor: Konnte Shutdown nicht an Writer senden: {err}");
+                warn!("TcpClientActor: could not send shutdown to writer: {err}");
             }
         }
     }
@@ -585,7 +650,7 @@ where
         _ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
         info!(
-            "TcpClientActor: Hälfte {:?} der Verbindung zu {} geschlossen ({:?})",
+            "TcpClientActor: half {:?} of the connection to {} closed ({:?})",
             msg.half, msg.peer_addr, msg.reason
         );
 
@@ -595,14 +660,14 @@ where
                 ConnectionHalf::Write => conn.write_closed = true,
             }
             if conn.read_closed && conn.write_closed {
-                info!("TcpClientActor: Verbindung zu {} vollständig geschlossen", conn.peer_addr);
+                info!("TcpClientActor: connection to {} fully closed", conn.peer_addr);
                 self.connection = None;
             }
         }
 
         if let Some(observer) = &self.on_half_closed {
             if let Err(err) = observer.tell(msg).await {
-                warn!("TcpClientActor: Konnte ConnectionHalfClosed nicht weiterleiten: {err}");
+                warn!("TcpClientActor: could not forward ConnectionHalfClosed: {err}");
             }
         }
     }
@@ -628,14 +693,14 @@ where
             ConnectionHalf::Read => {
                 if let Err(err) = conn.writer_ref.tell(Shutdown::<M>::new()).await {
                     warn!(
-                        "TcpClientActor: Konnte Shutdown (via PeerHalfClosed) nicht an Writer senden: {err}"
+                        "TcpClientActor: could not send shutdown (via PeerHalfClosed) to writer: {err}"
                     );
                 }
             }
             ConnectionHalf::Write => {
                 if let Err(err) = conn.reader_ref.tell(Shutdown::<M>::new()).await {
                     warn!(
-                        "TcpClientActor: Konnte Shutdown (via PeerHalfClosed) nicht an Reader senden: {err}"
+                        "TcpClientActor: could not send shutdown (via PeerHalfClosed) to reader: {err}"
                     );
                 }
             }
@@ -658,23 +723,28 @@ where
         match &self.connection {
             Some(conn) => {
                 if let Err(err) = conn.writer_ref.tell(item).await {
-                    warn!("TcpClientActor: Konnte Nachricht nicht an Writer senden: {err}");
+                    warn!("TcpClientActor: could not send message to writer: {err}");
                 }
             }
             None => {
-                warn!("TcpClientActor: Nachricht verworfen, da (noch) nicht verbunden");
+                warn!("TcpClientActor: message dropped, not connected (yet)");
             }
         }
     }
 }
 
-/// Argumente zum Starten eines `RelayAdapter<M>`.
+/// Arguments for spawning a [`RelayAdapter<M>`].
 pub struct RelayAdapterArgs<M: Send + 'static> {
+    /// Actor that receives the wrapped messages, typically a
+    /// [`TcpClientActor`].
     pub target: Recipient<Relay<M>>,
 }
 
-/// Winziger Adapter-Actor: nimmt rohe Nachrichten vom Typ `M` entgegen
-/// und leitet sie als [`Relay<M>`] an `target` weiter.
+/// Small adapter actor: accepts plain messages of type `M` and forwards
+/// them to `target` wrapped in [`Relay<M>`].
+///
+/// Useful as the `downstream` of a listener, to relay everything it
+/// receives through a [`TcpClientActor`].
 pub struct RelayAdapter<M: Send + 'static> {
     target: Recipient<Relay<M>>,
 }
@@ -701,34 +771,34 @@ where
 
     async fn handle(&mut self, item: M, _ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         if let Err(err) = self.target.tell(Relay(item)).await {
-            warn!("RelayAdapter: Konnte Nachricht nicht weiterleiten: {err}");
+            warn!("RelayAdapter: could not forward message: {err}");
         }
     }
 }
 
-/// `TcpListenerActor` für das `SimpleString`-Protokoll.
+/// [`TcpListenerActor`] for the [`SimpleString`] protocol.
 pub type SimpleStringListener = TcpListenerActor<SimpleString, SimpleStringCodec>;
-/// `TcpConnectionActor` für das `SimpleString`-Protokoll.
+/// [`TcpConnectionActor`] for the [`SimpleString`] protocol.
 pub type SimpleStringConnection = TcpConnectionActor<SimpleString, SimpleStringCodec>;
-/// `TcpWriterActor` für das `SimpleString`-Protokoll.
+/// [`TcpWriterActor`] for the [`SimpleString`] protocol.
 pub type SimpleStringWriter = TcpWriterActor<SimpleString, SimpleStringCodec>;
-/// `TcpClientActor` für das `SimpleString`-Protokoll.
+/// [`TcpClientActor`] for the [`SimpleString`] protocol.
 pub type SimpleStringClient = TcpClientActor<SimpleString, SimpleStringCodec>;
 
-/// `TcpListenerActor` für CCSDS Space Packets.
+/// [`TcpListenerActor`] for CCSDS [`SpacePacket`]s.
 pub type SpacePacketListener = TcpListenerActor<SpacePacket, SpacePacketCodec>;
-/// `TcpConnectionActor` für CCSDS Space Packets.
+/// [`TcpConnectionActor`] for CCSDS [`SpacePacket`]s.
 pub type SpacePacketConnection = TcpConnectionActor<SpacePacket, SpacePacketCodec>;
-/// `TcpWriterActor` für CCSDS Space Packets.
+/// [`TcpWriterActor`] for CCSDS [`SpacePacket`]s.
 pub type SpacePacketWriter = TcpWriterActor<SpacePacket, SpacePacketCodec>;
-/// `TcpClientActor` für CCSDS Space Packets.
+/// [`TcpClientActor`] for CCSDS [`SpacePacket`]s.
 pub type SpacePacketClient = TcpClientActor<SpacePacket, SpacePacketCodec>;
 
-/// `TcpListenerActor` für ECSS PUS-C-Pakete.
+/// [`TcpListenerActor`] for ECSS PUS-C packets ([`PusPacket`]).
 pub type PusListener = TcpListenerActor<PusPacket, PusCodec>;
-/// `TcpConnectionActor` für ECSS PUS-C-Pakete.
+/// [`TcpConnectionActor`] for ECSS PUS-C packets ([`PusPacket`]).
 pub type PusConnection = TcpConnectionActor<PusPacket, PusCodec>;
-/// `TcpWriterActor` für ECSS PUS-C-Pakete.
+/// [`TcpWriterActor`] for ECSS PUS-C packets ([`PusPacket`]).
 pub type PusWriter = TcpWriterActor<PusPacket, PusCodec>;
-/// `TcpClientActor` für ECSS PUS-C-Pakete.
+/// [`TcpClientActor`] for ECSS PUS-C packets ([`PusPacket`]).
 pub type PusClient = TcpClientActor<PusPacket, PusCodec>;

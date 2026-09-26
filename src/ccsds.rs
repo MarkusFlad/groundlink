@@ -1,40 +1,54 @@
 //! CCSDS Space Packet Protocol (CCSDS 133.0-B-2).
 //!
-//! Enthält den Space-Packet-Typ (Primary Header + Packet Data Field) sowie
-//! einen [`SpacePacketCodec`], der sowohl [`Decoder`] als auch
-//! [`Encoder<SpacePacket>`] implementiert und sich damit direkt mit
-//! [`tokio_util::codec::Framed`] verwenden lässt (gleichzeitiges Lesen und
-//! Schreiben auf einem `AsyncRead + AsyncWrite`-Stream, z. B. einem
-//! `TcpStream`).
+//! Contains the Space Packet type (primary header + packet data field) and
+//! [`SpacePacketCodec`], which implements both [`Decoder`] and
+//! [`Encoder<SpacePacket>`] and can therefore be used directly with
+//! [`tokio_util::codec::Framed`] to read and write concurrently on an
+//! `AsyncRead + AsyncWrite` stream such as a `TcpStream`.
 //!
-//! Der 6 Byte lange Primary Header ist vollständig durch den Standard
-//! festgelegt. Das Packet Data Field (Nutzdaten) kann laut Standard einen
-//! missionsspezifischen Secondary Header enthalten – dessen Format ist
-//! nicht Teil von CCSDS 133.0 und wird hier bewusst nicht interpretiert;
-//! [`SpacePacket::data`] enthält daher das komplette Packet Data Field als
-//! Rohdaten.
+//! The 6-byte primary header is fully defined by the standard. The packet
+//! data field may start with a mission-specific secondary header; its
+//! format is not part of CCSDS 133.0 and is deliberately not interpreted
+//! here. [`SpacePacket::data`] therefore holds the complete packet data
+//! field as raw bytes. See [`crate::pus`] for PUS packets, which define
+//! such a secondary header.
+//!
+//! ```
+//! use bytes::BytesMut;
+//! use kameo_tcp_example::{PacketType, SpacePacket, SpacePacketCodec};
+//! use tokio_util::codec::{Decoder, Encoder};
+//!
+//! let packet = SpacePacket::new(PacketType::Telemetry, 42, 7, &b"payload"[..]);
+//!
+//! let mut buf = BytesMut::new();
+//! SpacePacketCodec.encode(packet.clone(), &mut buf).unwrap();
+//! assert_eq!(buf.len(), 6 + 7);
+//!
+//! assert_eq!(SpacePacketCodec.decode(&mut buf).unwrap(), Some(packet));
+//! ```
 
 use bytes::{Bytes, BytesMut};
 use std::io;
 use tokio_util::codec::{Decoder, Encoder};
 
-/// Größe des Primary Headers in Byte (CCSDS 133.0-B-2, Abschnitt 4.1.2).
+/// Length of the primary header in bytes (CCSDS 133.0-B-2, section 4.1.2).
 pub const PRIMARY_HEADER_LEN: usize = 6;
-/// Maximaler Wert für [`SpacePacketHeader::apid`] (11 Bit).
+/// Largest value of [`SpacePacketHeader::apid`] (11 bits).
 pub const APID_MAX: u16 = 0x07FF;
-/// Maximaler Wert für [`SpacePacketHeader::sequence_count`] (14 Bit).
+/// Largest value of [`SpacePacketHeader::sequence_count`] (14 bits).
 pub const SEQUENCE_COUNT_MAX: u16 = 0x3FFF;
-/// Maximale Länge des Packet Data Field in Byte. Das 16-Bit-Längenfeld im
-/// Header kodiert `Länge - 1`, daher ist `u16::MAX + 1` erreichbar.
+/// Largest length of the packet data field in bytes. The 16-bit length
+/// field in the header encodes `length - 1`, so `u16::MAX + 1` is
+/// reachable.
 pub const MAX_PACKET_DATA_LEN: usize = u16::MAX as usize + 1;
 
-/// CCSDS "Packet Type" Feld (CCSDS 133.0-B-2, Abschnitt 4.1.3.3):
-/// unterscheidet Telemetrie- von Telekommando-Paketen.
+/// CCSDS "Packet Type" field (CCSDS 133.0-B-2, section 4.1.3.3):
+/// distinguishes telemetry from telecommand packets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PacketType {
-    /// Telemetrie (TM), Bitwert 0.
+    /// Telemetry (TM), bit value 0.
     Telemetry,
-    /// Telekommando (TC), Bitwert 1.
+    /// Telecommand (TC), bit value 1.
     Telecommand,
 }
 
@@ -52,19 +66,18 @@ impl PacketType {
     }
 }
 
-/// CCSDS "Sequence Flags" Feld (CCSDS 133.0-B-2, Abschnitt 4.1.3.4):
-/// beschreibt, ob ein Paket Teil einer segmentierten Folge von Paketen mit
-/// gemeinsamem `sequence_count` ist.
+/// CCSDS "Sequence Flags" field (CCSDS 133.0-B-2, section 4.1.3.4):
+/// tells whether a packet is part of a segmented sequence of packets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SequenceFlags {
-    /// Fortsetzungssegment (Bitwert `0b00`).
+    /// Continuation segment (bit value `0b00`).
     Continuation,
-    /// Erstes Segment (Bitwert `0b01`).
+    /// First segment (bit value `0b01`).
     FirstSegment,
-    /// Letztes Segment (Bitwert `0b10`).
+    /// Last segment (bit value `0b10`).
     LastSegment,
-    /// Unsegmentiertes, eigenständiges Paket (Bitwert `0b11`) – der
-    /// Regelfall, wenn keine Segmentierung verwendet wird.
+    /// Unsegmented, stand-alone packet (bit value `0b11`); the usual case
+    /// when segmentation is not used.
     Unsegmented,
 }
 
@@ -88,41 +101,47 @@ impl SequenceFlags {
     }
 }
 
-/// Der 6 Byte lange Primary Header eines CCSDS Space Packets (CCSDS
-/// 133.0-B-2, Abschnitt 4.1). Die Packet Version Number ist laut Standard
-/// aktuell immer `0b000` und wird daher nicht als Feld geführt, sondern
-/// beim Kodieren fest auf 0 gesetzt bzw. beim Dekodieren ignoriert.
+/// The 6-byte primary header of a CCSDS Space Packet (CCSDS 133.0-B-2,
+/// section 4.1).
+///
+/// The packet version number is currently always `0b000` according to the
+/// standard. It is therefore not stored as a field; it is written as 0 when
+/// encoding and ignored when decoding. The packet data length is derived
+/// from the data when encoding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SpacePacketHeader {
-    /// Packet Type: Telemetrie oder Telekommando.
+    /// Packet type: telemetry or telecommand.
     pub packet_type: PacketType,
-    /// Ob im Packet Data Field ein (hier nicht interpretierter)
-    /// Secondary Header vorangestellt ist.
+    /// Whether the packet data field starts with a secondary header (not
+    /// interpreted by this module).
     pub secondary_header_flag: bool,
-    /// Application Process ID, 11 Bit (`0..=`[`APID_MAX`]).
+    /// Application process ID, 11 bits (`0..=`[`APID_MAX`]).
     pub apid: u16,
-    /// Segmentierungsinformation.
+    /// Segmentation information.
     pub sequence_flags: SequenceFlags,
-    /// Packet Sequence Count bzw. Packet Name, 14 Bit
+    /// Packet sequence count or packet name, 14 bits
     /// (`0..=`[`SEQUENCE_COUNT_MAX`]).
     pub sequence_count: u16,
 }
 
 impl SpacePacketHeader {
-    /// Kodiert den Header (6 Byte, Big-Endian) für ein Packet Data Field
-    /// der Länge `data_len` an `dst` an.
+    /// Appends the header (6 bytes, big-endian) for a packet data field of
+    /// length `data_len` to `dst`.
+    ///
+    /// Fails with [`io::ErrorKind::InvalidInput`] if a field exceeds its bit
+    /// width or `data_len` is outside `1..=`[`MAX_PACKET_DATA_LEN`].
     pub(crate) fn encode(&self, data_len: usize, dst: &mut BytesMut) -> io::Result<()> {
         if self.apid > APID_MAX {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                format!("APID {} überschreitet den 11-Bit-Wertebereich (max {APID_MAX})", self.apid),
+                format!("APID {} exceeds the 11-bit range (max {APID_MAX})", self.apid),
             ));
         }
         if self.sequence_count > SEQUENCE_COUNT_MAX {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!(
-                    "sequence_count {} überschreitet den 14-Bit-Wertebereich (max {SEQUENCE_COUNT_MAX})",
+                    "sequence_count {} exceeds the 14-bit range (max {SEQUENCE_COUNT_MAX})",
                     self.sequence_count
                 ),
             ));
@@ -131,20 +150,20 @@ impl SpacePacketHeader {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!(
-                    "Packet-Data-Field-Länge {data_len} außerhalb des gültigen Bereichs (1..={MAX_PACKET_DATA_LEN})"
+                    "packet data field length {data_len} outside the valid range (1..={MAX_PACKET_DATA_LEN})"
                 ),
             ));
         }
 
-        // Version Number (3 Bit, immer 0) | Type (1 Bit) |
-        // Secondary Header Flag (1 Bit) | APID (11 Bit)
+        // Version number (3 bits, always 0) | type (1 bit) |
+        // secondary header flag (1 bit) | APID (11 bits)
         let word0: u16 = ((self.packet_type.to_bit() as u16) << 12)
             | ((self.secondary_header_flag as u16) << 11)
             | (self.apid & APID_MAX);
-        // Sequence Flags (2 Bit) | Sequence Count (14 Bit)
+        // Sequence flags (2 bits) | sequence count (14 bits)
         let word1: u16 =
             ((self.sequence_flags.to_bits() as u16) << 14) | (self.sequence_count & SEQUENCE_COUNT_MAX);
-        // Packet Data Length = tatsächliche Länge - 1
+        // Packet data length = actual length - 1
         let word2: u16 = (data_len - 1) as u16;
 
         dst.extend_from_slice(&word0.to_be_bytes());
@@ -153,8 +172,8 @@ impl SpacePacketHeader {
         Ok(())
     }
 
-    /// Dekodiert einen 6 Byte langen Header und liefert zusätzlich die
-    /// daraus abgeleitete Länge des nachfolgenden Packet Data Field.
+    /// Decodes a 6-byte header and also returns the length of the packet
+    /// data field that follows it.
     fn decode(src: &[u8]) -> (Self, usize) {
         debug_assert_eq!(src.len(), PRIMARY_HEADER_LEN);
         let word0 = u16::from_be_bytes([src[0], src[1]]);
@@ -174,24 +193,24 @@ impl SpacePacketHeader {
     }
 }
 
-/// Ein vollständiges CCSDS Space Packet: Primary Header + Packet Data
-/// Field.
+/// A complete CCSDS Space Packet: primary header + packet data field.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SpacePacket {
+    /// The primary header.
     pub header: SpacePacketHeader,
-    /// Das komplette Packet Data Field (ggf. inkl. missionsspezifischem
-    /// Secondary Header + eigentlichen Nutzdaten), unverändert/roh.
+    /// The complete packet data field (including a mission-specific
+    /// secondary header, if any, followed by the user data), as raw bytes.
     pub data: Bytes,
 }
 
 impl SpacePacket {
-    /// Erstellt ein neues, unsegmentiertes Space Packet (ohne Secondary
-    /// Header) mit den gegebenen Nutzdaten.
+    /// Creates an unsegmented Space Packet without secondary header,
+    /// carrying `data`.
     ///
-    /// `data` darf nicht leer sein (das Packet Data Field muss laut
-    /// Standard mindestens 1 Oktett umfassen) und maximal
-    /// [`MAX_PACKET_DATA_LEN`] Byte lang sein – dies wird erst beim
-    /// tatsächlichen Kodieren (z. B. über [`SpacePacketCodec`]) geprüft.
+    /// `data` must not be empty (the standard requires at least one octet in
+    /// the packet data field) and must not exceed [`MAX_PACKET_DATA_LEN`]
+    /// bytes. This is only checked when the packet is actually encoded,
+    /// e.g. by [`SpacePacketCodec`].
     pub fn new(packet_type: PacketType, apid: u16, sequence_count: u16, data: impl Into<Bytes>) -> Self {
         SpacePacket {
             header: SpacePacketHeader {
@@ -206,9 +225,10 @@ impl SpacePacket {
     }
 }
 
-/// Codec für CCSDS Space Packets, nutzbar mit
-/// [`tokio_util::codec::Framed`] für gleichzeitiges Lesen und Schreiben auf
-/// einem `AsyncRead + AsyncWrite`-Stream:
+/// Codec for CCSDS Space Packets.
+///
+/// Usable with [`tokio_util::codec::Framed`] to read and write concurrently
+/// on an `AsyncRead + AsyncWrite` stream:
 ///
 /// ```no_run
 /// # use futures::StreamExt;
@@ -223,6 +243,14 @@ impl SpacePacket {
 /// # Ok(())
 /// # }
 /// ```
+///
+/// # Errors
+///
+/// Encoding fails with [`io::ErrorKind::InvalidInput`] if a header field
+/// exceeds its bit width or the packet data field is empty or longer than
+/// [`MAX_PACKET_DATA_LEN`]. Decoding never fails: any 6 bytes form a valid
+/// header, and incomplete packets stay in the buffer until the rest
+/// arrives.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SpacePacketCodec;
 
@@ -235,8 +263,8 @@ impl Decoder for SpacePacketCodec {
             return Ok(None);
         }
 
-        // Header nur "vorab lesen" (nicht aus dem Puffer entfernen), bis
-        // auch das vollständige Packet Data Field eingetroffen ist.
+        // Only peek at the header (do not remove it from the buffer) until
+        // the complete packet data field has arrived as well.
         let (_, data_len) = SpacePacketHeader::decode(&src[..PRIMARY_HEADER_LEN]);
         let total_len = PRIMARY_HEADER_LEN + data_len;
 
@@ -269,7 +297,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn encode_erzeugt_die_exakten_erwarteten_bytes() {
+    fn encode_produces_exact_expected_bytes() {
         let packet = SpacePacket {
             header: SpacePacketHeader {
                 packet_type: PacketType::Telecommand,
@@ -296,53 +324,53 @@ mod tests {
 
     #[test]
     fn encode_decode_roundtrip() {
-        let original = SpacePacket::new(PacketType::Telemetry, APID_MAX, SEQUENCE_COUNT_MAX, &b"hallo raumschiff"[..]);
+        let original = SpacePacket::new(PacketType::Telemetry, APID_MAX, SEQUENCE_COUNT_MAX, &b"hello spacecraft"[..]);
 
         let mut codec = SpacePacketCodec;
         let mut buf = BytesMut::new();
         codec.encode(original.clone(), &mut buf).unwrap();
 
-        let decoded = codec.decode(&mut buf).unwrap().expect("sollte vollständig dekodierbar sein");
+        let decoded = codec.decode(&mut buf).unwrap().expect("should decode completely");
 
         assert_eq!(decoded, original);
-        assert!(buf.is_empty(), "Puffer sollte nach vollständigem Dekodieren leer sein");
+        assert!(buf.is_empty(), "buffer should be empty after decoding completely");
     }
 
     #[test]
-    fn decode_wartet_auf_vollstaendigen_header() {
+    fn decode_waits_for_complete_header() {
         let mut codec = SpacePacketCodec;
-        let mut buf = BytesMut::from(&[0x10, 0xAB, 0xC0][..]); // nur 3 von 6 Header-Byte
+        let mut buf = BytesMut::from(&[0x10, 0xAB, 0xC0][..]); // only 3 of 6 header bytes
 
         assert_eq!(codec.decode(&mut buf).unwrap(), None);
-        assert_eq!(buf.len(), 3, "unvollständige Bytes dürfen nicht konsumiert werden");
+        assert_eq!(buf.len(), 3, "incomplete bytes must not be consumed");
     }
 
     #[test]
-    fn decode_wartet_auf_vollstaendiges_data_field() {
+    fn decode_waits_for_complete_data_field() {
         let packet = SpacePacket::new(PacketType::Telemetry, 1, 1, &b"1234567890"[..]);
 
         let mut codec = SpacePacketCodec;
         let mut full = BytesMut::new();
         codec.encode(packet.clone(), &mut full).unwrap();
 
-        // Nur Header + halbe Nutzdaten simulieren.
+        // Simulate header + half of the data.
         let mut partial = BytesMut::from(&full[..PRIMARY_HEADER_LEN + 5]);
         assert_eq!(codec.decode(&mut partial).unwrap(), None);
         assert_eq!(
             partial.len(),
             PRIMARY_HEADER_LEN + 5,
-            "unvollständiges Data Field darf nicht konsumiert werden"
+            "incomplete data field must not be consumed"
         );
 
-        // Restliche Bytes "nachliefern".
+        // Deliver the remaining bytes.
         partial.extend_from_slice(&full[PRIMARY_HEADER_LEN + 5..]);
-        let decoded = codec.decode(&mut partial).unwrap().expect("jetzt vollständig");
+        let decoded = codec.decode(&mut partial).unwrap().expect("complete now");
         assert_eq!(decoded, packet);
         assert!(partial.is_empty());
     }
 
     #[test]
-    fn encode_lehnt_leeres_data_field_ab() {
+    fn encode_rejects_empty_data_field() {
         let packet = SpacePacket::new(PacketType::Telemetry, 1, 1, Bytes::new());
         let mut codec = SpacePacketCodec;
         let mut buf = BytesMut::new();
@@ -350,7 +378,7 @@ mod tests {
     }
 
     #[test]
-    fn encode_lehnt_zu_grossen_apid_ab() {
+    fn encode_rejects_out_of_range_fields() {
         let mut header = SpacePacketHeader {
             packet_type: PacketType::Telemetry,
             secondary_header_flag: false,

@@ -1,10 +1,9 @@
-//! Zeigt, dass dieselben generischen TCP-Actors (`TcpListenerActor<M, C>`,
-//! `TcpConnectionActor<M, C>`, `TcpWriterActor<M, C>`), die bisher mit
-//! `SimpleString`/`SimpleStringCodec` genutzt wurden, ohne Änderungen auch
-//! für CCSDS Space Packets funktionieren – hier über die Aliase
-//! `SpacePacketListener`/`SpacePacketWriter`
-//! (`TcpListenerActor<SpacePacket, SpacePacketCodec>` bzw.
-//! `TcpWriterActor<SpacePacket, SpacePacketCodec>`).
+//! Shows that the same generic TCP actors (`TcpListenerActor<M, C>`,
+//! `TcpConnectionActor<M, C>`, `TcpWriterActor<M, C>`) that are used with
+//! `SimpleString`/`SimpleStringCodec` also work unchanged for CCSDS Space
+//! Packets, here through the aliases `SpacePacketListener` and
+//! `SpacePacketWriter` (`TcpListenerActor<SpacePacket, SpacePacketCodec>`
+//! and `TcpWriterActor<SpacePacket, SpacePacketCodec>`).
 
 use std::time::Duration;
 
@@ -18,7 +17,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio_util::codec::Framed;
 
 #[tokio::test]
-async fn space_packets_werden_an_downstream_actor_weitergeleitet() {
+async fn space_packets_are_forwarded_to_downstream_actor() {
     let test_actor_ref = TestActor::<SpacePacket>::spawn(TestActor::new());
     let downstream: Recipient<SpacePacket> = test_actor_ref.clone().recipient::<SpacePacket>();
 
@@ -31,8 +30,8 @@ async fn space_packets_werden_an_downstream_actor_weitergeleitet() {
     let client_stream = TcpStream::connect(local_addr).await.unwrap();
     let mut client_framed = Framed::new(client_stream, SpacePacketCodec);
 
-    let packet_a = SpacePacket::new(PacketType::Telemetry, 42, 1, &b"hallo server"[..]);
-    let packet_b = SpacePacket::new(PacketType::Telecommand, 100, 2, &b"tue etwas"[..]);
+    let packet_a = SpacePacket::new(PacketType::Telemetry, 42, 1, &b"hello server"[..]);
+    let packet_b = SpacePacket::new(PacketType::Telecommand, 100, 2, &b"do something"[..]);
 
     client_framed.send(packet_a.clone()).await.unwrap();
     client_framed.send(packet_b.clone()).await.unwrap();
@@ -43,7 +42,7 @@ async fn space_packets_werden_an_downstream_actor_weitergeleitet() {
 }
 
 #[tokio::test]
-async fn space_packet_writer_actor_schreibt_ein_ueber_framed_lesbares_paket() {
+async fn space_packet_writer_writes_packet_readable_with_framed() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
 

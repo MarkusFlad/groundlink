@@ -1,42 +1,57 @@
+//! Messages exchanged with the generic TCP actors in [`crate::actors`] and
+//! the [`MessageCodec`] trait that ties a message type to its codec.
+
 use std::io;
 use std::net::SocketAddr;
 
 use tokio_util::codec::{Decoder, Encoder};
 
-/// Grund, warum eine Verbindungs-Hälfte (Lesen oder Schreiben) beendet
-/// wurde.
+/// Why one half of a connection (reading or writing) was closed.
 #[derive(Debug, Clone, PartialEq)]
 pub enum CloseReason {
-    /// Sauberes Ende: EOF beim Lesen bzw. die Verbindung wurde ordentlich
-    /// geschlossen.
+    /// Clean end: EOF while reading, or the connection was shut down in an
+    /// orderly way.
     Graceful,
-    /// Ein I/O- oder Protokollfehler (z. B. ungültige Frame-Daten, Broken
-    /// Pipe, Connection Reset, ...). Der Text ist die `Display`-Ausgabe
-    /// des zugrunde liegenden Fehlers.
+    /// An I/O or protocol error (e.g. invalid frame data, broken pipe,
+    /// connection reset, …). The text is the `Display` output of the
+    /// underlying error.
     Error(String),
 }
 
-/// Welche Hälfte der Verbindung betroffen ist.
+/// Which half of a connection is affected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectionHalf {
+    /// The read half (receiving direction).
     Read,
+    /// The write half (sending direction).
     Write,
 }
 
-/// Nachricht an den `TcpListenerActor`: eine Verbindungs-Hälfte wurde
-/// beendet. Wird sowohl vom `TcpConnectionActor` (Read) als auch vom
-/// `TcpWriterActor` (Write) gesendet.
+/// Notification that one half of a connection was closed.
+///
+/// Sent to the [`TcpListenerActor`](crate::actors::TcpListenerActor) (or
+/// [`TcpClientActor`](crate::actors::TcpClientActor)) by the
+/// [`TcpConnectionActor`](crate::actors::TcpConnectionActor) for the read
+/// half and by the [`TcpWriterActor`](crate::actors::TcpWriterActor) for
+/// the write half.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConnectionHalfClosed {
+    /// Address of the remote peer of the connection.
     pub peer_addr: SocketAddr,
+    /// The half that was closed.
     pub half: ConnectionHalf,
+    /// Why it was closed.
     pub reason: CloseReason,
 }
 
-/// Ein Codec, der Nachrichten vom Typ `M` sowohl dekodieren (Lesen) als
-/// auch kodieren (Schreiben) kann – die Voraussetzung, damit
-/// [`crate::actors::TcpConnectionActor<M, C>`] und
-/// [`crate::actors::TcpWriterActor<M, C>`] ihn nutzen können.
+/// A codec that can both decode (read) and encode (write) messages of type
+/// `M`.
+///
+/// This is the requirement for using `M` with
+/// [`TcpConnectionActor<M, C>`](crate::actors::TcpConnectionActor) and
+/// [`TcpWriterActor<M, C>`](crate::actors::TcpWriterActor). The trait has
+/// a blanket implementation, so any codec satisfying the bounds implements
+/// it automatically; the actors create their codec via [`Default`].
 pub trait MessageCodec<M>:
     Decoder<Item = M, Error = io::Error>
         + Encoder<M, Error = io::Error>
@@ -57,46 +72,54 @@ impl<M, C> MessageCodec<M> for C where
 {
 }
 
-/// Fragt die tatsächlich gebundene lokale Adresse ab. Nützlich, wenn mit
-/// Port 0 gebunden wurde (z. B. in Tests), um den vom OS vergebenen Port
-/// zu erfahren.
+/// Asks for the local address the listener is actually bound to.
+///
+/// Useful after binding to port 0 (e.g. in tests) to learn the port chosen
+/// by the operating system.
 #[derive(Debug)]
 pub struct GetLocalAddr;
 
-/// Fordert den `TcpClientActor` auf, die Verbindung zu `remote_addr`
-/// aufzubauen. Antwortet mit der tatsächlichen Peer-Adresse bei Erfolg
-/// bzw. dem aufgetretenen I/O-Fehler.
+/// Asks the [`TcpClientActor`](crate::actors::TcpClientActor) to connect
+/// to its configured remote address.
+///
+/// Replies with the actual peer address on success, or the I/O error that
+/// occurred.
 #[derive(Debug)]
 pub struct Connect;
 
-/// Schließt – falls verbunden – beide Hälften der aktuellen Verbindung
-/// geordnet (per [`Shutdown<M>`] an Reader und Writer).
+/// Closes both halves of the current connection in an orderly way (if
+/// connected), by sending [`Shutdown<M>`] to the reader and the writer.
 #[derive(Debug)]
 pub struct Close;
 
-/// Schließt nur die read half der aktuellen Verbindung.
+/// Closes only the read half of the current connection.
 #[derive(Debug)]
 pub struct CloseRead;
 
-/// Schließt nur die write half der aktuellen Verbindung.
+/// Closes only the write half of the current connection.
 #[derive(Debug)]
 pub struct CloseWrite;
 
-/// Benachrichtigung: die "andere Seite" einer Relais-Kopplung (z. B. die
-/// Serververbindung, wenn dieser Actor die Clientseite ist) hat eine
-/// Hälfte geschlossen.
+/// Notification that the other side of a relay coupling (e.g. the server
+/// connection when this actor is the client side) closed one of its
+/// halves.
 #[derive(Debug)]
 pub struct PeerHalfClosed(pub ConnectionHalfClosed);
 
-/// Nachricht: die enthaltene Nachricht `M` soll über die aktuelle
-/// Verbindung des `TcpClientActor<M, C>` gesendet werden.
+/// Asks the [`TcpClientActor<M, C>`](crate::actors::TcpClientActor) to
+/// send the contained message over its current connection.
 pub struct Relay<M>(pub M);
 
-/// Nachricht: fordert den zu `M` gehörenden `TcpWriterActor<M, C>` auf,
-/// die write half geordnet zu schließen und sich danach zu beenden.
+/// Asks the reader or writer actor for message type `M` to close its half
+/// of the connection in an orderly way and then stop.
+///
+/// The type parameter only selects the actor; it is carried as
+/// `PhantomData<fn() -> M>` so that `Shutdown<M>` is `Send`, `Sync` and
+/// `Copy` for every `M`.
 pub struct Shutdown<M>(std::marker::PhantomData<fn() -> M>);
 
 impl<M> Shutdown<M> {
+    /// Creates the message.
     pub fn new() -> Self {
         Shutdown(std::marker::PhantomData)
     }

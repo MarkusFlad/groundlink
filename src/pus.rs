@@ -1,30 +1,46 @@
 //! ECSS Packet Utilisation Standard (PUS-C, ECSS-E-ST-70-41C).
 //!
-//! PUS-Pakete sind CCSDS Space Packets (siehe [`crate::ccsds`]), deren
-//! Packet Data Field einen standardisierten Secondary Header und
-//! optional ein Packet Error Control Field (CRC-16) enthält:
+//! PUS packets are CCSDS Space Packets (see [`crate::ccsds`]) whose packet
+//! data field contains a standardised secondary header and, optionally, a
+//! packet error control field (CRC-16):
 //!
 //! ```text
 //! +------------------+----------------------+---------------------+-----------+
-//! | Primary Header   | PUS Secondary Header | Application Data /  | PEC       |
-//! | (CCSDS, 6 Byte)  | (TC: 5, TM: 7+Zeit)  | Source Data         | (2 Byte)  |
+//! | Primary header   | PUS secondary header | Application data /  | PEC       |
+//! | (CCSDS, 6 bytes) | (TC: 5, TM: 7+time)  | source data         | (2 bytes) |
 //! +------------------+----------------------+---------------------+-----------+
 //! ```
 //!
-//! Rust kennt keine Vererbung; die "Basisklasse" Space Packet wird daher
-//! per Komposition eingebunden: [`PusTc`] und [`PusTm`] enthalten einen
-//! [`SpacePacketHeader`], lassen sich über [`PusPacket::to_space_packet`]
-//! bzw. [`PusPacket::from_space_packet`] in ein [`SpacePacket`] und zurück
-//! wandeln, und der [`PusCodec`] delegiert das Framing an den
+//! The Space Packet is included by composition: [`PusTc`] and [`PusTm`]
+//! contain a [`SpacePacketHeader`] and convert to and from a
+//! [`SpacePacket`] with [`PusPacket::to_space_packet`] and
+//! [`PusPacket::from_space_packet`]. [`PusCodec`] delegates the framing to
 //! [`SpacePacketCodec`].
 //!
-//! Missionsspezifische Teile werden über [`PusConfig`] festgelegt:
-//! die Länge des Zeitstempels im TM Secondary Header und ob ein Packet
-//! Error Control Field vorhanden ist. Optionale Spare-Felder im Secondary
-//! Header werden nicht unterstützt.
+//! Mission-specific parts are set with [`PusConfig`]: the length of the
+//! time stamp in the TM secondary header and whether a packet error
+//! control field is present. Optional spare fields in the secondary header
+//! are not supported.
 //!
-//! Typisierte Nachrichten einzelner PUS-Services liegen in Untermodulen,
-//! z. B. [`service1`] und [`service17`].
+//! Typed messages of individual PUS services live in submodules:
+//! [`service1`] (request verification) and [`service17`] (test).
+//!
+//! ```
+//! use bytes::BytesMut;
+//! use kameo_tcp_example::{PusCodec, PusPacket, PusTc};
+//! use tokio_util::codec::{Decoder, Encoder};
+//!
+//! let tc = PusPacket::from(PusTc::new(0x042, 1, 17, 1, &b""[..]));
+//!
+//! let mut codec = PusCodec::default();
+//! let mut buf = BytesMut::new();
+//! codec.encode(tc.clone(), &mut buf).unwrap();
+//! assert_eq!(buf.len(), 6 + 5 + 2); // primary header + secondary header + CRC
+//!
+//! let decoded = codec.decode(&mut buf).unwrap().unwrap();
+//! assert_eq!((decoded.service_type(), decoded.message_subtype()), (17, 1));
+//! assert_eq!(decoded, tc);
+//! ```
 
 use bytes::{Bytes, BytesMut};
 use std::io;
@@ -36,21 +52,27 @@ use crate::cuc::{CucFormat, CucTime};
 pub mod service1;
 pub mod service17;
 
-/// PUS Version Number für PUS-C (ECSS-E-ST-70-41C).
+/// PUS version number of PUS-C (ECSS-E-ST-70-41C).
 pub const PUS_VERSION: u8 = 2;
-/// Länge des TC Secondary Headers in Byte.
+/// Length of the TC secondary header in bytes.
 pub const TC_SECONDARY_HEADER_LEN: usize = 5;
-/// Länge des TM Secondary Headers in Byte *ohne* Zeitstempel.
+/// Length of the TM secondary header in bytes, *without* the time stamp.
 pub const TM_SECONDARY_HEADER_LEN_WITHOUT_TIME: usize = 7;
-/// Länge des Packet Error Control Field (CRC-16) in Byte.
+/// Length of the packet error control field (CRC-16) in bytes.
 pub const PEC_LEN: usize = 2;
-/// Standardlänge des TM-Zeitstempels: CUC 4+2 mit P-Field, entspricht
+/// Default length of the TM time stamp: CUC 4+2 with P-field, matching
 /// [`CucFormat::default`].
 pub const DEFAULT_TM_TIME_LEN: usize = 7;
 
-/// Berechnet die von ECSS für das Packet Error Control Field
-/// vorgeschriebene CRC-16 (CCITT: Polynom `0x1021`, Startwert `0xFFFF`,
-/// ohne Reflexion und ohne abschließendes XOR).
+/// Computes the CRC-16 that ECSS prescribes for the packet error control
+/// field (CCITT: polynomial `0x1021`, initial value `0xFFFF`, no reflection,
+/// no final XOR).
+///
+/// ```
+/// use kameo_tcp_example::pus::crc16_ccitt;
+///
+/// assert_eq!(crc16_ccitt(b"123456789"), 0x29B1);
+/// ```
 pub fn crc16_ccitt(data: &[u8]) -> u16 {
     let mut crc: u16 = 0xFFFF;
     for &byte in data {
@@ -70,24 +92,26 @@ fn invalid_data(msg: String) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, msg)
 }
 
-/// Acknowledgement Flags eines Telekommandos: welche Verifikationsberichte
-/// (Service 1) der Empfänger erzeugen soll.
+/// Acknowledgement flags of a telecommand: which successful verification
+/// reports (service 1) the receiver shall generate.
+///
+/// Failure reports are always generated, regardless of these flags.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct AckFlags {
-    /// Bericht über erfolgreiche Annahme (Bit `0b0001`).
+    /// Report successful acceptance, TM(1,1) (bit `0b0001`).
     pub acceptance: bool,
-    /// Bericht über erfolgreichen Ausführungsstart (Bit `0b0010`).
+    /// Report successful start of execution, TM(1,3) (bit `0b0010`).
     pub start: bool,
-    /// Berichte über den Ausführungsfortschritt (Bit `0b0100`).
+    /// Report progress of execution, TM(1,5) (bit `0b0100`).
     pub progress: bool,
-    /// Bericht über erfolgreichen Ausführungsabschluss (Bit `0b1000`).
+    /// Report successful completion of execution, TM(1,7) (bit `0b1000`).
     pub completion: bool,
 }
 
 impl AckFlags {
-    /// Alle Verifikationsberichte angefordert.
+    /// All verification reports requested.
     pub const ALL: AckFlags = AckFlags { acceptance: true, start: true, progress: true, completion: true };
-    /// Keine Verifikationsberichte angefordert.
+    /// No verification reports requested.
     pub const NONE: AckFlags = AckFlags { acceptance: false, start: false, progress: false, completion: false };
 
     fn from_bits(bits: u8) -> Self {
@@ -107,58 +131,72 @@ impl AckFlags {
     }
 }
 
-/// Secondary Header eines PUS-C-Telekommandos (5 Byte).
+/// Secondary header of a PUS-C telecommand (5 bytes).
+///
+/// The PUS version number is not stored; it is always
+/// [`PUS_VERSION`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PusTcSecondaryHeader {
+    /// Which successful verification reports are requested.
     pub ack_flags: AckFlags,
-    /// Service Type (z. B. 17 = Test).
+    /// Service type (e.g. 17 = test).
     pub service_type: u8,
-    /// Message Subtype (z. B. 1 = Are-You-Alive-Request).
+    /// Message subtype (e.g. 1 = are-you-alive request).
     pub message_subtype: u8,
-    /// Source ID: Kennung der sendenden Applikation.
+    /// Source ID: identifies the sending application.
     pub source_id: u16,
 }
 
-/// Secondary Header eines PUS-C-Telemetriepakets (7 Byte + Zeitstempel).
+/// Secondary header of a PUS-C telemetry packet (7 bytes + time stamp).
+///
+/// The PUS version number is not stored; it is always
+/// [`PUS_VERSION`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PusTmSecondaryHeader {
-    /// Spacecraft Time Reference Status, 4 Bit (`0..=15`).
+    /// Spacecraft time reference status, 4 bits (`0..=15`).
     pub time_reference_status: u8,
-    /// Service Type.
+    /// Service type.
     pub service_type: u8,
-    /// Message Subtype.
+    /// Message subtype.
     pub message_subtype: u8,
-    /// Message Type Counter: Zähler je Service Type/Subtype und Ziel.
+    /// Message type counter: counts per service type, subtype and
+    /// destination.
     pub message_type_counter: u16,
-    /// Destination ID: Kennung der empfangenden Applikation.
+    /// Destination ID: identifies the receiving application.
     pub destination_id: u16,
-    /// Zeitstempel (missionsspezifisches Format, z. B. CUC oder CDS),
-    /// roh. Die Länge muss [`PusConfig::tm_time_len`] entsprechen.
+    /// Time stamp in a mission-specific format (e.g. CUC or CDS), as raw
+    /// bytes. Its length must equal [`PusConfig::tm_time_len`]; see
+    /// [`cuc_time`](Self::cuc_time) for CUC.
     pub time: Bytes,
 }
 
 impl PusTmSecondaryHeader {
-    /// Interpretiert den Zeitstempel als CUC-Zeit im gegebenen Format.
+    /// Interprets the time stamp as a CUC time in the given format.
+    ///
+    /// # Errors
+    ///
+    /// See [`CucTime::from_bytes`].
     pub fn cuc_time(&self, format: CucFormat) -> io::Result<CucTime> {
         CucTime::from_bytes(&self.time, format)
     }
 }
 
-/// Ein PUS-C-Telekommando.
+/// A PUS-C telecommand.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PusTc {
-    /// Primary Header des zugrunde liegenden Space Packets.
-    /// `packet_type` und `secondary_header_flag` werden beim Kodieren
-    /// stets auf `Telecommand` bzw. `true` gesetzt.
+    /// Primary header of the underlying Space Packet. `packet_type` and
+    /// `secondary_header_flag` are always set to `Telecommand` and `true`
+    /// when encoding.
     pub header: SpacePacketHeader,
+    /// The PUS secondary header.
     pub secondary_header: PusTcSecondaryHeader,
-    /// Application Data (darf leer sein).
+    /// Application data (may be empty).
     pub app_data: Bytes,
 }
 
 impl PusTc {
-    /// Erstellt ein unsegmentiertes Telekommando mit allen Acknowledgement
-    /// Flags gesetzt und Source ID 0.
+    /// Creates an unsegmented telecommand with all acknowledgement flags set
+    /// and source ID 0.
     pub fn new(
         apid: u16,
         sequence_count: u16,
@@ -185,21 +223,24 @@ impl PusTc {
     }
 }
 
-/// Ein PUS-C-Telemetriepaket.
+/// A PUS-C telemetry packet.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PusTm {
-    /// Primary Header des zugrunde liegenden Space Packets.
-    /// `packet_type` und `secondary_header_flag` werden beim Kodieren
-    /// stets auf `Telemetry` bzw. `true` gesetzt.
+    /// Primary header of the underlying Space Packet. `packet_type` and
+    /// `secondary_header_flag` are always set to `Telemetry` and `true`
+    /// when encoding.
     pub header: SpacePacketHeader,
+    /// The PUS secondary header.
     pub secondary_header: PusTmSecondaryHeader,
-    /// Source Data (darf leer sein).
+    /// Source data (may be empty).
     pub source_data: Bytes,
 }
 
 impl PusTm {
-    /// Erstellt ein unsegmentiertes Telemetriepaket mit Time Reference
-    /// Status 0, Message Type Counter 0 und Destination ID 0.
+    /// Creates an unsegmented telemetry packet with time reference status 0,
+    /// message type counter 0 and destination ID 0.
+    ///
+    /// `time` can be a [`CucTime`] or any raw time stamp.
     pub fn new(
         apid: u16,
         sequence_count: u16,
@@ -229,11 +270,13 @@ impl PusTm {
     }
 }
 
-/// Ein PUS-Paket: Telekommando oder Telemetrie. Welche Variante vorliegt,
-/// bestimmt beim Dekodieren das Packet-Type-Bit des Primary Headers.
+/// A PUS packet: telecommand or telemetry. When decoding, the packet type
+/// bit of the primary header selects the variant.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PusPacket {
+    /// A telecommand.
     Tc(PusTc),
+    /// A telemetry packet.
     Tm(PusTm),
 }
 
@@ -250,7 +293,7 @@ impl From<PusTm> for PusPacket {
 }
 
 impl PusPacket {
-    /// Primary Header des zugrunde liegenden Space Packets.
+    /// Primary header of the underlying Space Packet.
     pub fn header(&self) -> &SpacePacketHeader {
         match self {
             PusPacket::Tc(tc) => &tc.header,
@@ -258,7 +301,7 @@ impl PusPacket {
         }
     }
 
-    /// Service Type aus dem Secondary Header.
+    /// Service type from the secondary header.
     pub fn service_type(&self) -> u8 {
         match self {
             PusPacket::Tc(tc) => tc.secondary_header.service_type,
@@ -266,7 +309,7 @@ impl PusPacket {
         }
     }
 
-    /// Message Subtype aus dem Secondary Header.
+    /// Message subtype from the secondary header.
     pub fn message_subtype(&self) -> u8 {
         match self {
             PusPacket::Tc(tc) => tc.secondary_header.message_subtype,
@@ -274,7 +317,7 @@ impl PusPacket {
         }
     }
 
-    /// Nutzdaten: Application Data (TC) bzw. Source Data (TM).
+    /// User data: application data (TC) or source data (TM).
     pub fn user_data(&self) -> &Bytes {
         match self {
             PusPacket::Tc(tc) => &tc.app_data,
@@ -282,9 +325,17 @@ impl PusPacket {
         }
     }
 
-    /// Wandelt das PUS-Paket in das zugrunde liegende Space Packet um.
-    /// Das Packet Data Field enthält Secondary Header, Nutzdaten und –
-    /// falls in `config` aktiviert – das Packet Error Control Field.
+    /// Converts the PUS packet into the underlying Space Packet.
+    ///
+    /// The packet data field contains the secondary header, the user data
+    /// and, if enabled in `config`, the packet error control field.
+    ///
+    /// # Errors
+    ///
+    /// Fails with [`io::ErrorKind::InvalidInput`] if the TM time stamp does
+    /// not have [`PusConfig::tm_time_len`] bytes, the time reference status
+    /// exceeds 4 bits, or (with packet error control) a primary header
+    /// field exceeds its bit width.
     pub fn to_space_packet(&self, config: &PusConfig) -> io::Result<SpacePacket> {
         let mut data = BytesMut::new();
         let mut header = *self.header();
@@ -304,13 +355,13 @@ impl PusPacket {
                 let sec = &tm.secondary_header;
                 if sec.time_reference_status > 0x0F {
                     return Err(invalid_input(format!(
-                        "time_reference_status {} überschreitet den 4-Bit-Wertebereich",
+                        "time_reference_status {} exceeds the 4-bit range",
                         sec.time_reference_status
                     )));
                 }
                 if sec.time.len() != config.tm_time_len {
                     return Err(invalid_input(format!(
-                        "Zeitstempel hat {} Byte, erwartet werden {} Byte",
+                        "time stamp has {} bytes, expected {} bytes",
                         sec.time.len(),
                         config.tm_time_len
                     )));
@@ -325,7 +376,7 @@ impl PusPacket {
         }
 
         if config.packet_error_control {
-            // Die CRC deckt das gesamte Paket inkl. Primary Header ab.
+            // The CRC covers the whole packet, including the primary header.
             let mut crc_input = BytesMut::with_capacity(crate::ccsds::PRIMARY_HEADER_LEN + data.len() + PEC_LEN);
             header.encode(data.len() + PEC_LEN, &mut crc_input)?;
             crc_input.extend_from_slice(&data);
@@ -335,26 +386,31 @@ impl PusPacket {
         Ok(SpacePacket { header, data: data.freeze() })
     }
 
-    /// Interpretiert ein Space Packet als PUS-Paket. Prüft Secondary Header
-    /// Flag, PUS-Version, Mindestlänge und – falls in `config` aktiviert –
-    /// die CRC des Packet Error Control Field.
+    /// Interprets a Space Packet as a PUS packet.
+    ///
+    /// # Errors
+    ///
+    /// Fails with [`io::ErrorKind::InvalidData`] if the secondary header flag
+    /// is not set, the packet data field is too short for the secondary
+    /// header, the PUS version is not [`PUS_VERSION`], or (if enabled in
+    /// `config`) the CRC of the packet error control field is wrong.
     pub fn from_space_packet(packet: SpacePacket, config: &PusConfig) -> io::Result<Self> {
         let SpacePacket { header, mut data } = packet;
 
         if !header.secondary_header_flag {
-            return Err(invalid_data("Space Packet ohne Secondary Header ist kein PUS-Paket".into()));
+            return Err(invalid_data("Space Packet without secondary header is not a PUS packet".into()));
         }
 
         if config.packet_error_control {
             if data.len() < PEC_LEN {
-                return Err(invalid_data("Packet Data Field zu kurz für das Packet Error Control Field".into()));
+                return Err(invalid_data("packet data field too short for the packet error control field".into()));
             }
             let mut crc_input = BytesMut::with_capacity(crate::ccsds::PRIMARY_HEADER_LEN + data.len());
             header.encode(data.len(), &mut crc_input)?;
             crc_input.extend_from_slice(&data);
-            // Die CRC über Daten + angehängte CRC ergibt 0, wenn sie stimmt.
+            // The CRC over data + appended CRC is 0 if it is correct.
             if crc16_ccitt(&crc_input) != 0 {
-                return Err(invalid_data("CRC-Fehler im Packet Error Control Field".into()));
+                return Err(invalid_data("CRC error in packet error control field".into()));
             }
             data.truncate(data.len() - PEC_LEN);
         }
@@ -365,7 +421,7 @@ impl PusPacket {
         };
         if data.len() < min_len {
             return Err(invalid_data(format!(
-                "Packet Data Field ({} Byte) zu kurz für den PUS Secondary Header ({min_len} Byte)",
+                "packet data field ({} bytes) too short for the PUS secondary header ({min_len} bytes)",
                 data.len()
             )));
         }
@@ -373,7 +429,7 @@ impl PusPacket {
         let version = data[0] >> 4;
         if version != PUS_VERSION {
             return Err(invalid_data(format!(
-                "PUS-Version {version} wird nicht unterstützt (erwartet {PUS_VERSION}, PUS-C)"
+                "PUS version {version} not supported (expected {PUS_VERSION}, PUS-C)"
             )));
         }
 
@@ -411,31 +467,39 @@ impl PusPacket {
     }
 }
 
-/// Missionsspezifische Parameter des PUS-Formats.
+/// Mission-specific parameters of the PUS format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PusConfig {
-    /// Länge des Zeitstempels im TM Secondary Header in Byte.
+    /// Length of the time stamp in the TM secondary header in bytes.
     pub tm_time_len: usize,
-    /// Ob TC- und TM-Pakete ein Packet Error Control Field (CRC-16)
-    /// enthalten.
+    /// Whether TC and TM packets carry a packet error control field
+    /// (CRC-16).
     pub packet_error_control: bool,
 }
 
 impl Default for PusConfig {
-    /// [`DEFAULT_TM_TIME_LEN`] Byte Zeitstempel, mit Packet Error Control.
+    /// Time stamp of [`DEFAULT_TM_TIME_LEN`] bytes, with packet error control.
     fn default() -> Self {
         PusConfig { tm_time_len: DEFAULT_TM_TIME_LEN, packet_error_control: true }
     }
 }
 
-/// Codec für PUS-C-Pakete, nutzbar mit [`tokio_util::codec::Framed`] und
-/// den generischen TCP-Actors (siehe [`crate::PusListener`] & Co.). Das
-/// Framing übernimmt der [`SpacePacketCodec`]; dieser Codec wandelt nur
-/// zwischen [`SpacePacket`] und [`PusPacket`] um.
+/// Codec for PUS-C packets, usable with [`tokio_util::codec::Framed`] and
+/// the generic TCP actors (see [`PusListener`](crate::PusListener) and
+/// friends).
 ///
-/// Die TCP-Actors erzeugen ihren Codec per [`Default`], verwenden also
-/// [`PusConfig::default`]. Für andere Parameter kann der Codec über
-/// [`PusCodec::new`] direkt mit `Framed` genutzt werden.
+/// [`SpacePacketCodec`] does the framing; this codec only converts between
+/// [`SpacePacket`] and [`PusPacket`].
+///
+/// The TCP actors create their codec via [`Default`] and therefore use
+/// [`PusConfig::default`]. For other parameters, create the codec with
+/// [`PusCodec::new`] and use it directly with `Framed`.
+///
+/// # Errors
+///
+/// Encoding fails as described at [`PusPacket::to_space_packet`] and
+/// [`SpacePacketCodec`]; decoding fails as described at
+/// [`PusPacket::from_space_packet`].
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PusCodec {
     config: PusConfig,
@@ -443,10 +507,12 @@ pub struct PusCodec {
 }
 
 impl PusCodec {
+    /// Creates a codec with the given mission parameters.
     pub fn new(config: PusConfig) -> Self {
         PusCodec { config, inner: SpacePacketCodec }
     }
 
+    /// The mission parameters of this codec.
     pub fn config(&self) -> &PusConfig {
         &self.config
     }
@@ -484,38 +550,38 @@ mod tests {
     }
 
     #[test]
-    fn default_zeitstempellaenge_passt_zum_cuc_standardformat() {
+    fn default_time_len_matches_default_cuc_format() {
         assert_eq!(DEFAULT_TM_TIME_LEN, CucFormat::default().len());
     }
 
     #[test]
-    fn tm_mit_cuc_zeitstempel_roundtrip() {
+    fn tm_with_cuc_time_stamp_roundtrip() {
         let time: CucTime = "2026-09-26T12:00:00.5Z".parse().unwrap();
         let original = PusPacket::Tm(PusTm::new(1, 0, 17, 2, time, Bytes::new()));
 
         let mut codec = PusCodec::default();
         let mut buf = encode(&mut codec, original);
-        let Some(PusPacket::Tm(tm)) = codec.decode(&mut buf).unwrap() else { panic!("TM erwartet") };
+        let Some(PusPacket::Tm(tm)) = codec.decode(&mut buf).unwrap() else { panic!("expected TM") };
 
         assert_eq!(tm.secondary_header.cuc_time(CucFormat::default()).unwrap(), time);
     }
 
     #[test]
-    fn crc16_ccitt_referenzwert() {
+    fn crc16_ccitt_reference_value() {
         assert_eq!(crc16_ccitt(b"123456789"), 0x29B1);
     }
 
     #[test]
-    fn tc_encode_erzeugt_die_exakten_erwarteten_bytes() {
+    fn tc_encode_produces_exact_expected_bytes() {
         let mut tc = PusTc::new(0x0AB, 1, 17, 1, &b"hi"[..]);
         tc.secondary_header.source_id = 0x1234;
         let mut codec = PusCodec::default();
         let buf = encode(&mut codec, tc.into());
 
-        // Primary Header: Typ TC + Secondary Header Flag -> 0x18AB,
-        // Data Length = 5 (Sec. Header) + 2 (Daten) + 2 (CRC) - 1 = 8
+        // Primary header: type TC + secondary header flag -> 0x18AB,
+        // data length = 5 (sec. header) + 2 (data) + 2 (CRC) - 1 = 8
         assert_eq!(&buf[..6], &[0x18, 0xAB, 0xC0, 0x01, 0x00, 0x08]);
-        // Secondary Header: Version 2 | Ack 0b1111, Service 17, Subtype 1, Source ID
+        // Secondary header: version 2 | ack 0b1111, service 17, subtype 1, source ID
         assert_eq!(&buf[6..11], &[0x2F, 17, 1, 0x12, 0x34]);
         assert_eq!(&buf[11..13], b"hi");
         let crc = crc16_ccitt(&buf[..13]);
@@ -524,20 +590,20 @@ mod tests {
 
     #[test]
     fn tc_roundtrip() {
-        let mut tc = PusTc::new(42, 7, 8, 1, &b"kommando"[..]);
+        let mut tc = PusTc::new(42, 7, 8, 1, &b"command"[..]);
         tc.secondary_header.ack_flags = AckFlags { acceptance: true, completion: true, ..AckFlags::NONE };
         let original = PusPacket::Tc(tc);
 
         let mut codec = PusCodec::default();
         let mut buf = encode(&mut codec, original.clone());
-        let decoded = codec.decode(&mut buf).unwrap().expect("vollständig");
+        let decoded = codec.decode(&mut buf).unwrap().expect("complete");
 
         assert_eq!(decoded, original);
         assert!(buf.is_empty());
     }
 
     #[test]
-    fn tm_roundtrip_mit_eigener_konfiguration() {
+    fn tm_roundtrip_with_custom_config() {
         let config = PusConfig { tm_time_len: 4, packet_error_control: false };
         let mut tm = PusTm::new(3, 99, 3, 25, &[1u8, 2, 3, 4][..], &b"housekeeping"[..]);
         tm.secondary_header.time_reference_status = 0x5;
@@ -547,14 +613,14 @@ mod tests {
 
         let mut codec = PusCodec::new(config);
         let mut buf = encode(&mut codec, original.clone());
-        assert_eq!(buf.len(), 6 + 7 + 4 + 12, "ohne PEC kein CRC-Anhang");
+        assert_eq!(buf.len(), 6 + 7 + 4 + 12, "no CRC appended without PEC");
 
-        let decoded = codec.decode(&mut buf).unwrap().expect("vollständig");
+        let decoded = codec.decode(&mut buf).unwrap().expect("complete");
         assert_eq!(decoded, original);
     }
 
     #[test]
-    fn tm_ohne_nutzdaten_ist_gueltig() {
+    fn tm_without_source_data_is_valid() {
         let original = PusPacket::Tm(PusTm::new(1, 0, 17, 2, vec![0u8; DEFAULT_TM_TIME_LEN], Bytes::new()));
         let mut codec = PusCodec::default();
         let mut buf = encode(&mut codec, original.clone());
@@ -562,7 +628,7 @@ mod tests {
     }
 
     #[test]
-    fn decode_erkennt_crc_fehler() {
+    fn decode_detects_crc_error() {
         let mut codec = PusCodec::default();
         let mut buf = encode(&mut codec, PusTc::new(1, 1, 17, 1, &b"x"[..]).into());
         let last = buf.len() - 1;
@@ -573,7 +639,7 @@ mod tests {
     }
 
     #[test]
-    fn decode_wartet_auf_vollstaendiges_paket() {
+    fn decode_waits_for_complete_packet() {
         let mut codec = PusCodec::default();
         let full = encode(&mut codec, PusTc::new(1, 1, 17, 1, &b"1234"[..]).into());
 
@@ -584,7 +650,7 @@ mod tests {
     }
 
     #[test]
-    fn decode_lehnt_space_packet_ohne_secondary_header_ab() {
+    fn decode_rejects_space_packet_without_secondary_header() {
         let mut buf = BytesMut::new();
         SpacePacketCodec
             .encode(SpacePacket::new(PacketType::Telecommand, 1, 1, &b"0123456789"[..]), &mut buf)
@@ -593,7 +659,7 @@ mod tests {
     }
 
     #[test]
-    fn decode_lehnt_falsche_pus_version_ab() {
+    fn decode_rejects_wrong_pus_version() {
         let config = PusConfig { packet_error_control: false, ..PusConfig::default() };
         let mut space_packet = PusPacket::from(PusTc::new(1, 1, 17, 1, Bytes::new()))
             .to_space_packet(&config)
@@ -607,7 +673,7 @@ mod tests {
     }
 
     #[test]
-    fn encode_lehnt_falsche_zeitstempellaenge_ab() {
+    fn encode_rejects_wrong_time_len() {
         let tm = PusTm::new(1, 1, 3, 25, &[0u8; 3][..], Bytes::new());
         let mut buf = BytesMut::new();
         assert!(PusCodec::default().encode(tm.into(), &mut buf).is_err());

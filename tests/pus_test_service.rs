@@ -1,5 +1,5 @@
-//! Tests für den `PusTestServiceActor` (Service 17) – allein und als
-//! nachgelagerter Actor des `PusTcAcceptor`.
+//! Tests for `PusTestServiceActor` (service 17), on its own and as the
+//! downstream actor of a `PusTcAcceptor`.
 
 use std::time::Duration;
 
@@ -19,7 +19,7 @@ fn request(sequence_count: u16) -> AreYouAliveRequest {
 }
 
 #[tokio::test]
-async fn beantwortet_tc_17_1_mit_tm_17_2_und_danach_tm_1_7() {
+async fn answers_tc_17_1_with_tm_17_2_then_tm_1_7() {
     let tms = TestActor::<PusPacket>::spawn(TestActor::new());
     let service = PusTestServiceActor::spawn(PusTestServiceActor::new(APID, tms.clone().recipient()));
 
@@ -29,11 +29,11 @@ async fn beantwortet_tc_17_1_mit_tm_17_2_und_danach_tm_1_7() {
     let received = tms.ask(GetMessages::new()).await.unwrap();
     assert_eq!(received.len(), 2);
 
-    let alive = AreYouAliveReport::try_from(received[0].clone()).expect("zuerst TM(17,2)");
+    let alive = AreYouAliveReport::try_from(received[0].clone()).expect("TM(17,2) first");
     assert_eq!(alive.header.apid, APID);
     assert_eq!(alive.destination_id, 0x0815);
 
-    let completion = VerificationReport::try_from(received[1].clone()).expect("danach TM(1,7)");
+    let completion = VerificationReport::try_from(received[1].clone()).expect("then TM(1,7)");
     assert_eq!(completion.kind, VerificationKind::CompletionSuccess);
     assert_eq!(completion.request_id, RequestId::from_header(&request.header));
     assert_eq!(completion.destination_id, 0x0815);
@@ -42,7 +42,7 @@ async fn beantwortet_tc_17_1_mit_tm_17_2_und_danach_tm_1_7() {
 }
 
 #[tokio::test]
-async fn ohne_completion_flag_nur_tm_17_2() {
+async fn without_completion_flag_only_tm_17_2() {
     let tms = TestActor::<PusPacket>::spawn(TestActor::new());
     let service = PusTestServiceActor::spawn(PusTestServiceActor::new(APID, tms.clone().recipient()));
 
@@ -56,7 +56,7 @@ async fn ohne_completion_flag_nur_tm_17_2() {
 }
 
 #[tokio::test]
-async fn ungueltige_tcs_werden_mit_tm_1_4_beantwortet() {
+async fn invalid_tcs_are_answered_with_tm_1_4() {
     let tms = TestActor::<PusPacket>::spawn(TestActor::new());
     let service = PusTestServiceActor::spawn(PusTestServiceActor::new(APID, tms.clone().recipient()));
 
@@ -74,7 +74,7 @@ async fn ungueltige_tcs_werden_mit_tm_1_4_beantwortet() {
     for (packet, (tc, code, data)) in received.iter().zip(expected) {
         let report = VerificationReport::try_from(packet.clone()).unwrap();
         let VerificationKind::StartFailure(failure) = &report.kind else {
-            panic!("TM(1,4) erwartet, erhalten: {:?}", report.kind);
+            panic!("expected TM(1,4), got: {:?}", report.kind);
         };
         assert_eq!(report.request_id, RequestId::from(tc));
         assert_eq!(FailureCode::from_code(failure.code), Some(code));
@@ -83,7 +83,7 @@ async fn ungueltige_tcs_werden_mit_tm_1_4_beantwortet() {
 }
 
 #[tokio::test]
-async fn nachgelagert_zum_acceptor_mit_gemeinsamem_sequence_counter() {
+async fn downstream_of_acceptor_with_shared_sequence_counter() {
     let acceptances = TestActor::<VerificationReport>::spawn(TestActor::new());
     let tms = TestActor::<PusPacket>::spawn(TestActor::new());
 
@@ -96,18 +96,18 @@ async fn nachgelagert_zum_acceptor_mit_gemeinsamem_sequence_counter() {
         acceptor.with_service_handler(17, &[1], service.recipient::<PusTc>()),
     );
 
-    // TC(17,1) wird bestätigt und an den Test-Service weitergereicht.
+    // TC(17,1) is acknowledged and passed on to the test service.
     let tc: PusTc = request(3).into();
     acceptor.ask(PusPacket::from(tc.clone())).await.unwrap();
-    // TC eines Services ohne Handler wird mit TM(1,2) abgelehnt.
+    // A TC of a service without handler is rejected with TM(1,2).
     acceptor.ask(PusPacket::from(PusTc::new(APID, 4, 3, 1, Bytes::new()))).await.unwrap();
-    // TC an fremde APID wird weder bestätigt noch weitergereicht.
+    // A TC for another APID is neither acknowledged nor passed on.
     acceptor.ask(PusPacket::from(PusTc::new(APID + 1, 5, 17, 1, Bytes::new()))).await.unwrap();
 
     let accepted = TestActor::assert_received(&acceptances, 2, Duration::from_secs(1)).await;
     let service_tms = TestActor::assert_received(&tms, 2, Duration::from_secs(1)).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
-    assert_eq!(tms.ask(GetMessages::new()).await.unwrap().len(), 2, "keine weiteren TMs");
+    assert_eq!(tms.ask(GetMessages::new()).await.unwrap().len(), 2, "no further TMs");
 
     assert_eq!(accepted.iter().map(|r| r.request_id.sequence_count).collect::<Vec<_>>(), vec![3, 4]);
     assert_eq!(accepted[0].kind, VerificationKind::AcceptanceSuccess);
@@ -118,8 +118,9 @@ async fn nachgelagert_zum_acceptor_mit_gemeinsamem_sequence_counter() {
     assert_eq!(completion.kind, VerificationKind::CompletionSuccess);
     assert_eq!(completion.request_id, RequestId::from(&tc));
 
-    // Alle TMs der APID sind fortlaufend nummeriert: TM(1,1) für das erste
-    // TC, dann TM(17,2) und TM(1,7), dazwischen TM(1,2) für das zweite TC.
+    // All TMs of the APID are numbered consecutively: TM(1,1) for the first
+    // TC, then TM(17,2) and TM(1,7), with TM(1,2) for the second TC in
+    // between.
     let mut counts = vec![
         accepted[0].header.sequence_count,
         alive.header.sequence_count,

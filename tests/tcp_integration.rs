@@ -1,9 +1,8 @@
-//! Integrationstest: SimpleStringListener (= TcpListenerActor<SimpleString,
-//! SimpleStringCodec>) + TcpConnectionActor mit TestActor<SimpleString>
-//! als Downstream. Es wird eine echte TCP-Verbindung aufgebaut,
-//! längenpräfixierte ASCII-Strings gesendet und anschließend über
-//! `TestActor::assert_received` gewartet und geprüft, dass der TestActor
-//! die erwarteten SimpleString-Nachrichten aufgezeichnet hat.
+//! Integration test: SimpleStringListener (= TcpListenerActor<SimpleString,
+//! SimpleStringCodec>) + TcpConnectionActor with a TestActor<SimpleString>
+//! as downstream. A real TCP connection is opened, length-prefixed ASCII
+//! strings are sent, and `TestActor::assert_received` then waits for and
+//! checks the SimpleString messages recorded by the TestActor.
 
 use std::time::Duration;
 
@@ -16,26 +15,26 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 
 #[tokio::test]
-async fn simple_strings_werden_an_downstream_actor_weitergeleitet() {
-    // TestActor als Downstream für SimpleString-Nachrichten.
+async fn simple_strings_are_forwarded_to_downstream_actor() {
+    // TestActor as downstream for SimpleString messages.
     let test_actor_ref = TestActor::<SimpleString>::spawn(TestActor::new());
     let downstream: Recipient<SimpleString> = test_actor_ref.clone().recipient::<SimpleString>();
 
-    // Port 0 -> OS wählt einen freien Port; über GetLocalAddr erfragen wir ihn.
+    // Port 0 -> the OS picks a free port; GetLocalAddr tells us which.
     let listener_ref = SimpleStringListener::spawn(TcpListenerArgs {
         bind_addr: "127.0.0.1:0".parse().unwrap(),
         downstream,
     });
     let local_addr = listener_ref.ask(GetLocalAddr).await.unwrap();
 
-    // Client-Verbindung aufbauen und zwei Frames senden.
+    // Open a client connection and send two frames.
     let mut client = TcpStream::connect(local_addr).await.unwrap();
     client.write_all(&encode_frame("hello")).await.unwrap();
     client.write_all(&encode_frame("world")).await.unwrap();
     client.flush().await.unwrap();
 
-    // Wartet, bis mindestens 2 Nachrichten beim TestActor eingetroffen sind,
-    // oder schlägt nach 1s fehl. Liefert bei Erfolg eine Kopie des Vektors.
+    // Waits until at least 2 messages have reached the TestActor, or fails
+    // after 1 s. On success returns a copy of the recorded messages.
     let received = TestActor::assert_received(&test_actor_ref, 2, Duration::from_secs(1)).await;
 
     assert_eq!(
@@ -48,7 +47,7 @@ async fn simple_strings_werden_an_downstream_actor_weitergeleitet() {
 }
 
 #[tokio::test]
-async fn assert_received_schlaegt_bei_timeout_fehl() {
+async fn assert_received_fails_on_timeout() {
     let test_actor_ref = TestActor::<SimpleString>::spawn(TestActor::new());
     let downstream: Recipient<SimpleString> = test_actor_ref.clone().recipient::<SimpleString>();
 
@@ -62,8 +61,8 @@ async fn assert_received_schlaegt_bei_timeout_fehl() {
     client.write_all(&encode_frame("hello")).await.unwrap();
     client.flush().await.unwrap();
 
-    // Es wird nur 1 Nachricht gesendet, wir warten aber auf 5 -> muss
-    // innerhalb kurzer Zeit mit panic! fehlschlagen.
+    // Only 1 message is sent but we wait for 5 -> must fail with panic!
+    // shortly.
     let result = std::panic::AssertUnwindSafe(TestActor::assert_received(
         &test_actor_ref,
         5,
@@ -74,6 +73,6 @@ async fn assert_received_schlaegt_bei_timeout_fehl() {
 
     assert!(
         result.is_err(),
-        "assert_received hätte wegen Timeout fehlschlagen müssen"
+        "assert_received should have failed because of the timeout"
     );
 }

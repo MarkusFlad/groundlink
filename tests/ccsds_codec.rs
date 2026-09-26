@@ -1,6 +1,6 @@
-//! Integrationstest für `SpacePacketCodec`: Verifiziert die Nutzung mit
-//! `tokio_util::codec::Framed` auf einer echten TCP-Verbindung – sowohl
-//! lesend als auch schreibend, in beide Richtungen.
+//! Integration test for `SpacePacketCodec`: verifies its use with
+//! `tokio_util::codec::Framed` on a real TCP connection, reading and
+//! writing in both directions.
 
 use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
@@ -9,7 +9,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio_util::codec::Framed;
 
 #[tokio::test]
-async fn framed_sendet_und_empfaengt_space_packets_in_beide_richtungen() {
+async fn framed_sends_and_receives_space_packets_both_ways() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
 
@@ -22,14 +22,14 @@ async fn framed_sendet_und_empfaengt_space_packets_in_beide_richtungen() {
     let mut client_framed = Framed::new(client_stream, SpacePacketCodec);
 
     // Server -> Client
-    let tm_packet = SpacePacket::new(PacketType::Telemetry, 42, 7, &b"hallo client"[..]);
+    let tm_packet = SpacePacket::new(PacketType::Telemetry, 42, 7, &b"hello client"[..]);
     server_framed.send(tm_packet.clone()).await.unwrap();
 
     let received = client_framed.next().await.unwrap().unwrap();
     assert_eq!(received, tm_packet);
 
-    // Client -> Server, inkl. gesetztem Secondary-Header-Flag und
-    // Segmentierungsinfo, um auch diese Felder über die Leitung zu prüfen.
+    // Client -> server, with the secondary header flag and segmentation
+    // info set, to check these fields over the wire as well.
     let tc_packet = SpacePacket {
         header: SpacePacketHeader {
             packet_type: PacketType::Telecommand,
@@ -38,7 +38,7 @@ async fn framed_sendet_und_empfaengt_space_packets_in_beide_richtungen() {
             sequence_flags: SequenceFlags::FirstSegment,
             sequence_count: 555,
         },
-        data: Bytes::from_static(b"kommando"),
+        data: Bytes::from_static(b"command"),
     };
     client_framed.send(tc_packet.clone()).await.unwrap();
 
@@ -47,7 +47,7 @@ async fn framed_sendet_und_empfaengt_space_packets_in_beide_richtungen() {
 }
 
 #[tokio::test]
-async fn framed_verarbeitet_mehrere_hintereinander_gesendete_pakete() {
+async fn framed_handles_several_packets_sent_back_to_back() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
 
@@ -60,7 +60,7 @@ async fn framed_verarbeitet_mehrere_hintereinander_gesendete_pakete() {
     let mut client_framed = Framed::new(client_stream, SpacePacketCodec);
 
     let packets: Vec<SpacePacket> = (0..5)
-        .map(|i| SpacePacket::new(PacketType::Telemetry, 1, i, format!("paket {i}").into_bytes()))
+        .map(|i| SpacePacket::new(PacketType::Telemetry, 1, i, format!("packet {i}").into_bytes()))
         .collect();
 
     for packet in &packets {

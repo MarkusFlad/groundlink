@@ -1,5 +1,5 @@
-//! Tests for `PusTestServiceActor` (service 17), on its own and as the
-//! downstream actor of a `PusTcAcceptor`.
+//! Tests for `PusTestServiceActor` (service 17), on its own and together
+//! with a `PusTcAcceptor` and a `PusTmStamper`.
 
 use std::time::Duration;
 
@@ -7,7 +7,8 @@ use bytes::Bytes;
 use kameo::actor::Spawn;
 use groundlink::{
     AckFlags, AreYouAliveReport, AreYouAliveRequest, FailureCode, GetMessages, PusPacket, PusTc,
-    PusTcAcceptor, PusTestServiceActor, RequestId, TestActor, VerificationKind, VerificationReport,
+    PusTcAcceptor, PusTestServiceActor, PusTm, PusTmStamper, RequestId, TestActor,
+    VerificationKind, VerificationReport,
 };
 
 const APID: u16 = 0x042;
@@ -20,8 +21,8 @@ fn request(sequence_count: u16) -> AreYouAliveRequest {
 
 #[tokio::test]
 async fn answers_tc_17_1_with_tm_17_2_then_tm_1_7() {
-    let tms = TestActor::<PusPacket>::spawn(TestActor::new());
-    let service = PusTestServiceActor::spawn(PusTestServiceActor::new(APID, tms.clone().recipient::<PusPacket>()));
+    let tms = TestActor::<PusTm>::spawn(TestActor::new());
+    let service = PusTestServiceActor::spawn(PusTestServiceActor::new(APID, tms.clone().recipient::<PusTm>()));
 
     let request = request(9);
     service.ask(request.clone()).await.unwrap();
@@ -37,14 +38,12 @@ async fn answers_tc_17_1_with_tm_17_2_then_tm_1_7() {
     assert_eq!(completion.kind, VerificationKind::CompletionSuccess);
     assert_eq!(completion.request_id, RequestId::from_header(&request.header));
     assert_eq!(completion.destination_id, 0x0815);
-
-    assert_eq!((alive.header.sequence_count, completion.header.sequence_count), (0, 1));
 }
 
 #[tokio::test]
 async fn without_completion_flag_only_tm_17_2() {
-    let tms = TestActor::<PusPacket>::spawn(TestActor::new());
-    let service = PusTestServiceActor::spawn(PusTestServiceActor::new(APID, tms.clone().recipient::<PusPacket>()));
+    let tms = TestActor::<PusTm>::spawn(TestActor::new());
+    let service = PusTestServiceActor::spawn(PusTestServiceActor::new(APID, tms.clone().recipient::<PusTm>()));
 
     let mut request = request(1);
     request.ack_flags = AckFlags { completion: false, ..AckFlags::ALL };
@@ -57,8 +56,8 @@ async fn without_completion_flag_only_tm_17_2() {
 
 #[tokio::test]
 async fn invalid_tcs_are_answered_with_tm_1_4() {
-    let tms = TestActor::<PusPacket>::spawn(TestActor::new());
-    let service = PusTestServiceActor::spawn(PusTestServiceActor::new(APID, tms.clone().recipient::<PusPacket>()));
+    let tms = TestActor::<PusTm>::spawn(TestActor::new());
+    let service = PusTestServiceActor::spawn(PusTestServiceActor::new(APID, tms.clone().recipient::<PusTm>()));
 
     let unknown_subtype = PusTc::new(APID, 0, 17, 3, Bytes::new());
     let with_app_data = PusTc::new(APID, 1, 17, 1, &b"x"[..]);
@@ -71,8 +70,8 @@ async fn invalid_tcs_are_answered_with_tm_1_4() {
         (&with_app_data, FailureCode::InvalidApplicationData, [17, 1]),
     ];
     assert_eq!(received.len(), expected.len());
-    for (packet, (tc, code, data)) in received.iter().zip(expected) {
-        let report = VerificationReport::try_from(packet.clone()).unwrap();
+    for (tm, (tc, code, data)) in received.iter().zip(expected) {
+        let report = VerificationReport::try_from(tm.clone()).unwrap();
         let VerificationKind::StartFailure(failure) = &report.kind else {
             panic!("expected TM(1,4), got: {:?}", report.kind);
         };
@@ -83,72 +82,57 @@ async fn invalid_tcs_are_answered_with_tm_1_4() {
 }
 
 #[tokio::test]
-async fn downstream_of_acceptor_with_shared_sequence_counter() {
-    let acceptances = TestActor::<VerificationReport>::spawn(TestActor::new());
-    let tms = TestActor::<PusPacket>::spawn(TestActor::new());
+async fn acceptor_and_service_share_one_stamper() {
+    let packets = TestActor::<PusPacket>::spawn(TestActor::new());
+    let stamper = PusTmStamper::spawn(PusTmStamper::new(APID, packets.clone().recipient::<PusPacket>()));
 
-    let acceptor = PusTcAcceptor::new(APID, acceptances.clone().recipient());
-    let service = PusTestServiceActor::spawn(
-        PusTestServiceActor::new(APID, tms.clone().recipient::<PusPacket>())
-            .with_sequence_counter(acceptor.sequence_counter()),
-    );
+    let service = PusTestServiceActor::spawn(PusTestServiceActor::new(APID, stamper.clone().recipient::<PusTm>()));
     let acceptor = PusTcAcceptor::spawn(
-        acceptor.with_service_handler(17, &[1], service.recipient::<PusTc>()),
+        PusTcAcceptor::new(APID, stamper.recipient::<PusTm>()).with_service_handler(
+            17,
+            &[1],
+            service.recipient::<PusTc>(),
+        ),
     );
 
     // TC(17,1) is acknowledged and passed on to the test service.
     let tc: PusTc = request(3).into();
     acceptor.ask(PusPacket::from(tc.clone())).await.unwrap();
-    // A TC of a service without handler is rejected with TM(1,2).
-    acceptor.ask(PusPacket::from(PusTc::new(APID, 4, 3, 1, Bytes::new()))).await.unwrap();
     // A TC for another APID is neither acknowledged nor passed on.
     acceptor.ask(PusPacket::from(PusTc::new(APID + 1, 5, 17, 1, Bytes::new()))).await.unwrap();
 
-    let accepted = TestActor::assert_received(&acceptances, 2, Duration::from_secs(1)).await;
-    let service_tms = TestActor::assert_received(&tms, 2, Duration::from_secs(1)).await;
+    let received = TestActor::assert_received(&packets, 3, Duration::from_secs(1)).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
-    assert_eq!(tms.ask(GetMessages::new()).await.unwrap().len(), 2, "no further TMs");
+    assert_eq!(packets.ask(GetMessages::new()).await.unwrap().len(), 3, "no further TMs");
 
-    assert_eq!(accepted.iter().map(|r| r.request_id.sequence_count).collect::<Vec<_>>(), vec![3, 4]);
-    assert_eq!(accepted[0].kind, VerificationKind::AcceptanceSuccess);
-    assert!(matches!(accepted[1].kind, VerificationKind::AcceptanceFailure(_)));
-
-    let alive = AreYouAliveReport::try_from(service_tms[0].clone()).unwrap();
-    let completion = VerificationReport::try_from(service_tms[1].clone()).unwrap();
-    assert_eq!(completion.kind, VerificationKind::CompletionSuccess);
+    let types: Vec<_> = received.iter().map(|p| (p.service_type(), p.message_subtype())).collect();
+    assert_eq!(types, vec![(1, 1), (17, 2), (1, 7)]);
+    let completion = VerificationReport::try_from(received[2].clone()).unwrap();
     assert_eq!(completion.request_id, RequestId::from(&tc));
 
-    // All TMs of the APID are numbered consecutively: TM(1,1) for the first
-    // TC, then TM(17,2) and TM(1,7), with TM(1,2) for the second TC in
-    // between.
-    let mut counts = vec![
-        accepted[0].header.sequence_count,
-        alive.header.sequence_count,
-        completion.header.sequence_count,
-        accepted[1].header.sequence_count,
-    ];
-    counts.sort();
-    assert_eq!(counts, vec![0, 1, 2, 3]);
-    assert_eq!(accepted[0].header.sequence_count, 0);
-    assert!(alive.header.sequence_count < completion.header.sequence_count);
+    let counts: Vec<_> = received.iter().map(|p| p.header().sequence_count).collect();
+    assert_eq!(counts, vec![0, 1, 2]);
 }
 
 #[tokio::test]
-async fn acceptor_for_packets_keeps_tm_order_with_test_service() {
-    let tms = TestActor::<PusPacket>::spawn(TestActor::new());
+async fn sequence_counts_follow_the_order_on_the_wire() {
+    let packets = TestActor::<PusPacket>::spawn(TestActor::new());
+    let stamper = PusTmStamper::spawn(PusTmStamper::new(APID, packets.clone().recipient::<PusPacket>()));
 
-    let acceptor = PusTcAcceptor::for_packets(APID, tms.clone().recipient::<PusPacket>());
-    let service = PusTestServiceActor::spawn(
-        PusTestServiceActor::new(APID, tms.clone().recipient::<PusPacket>())
-            .with_sequence_counter(acceptor.sequence_counter()),
+    let service = PusTestServiceActor::spawn(PusTestServiceActor::new(APID, stamper.clone().recipient::<PusTm>()));
+    let acceptor = PusTcAcceptor::spawn(
+        PusTcAcceptor::new(APID, stamper.recipient::<PusTm>()).with_service_handler(
+            17,
+            &[1],
+            service.recipient::<PusTc>(),
+        ),
     );
-    let acceptor = PusTcAcceptor::spawn(acceptor.with_service_handler(17, &[1], service.recipient::<PusTc>()));
 
     for sequence_count in 0..20 {
         acceptor.tell(PusTc::from(request(sequence_count))).await.unwrap();
     }
 
-    let received = TestActor::assert_received(&tms, 60, Duration::from_secs(2)).await;
+    let received = TestActor::assert_received(&packets, 60, Duration::from_secs(2)).await;
     let positions = |service, subtype| -> Vec<usize> {
         received
             .iter()
@@ -169,8 +153,7 @@ async fn acceptor_for_packets_keeps_tm_order_with_test_service() {
         assert_eq!(request_id(completed[k]).sequence_count, k as u16);
     }
 
-    // All 60 TMs share one packet sequence count without gaps or duplicates.
-    let mut counts: Vec<_> = received.iter().map(|p| p.header().sequence_count).collect();
-    counts.sort();
+    // The stamper numbers the packets in the order in which it forwards them.
+    let counts: Vec<_> = received.iter().map(|p| p.header().sequence_count).collect();
     assert_eq!(counts, (0..60).collect::<Vec<u16>>());
 }

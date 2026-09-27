@@ -3,16 +3,19 @@
 //! Typical chain for an application with a fixed APID:
 //!
 //! ```text
-//! SpacePacketServer ──SpacePacket──▶ PusTcAcceptor ──TM(1,1), TM(1,2)──▶ …
-//!                                         │
-//!                                         └─PusTc (Service 17)──▶ PusTestServiceActor ──TM(17,2), TM(1,7)──▶ …
+//! SpacePacketServer ──SpacePacket──▶ PusTcAcceptor ──TM(1,1), TM(1,2)──────────────▶ PusTmStamper ──PusPacket──▶ PusServer
+//!                                         │                                               ▲
+//!                                         └─PusTc (Service 17)──▶ PusTestServiceActor ──TM(17,2), TM(1,7)
 //! ```
+//!
+//! The service actors send unstamped [`PusTm`]s. The [`PusTmStamper`] of
+//! the APID assigns the packet sequence count, the message type counter
+//! and the time stamp, in the order in which the packets arrive, so that
+//! the telemetry of the APID is numbered consecutively on the wire.
 
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::marker::PhantomData;
-use std::sync::atomic::{AtomicU16, Ordering};
-use std::sync::Arc;
 
 use kameo::actor::{Actor, ActorRef, Recipient};
 use kameo::error::Infallible;
@@ -25,40 +28,7 @@ use crate::ccsds::{PacketType, SpacePacket, SEQUENCE_COUNT_MAX};
 use crate::cuc::{CucFormat, CucTime};
 use crate::pus::service1::{FailureCode, RequestId, VerificationKind, VerificationReport};
 use crate::pus::service17::{AreYouAliveReport, AreYouAliveRequest};
-use crate::pus::{PusConfig, PusPacket, PusTc};
-
-/// Packet sequence count of an APID that several actors can share, so that
-/// all TM packets of that APID are numbered consecutively.
-///
-/// Clones share the same counter. It wraps around to 0 after
-/// [`SEQUENCE_COUNT_MAX`].
-///
-/// ```
-/// use groundlink::SequenceCounter;
-///
-/// let counter = SequenceCounter::new();
-/// let shared = counter.clone();
-/// assert_eq!(counter.next(), 0);
-/// assert_eq!(shared.next(), 1);
-/// ```
-#[derive(Debug, Clone, Default)]
-pub struct SequenceCounter(Arc<AtomicU16>);
-
-impl SequenceCounter {
-    /// Creates a counter starting at 0.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Returns the current value and advances the counter.
-    pub fn next(&self) -> u16 {
-        self.0
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
-                Some(if count >= SEQUENCE_COUNT_MAX { 0 } else { count + 1 })
-            })
-            .expect("update function always returns Some")
-    }
-}
+use crate::pus::{PusConfig, PusPacket, PusTc, PusTm};
 
 /// Message type counters per (service type, subtype, destination ID), as
 /// PUS-C specifies.
@@ -80,9 +50,135 @@ fn now(actor: &str, apid: u16, format: CucFormat) -> Option<CucTime> {
         .ok()
 }
 
+/// Sends an unstamped verification report for the TC `request_id` to
+/// `tm_recipient`.
+async fn send_report(
+    apid: u16,
+    tm_recipient: &Recipient<PusTm>,
+    request_id: RequestId,
+    destination_id: u16,
+    kind: VerificationKind,
+) {
+    let subtype = kind.subtype();
+    let mut report = VerificationReport::new(apid, 0, Bytes::new(), request_id, kind);
+    report.destination_id = destination_id;
+    let tm = match PusTm::try_from(report) {
+        Ok(tm) => tm,
+        Err(err) => {
+            error!(apid, error = %err, "cannot encode TM(1,{subtype})");
+            return;
+        }
+    };
+    if let Err(err) = tm_recipient.tell(tm).await {
+        warn!(apid, error = %err, "could not send TM(1,{subtype})");
+    }
+}
+
+/// Actor that stamps the telemetry of one APID and forwards it as
+/// [`PusPacket`]s to `target`, e.g. a [`PusServer`](crate::PusServer).
+///
+/// For every [`PusTm`] it receives, in the order of arrival, it sets
+/// - the APID to its own APID,
+/// - the packet sequence count (consecutive, wrapping around to 0 after
+///   [`SEQUENCE_COUNT_MAX`]),
+/// - the message type counter per (service type, subtype, destination
+///   ID), as PUS-C specifies, and
+/// - the time stamp to the current time as [`CucTime`] (default format:
+///   [`CucFormat::default`]).
+///
+/// All actors that produce telemetry for the APID (e.g. [`PusTcAcceptor`]
+/// and [`PusTestServiceActor`]) should send it to the same stamper. The
+/// counters then have no gaps or duplicates, and the sequence counts
+/// increase in the order in which the packets are sent. If no time stamp
+/// can be created, the packet is dropped and logged as an error.
+///
+/// ```
+/// # use std::time::Duration;
+/// # use kameo::actor::Spawn;
+/// # use groundlink::{PusPacket, PusTm, PusTmStamper, TestActor};
+/// # #[tokio::main]
+/// # async fn main() {
+/// // The packets would typically go to a `PusServer`; here a `TestActor`.
+/// let target = TestActor::<PusPacket>::spawn(TestActor::new());
+/// let stamper = PusTmStamper::spawn(PusTmStamper::new(0x042, target.clone().recipient::<PusPacket>()));
+///
+/// for _ in 0..2 {
+///     stamper.tell(PusTm::new(0x042, 0, 17, 2, bytes::Bytes::new(), bytes::Bytes::new())).await.unwrap();
+/// }
+///
+/// let received = TestActor::assert_received(&target, 2, Duration::from_secs(1)).await;
+/// let PusPacket::Tm(second) = &received[1] else { unreachable!() };
+/// assert_eq!(second.header.sequence_count, 1);
+/// assert_eq!(second.secondary_header.message_type_counter, 1);
+/// # }
+/// ```
+pub struct PusTmStamper {
+    apid: u16,
+    target: Recipient<PusPacket>,
+    time_format: CucFormat,
+    sequence_count: u16,
+    message_type_counters: MessageTypeCounters,
+}
+
+impl PusTmStamper {
+    /// Creates the stamper for the application `apid`. The stamped packets
+    /// go to `target`.
+    pub fn new(apid: u16, target: Recipient<PusPacket>) -> Self {
+        PusTmStamper {
+            apid,
+            target,
+            time_format: CucFormat::default(),
+            sequence_count: 0,
+            message_type_counters: MessageTypeCounters::default(),
+        }
+    }
+
+    /// Uses `format` for the time stamps.
+    pub fn with_time_format(mut self, format: CucFormat) -> Self {
+        self.time_format = format;
+        self
+    }
+
+    fn next_sequence_count(&mut self) -> u16 {
+        let count = self.sequence_count;
+        self.sequence_count = if count >= SEQUENCE_COUNT_MAX { 0 } else { count + 1 };
+        count
+    }
+}
+
+impl Actor for PusTmStamper {
+    type Args = Self;
+    type Error = Infallible;
+
+    async fn on_start(state: Self::Args, _actor_ref: ActorRef<Self>) -> Result<Self, Self::Error> {
+        Ok(state)
+    }
+}
+
+impl Message<PusTm> for PusTmStamper {
+    type Reply = ();
+
+    async fn handle(&mut self, mut tm: PusTm, _ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let Some(time) = now("PusTmStamper", self.apid, self.time_format) else {
+            return;
+        };
+        let header = &mut tm.secondary_header;
+        let (service_type, subtype) = (header.service_type, header.message_subtype);
+        header.message_type_counter = self.message_type_counters.next(service_type, subtype, header.destination_id);
+        header.time = time.into();
+        tm.header.apid = self.apid;
+        tm.header.sequence_count = self.next_sequence_count();
+
+        if let Err(err) = self.target.tell(PusPacket::Tm(tm)).await {
+            warn!(apid = self.apid, error = %err, "could not send TM({service_type},{subtype})");
+        }
+    }
+}
+
 /// Actor for an application with a fixed APID: performs the acceptance
 /// check for every PUS telecommand addressed to its APID, reports the
-/// result via service 1 to `tm_recipient`, and forwards accepted TCs to the
+/// result via service 1 to `tm_recipient` (typically a [`PusTmStamper`]),
+/// and forwards accepted TCs to the
 /// downstream actor registered for their service type (see
 /// [`with_service_handler`](Self::with_service_handler)).
 ///
@@ -106,10 +202,15 @@ fn now(actor: &str, apid: u16, format: CucFormat) -> Option<CucTime> {
 /// service type and subtype of the TC. TCs for other APIDs and telemetry
 /// packets are ignored.
 ///
-/// The reports carry the actor's own APID, the packet sequence count from
-/// [`sequence_counter`](Self::sequence_counter), a message type counter per
-/// (service type, subtype, destination ID), the source ID of the TC as
-/// destination ID, and the current time as [`CucTime`].
+/// The reports are unstamped [`PusTm`]s: they carry the actor's own APID
+/// and the source ID of the TC as destination ID; the packet sequence
+/// count, the message type counter and the time stamp are left for the
+/// [`PusTmStamper`].
+///
+/// If the service handlers send their telemetry to the same
+/// [`PusTmStamper`], TM(1,1) is guaranteed to arrive before the handlers'
+/// telemetry for the same TC, because it is queued before the TC is
+/// forwarded.
 ///
 /// Handles [`SpacePacket`] (e.g. as the `downstream` of a
 /// [`SpacePacketServer`](crate::SpacePacketServer)), [`PusPacket`] and
@@ -118,12 +219,9 @@ fn now(actor: &str, apid: u16, format: CucFormat) -> Option<CucTime> {
 /// by the codec. See [`PusTestServiceActor`] for a complete example.
 pub struct PusTcAcceptor {
     apid: u16,
-    tm_recipient: ReportRecipient,
+    tm_recipient: Recipient<PusTm>,
     service_handlers: HashMap<u8, ServiceHandler>,
     pus_config: PusConfig,
-    time_format: CucFormat,
-    sequence_counter: SequenceCounter,
-    message_type_counters: MessageTypeCounters,
 }
 
 struct ServiceHandler {
@@ -131,45 +229,12 @@ struct ServiceHandler {
     recipient: Recipient<PusTc>,
 }
 
-/// Where a [`PusTcAcceptor`] sends its verification reports.
-enum ReportRecipient {
-    Reports(Recipient<VerificationReport>),
-    Packets(Recipient<PusPacket>),
-}
-
 impl PusTcAcceptor {
     /// Creates the actor for the application `apid`. The verification
-    /// reports go to `tm_recipient` as [`VerificationReport`]s, with time
-    /// stamps in [`CucFormat::default`].
-    pub fn new(apid: u16, tm_recipient: Recipient<VerificationReport>) -> Self {
-        Self::with_recipient(apid, ReportRecipient::Reports(tm_recipient))
-    }
-
-    /// Like [`new`](Self::new), but sends the verification reports already
-    /// encoded as [`PusPacket`]s.
-    ///
-    /// `tm_recipient` can be any actor that handles [`PusPacket`], e.g. a
-    /// [`PusServer`](crate::PusServer) or [`PusClient`](crate::PusClient),
-    /// which sends to its current connection.
-    ///
-    /// If the downstream service handlers send their telemetry to the same
-    /// recipient, TM(1,1) is guaranteed to arrive before the handlers'
-    /// telemetry for the same TC, because it is queued before the TC is
-    /// forwarded.
-    pub fn for_packets(apid: u16, tm_recipient: Recipient<PusPacket>) -> Self {
-        Self::with_recipient(apid, ReportRecipient::Packets(tm_recipient))
-    }
-
-    fn with_recipient(apid: u16, tm_recipient: ReportRecipient) -> Self {
-        PusTcAcceptor {
-            apid,
-            tm_recipient,
-            service_handlers: HashMap::new(),
-            pus_config: PusConfig::default(),
-            time_format: CucFormat::default(),
-            sequence_counter: SequenceCounter::new(),
-            message_type_counters: MessageTypeCounters::default(),
-        }
+    /// reports go to `tm_recipient` as unstamped [`PusTm`]s, typically to
+    /// a [`PusTmStamper`].
+    pub fn new(apid: u16, tm_recipient: Recipient<PusTm>) -> Self {
+        PusTcAcceptor { apid, tm_recipient, service_handlers: HashMap::new(), pus_config: PusConfig::default() }
     }
 
     /// Accepts TCs with service type `service_type` and one of `subtypes`
@@ -191,28 +256,9 @@ impl PusTcAcceptor {
         self
     }
 
-    /// Uses `format` for the time stamps of the reports.
-    pub fn with_time_format(mut self, format: CucFormat) -> Self {
-        self.time_format = format;
-        self
-    }
-
-    /// Uses `counter` as packet sequence count, e.g. to share it with other
-    /// actors of the same APID.
-    pub fn with_sequence_counter(mut self, counter: SequenceCounter) -> Self {
-        self.sequence_counter = counter;
-        self
-    }
-
     /// The APID this actor is responsible for.
     pub fn apid(&self) -> u16 {
         self.apid
-    }
-
-    /// The packet sequence count of this actor, for sharing with downstream
-    /// actors of the same APID.
-    pub fn sequence_counter(&self) -> SequenceCounter {
-        self.sequence_counter.clone()
     }
 
     /// Creates a verification report for `tc` and sends it to
@@ -224,27 +270,7 @@ impl PusTcAcceptor {
     /// Creates a verification report for the TC identified by `request_id`
     /// and sends it to `tm_recipient`.
     async fn send_report(&mut self, request_id: RequestId, destination_id: u16, kind: VerificationKind) {
-        let Some(time) = now("PusTcAcceptor", self.apid, self.time_format) else {
-            return;
-        };
-        let subtype = kind.subtype();
-        let mut report = VerificationReport::new(self.apid, self.sequence_counter.next(), time, request_id, kind);
-        report.destination_id = destination_id;
-        report.message_type_counter =
-            self.message_type_counters.next(crate::pus::service1::SERVICE_TYPE, subtype, report.destination_id);
-        let result = match &self.tm_recipient {
-            ReportRecipient::Reports(recipient) => recipient.tell(report).await.map_err(|err| err.to_string()),
-            ReportRecipient::Packets(recipient) => match PusPacket::try_from(report) {
-                Ok(packet) => recipient.tell(packet).await.map_err(|err| err.to_string()),
-                Err(err) => {
-                    error!(apid = self.apid, error = %err, "cannot encode TM(1,{subtype})");
-                    return;
-                }
-            },
-        };
-        if let Err(err) = result {
-            warn!(apid = self.apid, error = %err, "could not send TM(1,{subtype})");
-        }
+        send_report(self.apid, &self.tm_recipient, request_id, destination_id, kind).await;
     }
 
     async fn handle_space_packet(&mut self, packet: SpacePacket) {
@@ -333,7 +359,8 @@ impl Message<SpacePacket> for PusTcAcceptor {
 /// first with TM(17,2) "Are-You-Alive Connection Report" and then, if the
 /// TC has the acknowledgement flag `completion` set, with TM(1,7)
 /// "Successful Completion of Execution Verification Report". Both packets
-/// go to the same `tm_recipient` so that their order is preserved.
+/// go as unstamped [`PusTm`]s to the same `tm_recipient`, typically the
+/// [`PusTmStamper`] of the APID, so that their order is preserved.
 ///
 /// Intended as a downstream actor of a [`PusTcAcceptor`]:
 ///
@@ -342,29 +369,31 @@ impl Message<SpacePacket> for PusTcAcceptor {
 /// # use kameo::actor::Spawn;
 /// # use groundlink::pus::service17;
 /// # use groundlink::{
-/// #     AreYouAliveRequest, PusPacket, PusTc, PusTcAcceptor, PusTestServiceActor, TestActor,
+/// #     AreYouAliveRequest, PusPacket, PusTc, PusTcAcceptor, PusTestServiceActor, PusTm,
+/// #     PusTmStamper, TestActor,
 /// # };
 /// # #[tokio::main]
 /// # async fn main() {
 /// let apid = 0x042;
 /// // The TM packets would typically go to a `PusServer`; here a `TestActor`.
 /// let tms = TestActor::<PusPacket>::spawn(TestActor::new());
+/// let stamper = PusTmStamper::spawn(PusTmStamper::new(apid, tms.clone().recipient::<PusPacket>()));
 ///
-/// let acceptor = PusTcAcceptor::for_packets(apid, tms.clone().recipient::<PusPacket>());
-/// let test_service = PusTestServiceActor::spawn(
-///     PusTestServiceActor::new(apid, tms.clone().recipient::<PusPacket>())
-///         .with_sequence_counter(acceptor.sequence_counter()),
-/// );
+/// let test_service = PusTestServiceActor::spawn(PusTestServiceActor::new(apid, stamper.clone().recipient::<PusTm>()));
 /// let acceptor = PusTcAcceptor::spawn(
-///     acceptor.with_service_handler(service17::SERVICE_TYPE, &[1], test_service.recipient::<PusTc>()),
+///     PusTcAcceptor::new(apid, stamper.recipient::<PusTm>())
+///         .with_service_handler(service17::SERVICE_TYPE, &[1], test_service.recipient::<PusTc>()),
 /// );
 ///
 /// acceptor.tell(PusTc::from(AreYouAliveRequest::new(apid, 0))).await.unwrap();
 ///
-/// // TM(1,1) from the acceptor, then TM(17,2) and TM(1,7) from the test service.
+/// // TM(1,1) from the acceptor, then TM(17,2) and TM(1,7) from the test
+/// // service, numbered consecutively by the stamper.
 /// let received = TestActor::assert_received(&tms, 3, Duration::from_secs(1)).await;
 /// let types: Vec<_> = received.iter().map(|p| (p.service_type(), p.message_subtype())).collect();
 /// assert_eq!(types, vec![(1, 1), (17, 2), (1, 7)]);
+/// let counts: Vec<_> = received.iter().map(|p| p.header().sequence_count).collect();
+/// assert_eq!(counts, vec![0, 1, 2]);
 /// # }
 /// ```
 ///
@@ -376,77 +405,27 @@ impl Message<SpacePacket> for PusTcAcceptor {
 /// [`PusTcAcceptor`] has already accepted the TC.
 pub struct PusTestServiceActor {
     apid: u16,
-    tm_recipient: Recipient<PusPacket>,
-    time_format: CucFormat,
-    sequence_counter: SequenceCounter,
-    message_type_counters: MessageTypeCounters,
+    tm_recipient: Recipient<PusTm>,
 }
 
 impl PusTestServiceActor {
     /// Creates the actor for the application `apid`. The TM packets go to
-    /// `tm_recipient`, with time stamps in [`CucFormat::default`].
-    ///
-    /// `tm_recipient` can be e.g. a [`PusServer`](crate::PusServer).
-    pub fn new(apid: u16, tm_recipient: Recipient<PusPacket>) -> Self {
-        PusTestServiceActor {
-            apid,
-            tm_recipient,
-            time_format: CucFormat::default(),
-            sequence_counter: SequenceCounter::new(),
-            message_type_counters: MessageTypeCounters::default(),
-        }
-    }
-
-    /// Uses `format` for the time stamps of the reports.
-    pub fn with_time_format(mut self, format: CucFormat) -> Self {
-        self.time_format = format;
-        self
-    }
-
-    /// Uses `counter` as packet sequence count, typically the one of the
-    /// upstream [`PusTcAcceptor`] (see
-    /// [`PusTcAcceptor::sequence_counter`]).
-    pub fn with_sequence_counter(mut self, counter: SequenceCounter) -> Self {
-        self.sequence_counter = counter;
-        self
-    }
-
-    async fn send(&self, packet: PusPacket, name: &str) {
-        if let Err(err) = self.tm_recipient.tell(packet).await {
-            warn!(apid = self.apid, error = %err, "could not send {name}");
-        }
-    }
-
-    /// Creates a verification report for the TC `request_id` and sends it
-    /// to `tm_recipient`.
-    async fn report(&mut self, request_id: RequestId, destination_id: u16, time: CucTime, kind: VerificationKind) {
-        let subtype = kind.subtype();
-        let mut report = VerificationReport::new(self.apid, self.sequence_counter.next(), time, request_id, kind);
-        report.destination_id = destination_id;
-        report.message_type_counter =
-            self.message_type_counters.next(crate::pus::service1::SERVICE_TYPE, subtype, destination_id);
-        match PusPacket::try_from(report) {
-            Ok(packet) => self.send(packet, &format!("TM(1,{subtype})")).await,
-            Err(err) => error!(apid = self.apid, error = %err, "cannot encode TM(1,{subtype})"),
-        }
+    /// `tm_recipient` as unstamped [`PusTm`]s, typically to a
+    /// [`PusTmStamper`].
+    pub fn new(apid: u16, tm_recipient: Recipient<PusTm>) -> Self {
+        PusTestServiceActor { apid, tm_recipient }
     }
 
     async fn handle_request(&mut self, request: AreYouAliveRequest) {
-        let Some(time) = now("PusTestServiceActor", self.apid, self.time_format) else {
-            return;
-        };
-
-        let mut alive = AreYouAliveReport::for_request(self.apid, self.sequence_counter.next(), time, &request);
-        alive.message_type_counter = self.message_type_counters.next(
-            crate::pus::service17::SERVICE_TYPE,
-            crate::pus::service17::ARE_YOU_ALIVE_REPORT_SUBTYPE,
-            alive.destination_id,
-        );
-        self.send(alive.into(), "TM(17,2)").await;
+        let alive = AreYouAliveReport::for_request(self.apid, 0, Bytes::new(), &request);
+        if let Err(err) = self.tm_recipient.tell(PusTm::from(alive)).await {
+            warn!(apid = self.apid, error = %err, "could not send TM(17,2)");
+        }
 
         if request.ack_flags.completion {
             let request_id = RequestId::from_header(&request.header);
-            self.report(request_id, request.source_id, time, VerificationKind::CompletionSuccess).await;
+            send_report(self.apid, &self.tm_recipient, request_id, request.source_id, VerificationKind::CompletionSuccess)
+                .await;
         }
     }
 
@@ -466,11 +445,8 @@ impl PusTestServiceActor {
         } else {
             FailureCode::UnsupportedSubtype
         };
-        let Some(time) = now("PusTestServiceActor", self.apid, self.time_format) else {
-            return;
-        };
         let kind = VerificationKind::StartFailure(code.notice(vec![service_type, subtype]));
-        self.report(request_id, destination_id, time, kind).await;
+        send_report(self.apid, &self.tm_recipient, request_id, destination_id, kind).await;
     }
 }
 

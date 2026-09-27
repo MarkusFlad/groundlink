@@ -8,10 +8,10 @@ use bytes::{Bytes, BytesMut};
 use futures::SinkExt;
 use kameo::actor::{ActorRef, Recipient, Spawn};
 use groundlink::{
-    AckFlags, CucFormat, CucTime, FailureCode, GetLocalAddr, GetMessages, PacketType, PusCodec,
-    PusConfig, PusServer, PusPacket, PusTc, PusTcAcceptor, PusTm, RequestId, SpacePacket,
-    SpacePacketCodec, SpacePacketHeader, SpacePacketServer, TcpServerArgs, TestActor,
-    VerificationKind, VerificationReport,
+    AckFlags, FailureCode, GetLocalAddr, GetMessages, PacketType, PusCodec, PusConfig, PusServer,
+    PusPacket, PusTc, PusTcAcceptor, PusTm, RequestId, SpacePacket, SpacePacketCodec,
+    SpacePacketHeader, SpacePacketServer, TcpServerArgs, TestActor, VerificationKind,
+    VerificationReport,
 };
 use tokio::net::TcpStream;
 use tokio_util::codec::{Encoder, Framed};
@@ -20,15 +20,27 @@ const APID: u16 = 0x042;
 
 /// Acceptor that accepts TC(17,1) and forwards it to the returned test
 /// handler.
-fn acceptor(reports: Recipient<VerificationReport>) -> (PusTcAcceptor, ActorRef<TestActor<PusTc>>) {
+fn acceptor(reports: Recipient<PusTm>) -> (PusTcAcceptor, ActorRef<TestActor<PusTc>>) {
     let handler = TestActor::<PusTc>::spawn(TestActor::new());
     let acceptor = PusTcAcceptor::new(APID, reports).with_service_handler(17, &[1], handler.clone().recipient());
     (acceptor, handler)
 }
 
+/// The verification reports received so far.
+async fn received_reports(reports: &ActorRef<TestActor<PusTm>>) -> Vec<VerificationReport> {
+    let tms = reports.ask(GetMessages::new()).await.unwrap();
+    tms.into_iter().map(|tm| VerificationReport::try_from(tm).unwrap()).collect()
+}
+
+/// Waits for `count` verification reports.
+async fn wait_for_reports(reports: &ActorRef<TestActor<PusTm>>, count: usize) -> Vec<VerificationReport> {
+    let tms = TestActor::assert_received(reports, count, Duration::from_secs(1)).await;
+    tms.into_iter().map(|tm| VerificationReport::try_from(tm).unwrap()).collect()
+}
+
 #[tokio::test]
 async fn tc_for_own_apid_is_acknowledged_with_tm_1_1() {
-    let reports = TestActor::<VerificationReport>::spawn(TestActor::new());
+    let reports = TestActor::<PusTm>::spawn(TestActor::new());
     let (acceptor, _handler) = acceptor(reports.clone().recipient());
     let acceptor = PusTcAcceptor::spawn(acceptor);
 
@@ -36,25 +48,18 @@ async fn tc_for_own_apid_is_acknowledged_with_tm_1_1() {
     tc.secondary_header.source_id = 0x0815;
     acceptor.ask(PusPacket::from(tc.clone())).await.unwrap();
 
-    let received = reports.ask(GetMessages::new()).await.unwrap();
+    let received = received_reports(&reports).await;
     assert_eq!(received.len(), 1);
     let report = &received[0];
     assert_eq!(report.kind, VerificationKind::AcceptanceSuccess);
     assert_eq!(report.request_id, RequestId::from(&tc));
     assert_eq!(report.header.apid, APID);
     assert_eq!(report.destination_id, 0x0815);
-
-    let time = CucTime::from_bytes(&report.time, CucFormat::default()).unwrap();
-    let age = chrono::Utc::now() - time.to_utc().unwrap();
-    assert!(age < chrono::Duration::seconds(1), "time stamp should be current: {time}");
-
-    // The report can be encoded as a PUS packet.
-    PusPacket::try_from(report.clone()).unwrap();
 }
 
 #[tokio::test]
 async fn ignores_other_apid_telemetry_and_tc_without_acceptance_flag() {
-    let reports = TestActor::<VerificationReport>::spawn(TestActor::new());
+    let reports = TestActor::<PusTm>::spawn(TestActor::new());
     let (acceptor, _handler) = acceptor(reports.clone().recipient());
     let acceptor = PusTcAcceptor::spawn(acceptor);
 
@@ -67,33 +72,12 @@ async fn ignores_other_apid_telemetry_and_tc_without_acceptance_flag() {
     no_ack.secondary_header.ack_flags = AckFlags { acceptance: false, ..AckFlags::ALL };
     acceptor.ask(no_ack).await.unwrap();
 
-    assert!(reports.ask(GetMessages::new()).await.unwrap().is_empty());
-}
-
-#[tokio::test]
-async fn counters_advance() {
-    let reports = TestActor::<VerificationReport>::spawn(TestActor::new());
-    let (acceptor, _handler) = acceptor(reports.clone().recipient());
-    let acceptor = PusTcAcceptor::spawn(acceptor);
-
-    for (seq, source_id) in [(0, 1), (1, 1), (2, 2)] {
-        let mut tc = PusTc::new(APID, seq, 17, 1, Bytes::new());
-        tc.secondary_header.source_id = source_id;
-        acceptor.ask(tc).await.unwrap();
-    }
-
-    let received = reports.ask(GetMessages::new()).await.unwrap();
-    let counters: Vec<_> = received
-        .iter()
-        .map(|r| (r.header.sequence_count, r.destination_id, r.message_type_counter))
-        .collect();
-    // Sequence count is global, message type counter is per destination ID.
-    assert_eq!(counters, vec![(0, 1, 0), (1, 1, 1), (2, 2, 0)]);
+    assert!(received_reports(&reports).await.is_empty());
 }
 
 #[tokio::test]
 async fn end_to_end_over_tcp() {
-    let reports = TestActor::<VerificationReport>::spawn(TestActor::new());
+    let reports = TestActor::<PusTm>::spawn(TestActor::new());
     let (acceptor, _handler) = acceptor(reports.clone().recipient());
     let acceptor = PusTcAcceptor::spawn(acceptor);
 
@@ -108,15 +92,15 @@ async fn end_to_end_over_tcp() {
     client.send(PusTc::new(APID + 1, 6, 17, 1, Bytes::new()).into()).await.unwrap();
     client.send(PusTc::new(APID, 7, 17, 1, Bytes::new()).into()).await.unwrap();
 
-    let received = TestActor::assert_received(&reports, 2, Duration::from_secs(1)).await;
+    let received = wait_for_reports(&reports, 2).await;
     let acked: Vec<_> = received.iter().map(|r| r.request_id.sequence_count).collect();
     assert_eq!(acked, vec![5, 7]);
 }
 
 #[tokio::test]
-async fn tm_1_1_is_sent_back_over_tcp_via_adapter_and_pus_writer() {
+async fn tm_1_1_is_sent_back_over_tcp_via_stamper_and_pus_writer() {
     use futures::StreamExt;
-    use groundlink::{ConnectionHalfClosed, PusPacketAdapter, PusWriter, TcpWriterArgs};
+    use groundlink::{ConnectionHalfClosed, PusTmStamper, PusWriter, TcpWriterArgs};
     use tokio::net::TcpListener;
 
     // Set up a TCP connection: the server side writes, the client reads.
@@ -133,10 +117,8 @@ async fn tm_1_1_is_sent_back_over_tcp_via_adapter_and_pus_writer() {
         peer_addr,
         listener: closed.recipient(),
     });
-    let adapter = PusPacketAdapter::<VerificationReport>::spawn(PusPacketAdapter::new(
-        writer.recipient::<PusPacket>(),
-    ));
-    let (acceptor, _handler) = acceptor(adapter.recipient());
+    let stamper = PusTmStamper::spawn(PusTmStamper::new(APID, writer.recipient::<PusPacket>()));
+    let (acceptor, _handler) = acceptor(stamper.recipient());
     let acceptor = PusTcAcceptor::spawn(acceptor);
 
     let tc = PusTc::new(APID, 11, 17, 1, Bytes::new());
@@ -168,7 +150,7 @@ async fn adapter_accepts_infallible_conversions() {
 
 #[tokio::test]
 async fn accepted_tc_is_forwarded_to_service_handler() {
-    let reports = TestActor::<VerificationReport>::spawn(TestActor::new());
+    let reports = TestActor::<PusTm>::spawn(TestActor::new());
     let (acceptor, handler) = acceptor(reports.clone().recipient());
     let acceptor = PusTcAcceptor::spawn(acceptor);
 
@@ -181,7 +163,7 @@ async fn accepted_tc_is_forwarded_to_service_handler() {
 
 #[tokio::test]
 async fn unsupported_services_and_subtypes_are_rejected_with_tm_1_2() {
-    let reports = TestActor::<VerificationReport>::spawn(TestActor::new());
+    let reports = TestActor::<PusTm>::spawn(TestActor::new());
     let (acceptor, handler) = acceptor(reports.clone().recipient());
     let acceptor = PusTcAcceptor::spawn(acceptor);
 
@@ -192,7 +174,7 @@ async fn unsupported_services_and_subtypes_are_rejected_with_tm_1_2() {
     acceptor.ask(unknown_service.clone()).await.unwrap();
     acceptor.ask(unknown_subtype.clone()).await.unwrap();
 
-    let received = reports.ask(GetMessages::new()).await.unwrap();
+    let received = received_reports(&reports).await;
     let expected = [
         (&unknown_service, FailureCode::UnsupportedService, [3u8, 1]),
         (&unknown_subtype, FailureCode::UnsupportedSubtype, [17, 5]),
@@ -212,7 +194,7 @@ async fn unsupported_services_and_subtypes_are_rejected_with_tm_1_2() {
 
 #[tokio::test]
 async fn failed_forwarding_is_reported_with_tm_1_10() {
-    let reports = TestActor::<VerificationReport>::spawn(TestActor::new());
+    let reports = TestActor::<PusTm>::spawn(TestActor::new());
     let (acceptor, handler) = acceptor(reports.clone().recipient());
     let acceptor = PusTcAcceptor::spawn(acceptor);
 
@@ -222,7 +204,7 @@ async fn failed_forwarding_is_reported_with_tm_1_10() {
     let tc = PusTc::new(APID, 1, 17, 1, Bytes::new());
     acceptor.ask(tc.clone()).await.unwrap();
 
-    let received = reports.ask(GetMessages::new()).await.unwrap();
+    let received = received_reports(&reports).await;
     let kinds: Vec<_> = received.iter().map(|r| r.kind.subtype()).collect();
     assert_eq!(kinds, vec![1, 10], "TM(1,1) first, then TM(1,10)");
 
@@ -248,14 +230,14 @@ fn with_crc_error(tc: PusTc) -> SpacePacket {
 
 #[tokio::test]
 async fn valid_space_packet_is_accepted_and_forwarded() {
-    let reports = TestActor::<VerificationReport>::spawn(TestActor::new());
+    let reports = TestActor::<PusTm>::spawn(TestActor::new());
     let (acceptor, handler) = acceptor(reports.clone().recipient());
     let acceptor = PusTcAcceptor::spawn(acceptor);
 
     let tc = PusTc::new(APID, 3, 17, 1, Bytes::new());
     acceptor.ask(space_packet(tc.clone())).await.unwrap();
 
-    let received = reports.ask(GetMessages::new()).await.unwrap();
+    let received = received_reports(&reports).await;
     assert_eq!(received.len(), 1);
     assert_eq!(received[0].kind, VerificationKind::AcceptanceSuccess);
     assert_eq!(TestActor::assert_received(&handler, 1, Duration::from_secs(1)).await, vec![tc]);
@@ -263,7 +245,7 @@ async fn valid_space_packet_is_accepted_and_forwarded() {
 
 #[tokio::test]
 async fn invalid_space_packets_are_rejected_with_tm_1_2() {
-    let reports = TestActor::<VerificationReport>::spawn(TestActor::new());
+    let reports = TestActor::<PusTm>::spawn(TestActor::new());
     let (acceptor, handler) = acceptor(reports.clone().recipient());
     let acceptor = PusTcAcceptor::spawn(acceptor);
 
@@ -277,7 +259,7 @@ async fn invalid_space_packets_are_rejected_with_tm_1_2() {
         acceptor.ask(packet.clone()).await.unwrap();
     }
 
-    let received = reports.ask(GetMessages::new()).await.unwrap();
+    let received = received_reports(&reports).await;
     let expected = [
         (&crc_error, FailureCode::ChecksumError),
         (&no_secondary_header, FailureCode::MissingSecondaryHeader),
@@ -299,21 +281,21 @@ async fn invalid_space_packets_are_rejected_with_tm_1_2() {
 
 #[tokio::test]
 async fn invalid_space_packets_for_other_apids_or_telemetry_are_ignored() {
-    let reports = TestActor::<VerificationReport>::spawn(TestActor::new());
+    let reports = TestActor::<PusTm>::spawn(TestActor::new());
     let (acceptor, _handler) = acceptor(reports.clone().recipient());
     let acceptor = PusTcAcceptor::spawn(acceptor);
 
     acceptor.ask(with_crc_error(PusTc::new(APID + 1, 0, 17, 1, Bytes::new()))).await.unwrap();
     acceptor.ask(SpacePacket::new(PacketType::Telemetry, APID, 0, &b"0123456789"[..])).await.unwrap();
 
-    assert!(reports.ask(GetMessages::new()).await.unwrap().is_empty());
+    assert!(received_reports(&reports).await.is_empty());
 }
 
 #[tokio::test]
 async fn tc_with_crc_error_over_tcp_is_rejected_and_connection_stays_open() {
     use tokio::io::AsyncWriteExt;
 
-    let reports = TestActor::<VerificationReport>::spawn(TestActor::new());
+    let reports = TestActor::<PusTm>::spawn(TestActor::new());
     let (acceptor, _handler) = acceptor(reports.clone().recipient());
     let acceptor = PusTcAcceptor::spawn(acceptor);
 
@@ -333,7 +315,7 @@ async fn tc_with_crc_error_over_tcp_is_rejected_and_connection_stays_open() {
     }
     stream.write_all(&bytes).await.unwrap();
 
-    let received = TestActor::assert_received(&reports, 2, Duration::from_secs(1)).await;
+    let received = wait_for_reports(&reports, 2).await;
     let kinds: Vec<_> = received
         .iter()
         .map(|r| (r.request_id.sequence_count, r.kind.subtype()))

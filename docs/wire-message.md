@@ -26,19 +26,13 @@ The `TcpClientActor` works the same way, with its own control messages
 Because server and client both handle `M`, any actor that produces
 messages only needs a `Recipient<M>`. It doesn't matter whether that
 recipient is a server, a client or another processing actor. For example,
-in the [`pus_server`](../examples/pus_server.rs) example the service
-actors send their telemetry straight to the TM server:
+in the [`pus_server`](../examples/pus_server.rs) example the
+`PusTmStamper` sends the telemetry straight to the TM server:
 
 ```rust
 // The TM server writes every `PusPacket` it receives to its connected client.
 let tm_server = PusServer::spawn(TcpServerArgs { /* ... */ });
-let telemetry = tm_server.clone().recipient::<PusPacket>();
-
-let acceptor = PusTcAcceptor::for_packets(APID, telemetry.clone());
-let test_service = PusTestServiceActor::spawn(
-    PusTestServiceActor::new(APID, telemetry)
-        .with_sequence_counter(acceptor.sequence_counter()),
-);
+let stamper = PusTmStamper::spawn(PusTmStamper::new(APID, tm_server.recipient::<PusPacket>()));
 ```
 
 In a unit test, you can pass a `Recipient<PusPacket>` of a `TestActor`

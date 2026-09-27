@@ -16,7 +16,9 @@ and [tokio](https://tokio.rs).
   - service 1 (request verification) and
   - service 17 (test, "Are-You-Alive").
 - **PUS actors**: `PusTcAcceptor` performs the acceptance check (packet
-  format, CRC, APID, service and subtype) and reports it via service 1; `PusTestServiceActor` implements service 17.
+  format, CRC, APID, service and subtype) and reports it via service 1;
+  `PusTestServiceActor` implements service 17; `PusTmStamper` numbers the
+  telemetry of an APID consecutively and adds the time stamps.
 - **Simple string protocol**: a length-prefixed string protocol, useful for
   getting started and for tests.
 - **Test helpers**: `TestActor` records messages for assertions in tests.
@@ -83,8 +85,11 @@ telemetry:
 
 ```text
 TC port: SpacePacketServer ──SpacePacket──▶ PusTcAcceptor ────────TM(1,x)───────────┐
-                                                 │                                  │
-                                                 └──TC(17,1)──▶ PusTestServiceActor ┤ PusPacket
+                                                 │                                  │ PusTm
+                                                 └──TC(17,1)──▶ PusTestServiceActor ┤
+                                                                                    ▼
+                                                                              PusTmStamper
+                                                                                    │ PusPacket
                                                                                     ▼
 TM port:                                                              TM client ◀── PusServer
 ```

@@ -2,8 +2,11 @@
 //!
 //! ```text
 //! TC port: SpacePacketServer ──SpacePacket──▶ PusTcAcceptor ────────TM(1,x)───────────┐
-//!                                                  │                                  │
-//!                                                  └──TC(17,1)──▶ PusTestServiceActor ┤ PusPacket
+//!                                                  │                                  │ PusTm
+//!                                                  └──TC(17,1)──▶ PusTestServiceActor ┤
+//!                                                                                     ▼
+//!                                                                               PusTmStamper
+//!                                                                                     │ PusPacket
 //!                                                                                     ▼
 //! TM port:                                                              TM client ◀── PusServer
 //! ```
@@ -11,8 +14,9 @@
 //! Telecommands are received on the TC port as Space Packets, so that the
 //! `PusTcAcceptor` can answer invalid PUS packets (e.g. with a CRC error)
 //! with TM(1,2). The application process has APID 0x042 and supports
-//! TC(17,1). All telemetry (TM(1,1), TM(17,2),
-//! TM(1,7)) is sent to the client connected to the TM port, in that order.
+//! TC(17,1). All telemetry (TM(1,1), TM(17,2), TM(1,7)) goes through one
+//! `PusTmStamper`, which numbers it consecutively and adds the time stamp,
+//! and is sent to the client connected to the TM port, in that order.
 //! Telemetry produced while no client is connected to the TM port is
 //! dropped. Each port serves one client at a time.
 //!
@@ -28,8 +32,8 @@ use kameo::error::Infallible;
 use kameo::message::{Context, Message};
 use groundlink::pus::service17;
 use groundlink::{
-    GetLocalAddr, PusServer, PusPacket, PusTc, PusTcAcceptor, PusTestServiceActor, SpacePacket,
-    SpacePacketServer, TcpServerArgs,
+    GetLocalAddr, PusServer, PusPacket, PusTc, PusTcAcceptor, PusTestServiceActor, PusTm,
+    PusTmStamper, SpacePacket, SpacePacketServer, TcpServerArgs,
 };
 use tracing::warn;
 use tracing_subscriber::EnvFilter;
@@ -82,16 +86,14 @@ async fn main() -> anyhow::Result<()> {
         bind_addr: SocketAddr::from(([0, 0, 0, 0], tm_port)),
         downstream: IgnoreIncoming::spawn(IgnoreIncoming).recipient::<PusPacket>(),
     });
-    let telemetry = tm_server.clone().recipient::<PusPacket>();
+    // All telemetry of the APID is stamped by one stamper.
+    let stamper = PusTmStamper::spawn(PusTmStamper::new(APID, tm_server.clone().recipient::<PusPacket>()));
+    let telemetry = stamper.recipient::<PusTm>();
 
     // Telecommands: acceptance check (including the PUS format), then
     // service 17.
-    let acceptor = PusTcAcceptor::for_packets(APID, telemetry.clone());
-    let test_service = PusTestServiceActor::spawn(
-        PusTestServiceActor::new(APID, telemetry)
-            .with_sequence_counter(acceptor.sequence_counter()),
-    );
-    let acceptor = PusTcAcceptor::spawn(acceptor.with_service_handler(
+    let test_service = PusTestServiceActor::spawn(PusTestServiceActor::new(APID, telemetry.clone()));
+    let acceptor = PusTcAcceptor::spawn(PusTcAcceptor::new(APID, telemetry).with_service_handler(
         service17::SERVICE_TYPE,
         &[service17::ARE_YOU_ALIVE_REQUEST_SUBTYPE],
         test_service.recipient::<PusTc>(),

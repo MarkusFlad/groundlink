@@ -17,8 +17,10 @@
 //! On top of the PUS packets, [`pus_actors`] provides actors that handle
 //! telecommands for an application process: [`PusTcAcceptor`] performs
 //! the acceptance check (including the PUS format, when it receives
-//! [`SpacePacket`]s) and reports it via PUS service 1, and
-//! [`PusTestServiceActor`] implements PUS service 17.
+//! [`SpacePacket`]s) and reports it via PUS service 1,
+//! [`PusTestServiceActor`] implements PUS service 17, and
+//! [`PusTmStamper`] assigns sequence counts, message type counters and time
+//! stamps to the telemetry of an APID.
 //!
 //! # Modules
 //!
@@ -43,9 +45,9 @@
 //!   it receives.
 //! - `pus_server <tc_port> <tm_port>`: receives telecommands on one port
 //!   with the actor chain [`SpacePacketServer`] → [`PusTcAcceptor`] →
-//!   [`PusTestServiceActor`] and sends all telemetry to a
-//!   second [`PusServer`], which writes it to the client connected to the
-//!   second port.
+//!   [`PusTestServiceActor`] and sends all telemetry through a
+//!   [`PusTmStamper`] to a second [`PusServer`], which writes it to the
+//!   client connected to the second port.
 //! - `pus_client <address> <tc_port> <tm_port>`: an interactive client with
 //!   two [`PusClient`]s that sends TC(17,1) and prints the received
 //!   telemetry.
@@ -122,6 +124,6 @@ pub use pus::{
 };
 pub use pus::service1::{FailureCode, FailureNotice, RequestId, VerificationKind, VerificationReport};
 pub use pus::service17::{AreYouAliveReport, AreYouAliveRequest};
-pub use pus_actors::{PusPacketAdapter, PusTcAcceptor, PusTestServiceActor, SequenceCounter};
+pub use pus_actors::{PusPacketAdapter, PusTcAcceptor, PusTestServiceActor, PusTmStamper};
 pub use simple_string::{encode_frame, SimpleString, SimpleStringCodec};
 pub use test::{GetMessages, TestActor};

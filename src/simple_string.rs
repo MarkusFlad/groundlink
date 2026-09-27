@@ -22,6 +22,8 @@ use tokio_util::codec::{Decoder, Encoder, LengthDelimitedCodec};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SimpleString(pub String);
 
+impl crate::WireMessage for SimpleString {}
+
 /// Codec for [`SimpleString`]: 16-bit big-endian length field followed by
 /// UTF-8 payload.
 ///

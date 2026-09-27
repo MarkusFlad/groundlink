@@ -8,12 +8,10 @@
 //!   [`TcpWriterActor`] (write half, encodes and sends every `M` it
 //!   receives).
 //!
-//! Both [`TcpServerActor`] and [`TcpClientActor`] send a [`Relay<M>`]
-//! over their current connection, so the same code can send to an
-//! accepted or to an opened connection. The wrapper is needed because a
-//! generic `Message<M>` implementation would conflict with the actors'
-//! other message implementations (e.g. `Message<GetLocalAddr>` when `M`
-//! is `GetLocalAddr`).
+//! Both [`TcpServerActor`] and [`TcpClientActor`] write every `M` they
+//! receive to their current connection, so the same code can send to an
+//! accepted or to an opened connection. This requires `M` to implement
+//! [`WireMessage`].
 //!
 //! The protocols of this crate get type aliases, e.g. [`PusServer`] for
 //! `TcpServerActor<PusPacket, PusCodec>`.
@@ -42,7 +40,7 @@ use crate::ccsds::{SpacePacket, SpacePacketCodec};
 use crate::pus::{PusCodec, PusPacket};
 use crate::messages::{
     Close, CloseRead, CloseReason, CloseWrite, Connect, ConnectionHalf, ConnectionHalfClosed,
-    GetLocalAddr, MessageCodec, PeerHalfClosed, Relay, Shutdown,
+    GetLocalAddr, MessageCodec, PeerHalfClosed, Shutdown, WireMessage,
 };
 use crate::simple_string::{SimpleString, SimpleStringCodec};
 
@@ -62,11 +60,10 @@ pub struct TcpServerArgs<M: Send + 'static> {
 /// Connections are served one at a time: the next connection is accepted
 /// only after both halves of the current one have been closed.
 ///
-/// A [`Relay<M>`] sent to the server is written to the peer of the
-/// current connection, which lets other actors send to whichever client is
+/// An `M` sent to the server is written to the peer of the current
+/// connection, which lets other actors send to whichever client is
 /// connected. Without a connection the message is dropped with a warning.
-/// Actors that produce messages can take a [`MessageSink<M>`](crate::MessageSink),
-/// which accepts the server's `Recipient<Relay<M>>` directly.
+/// This requires `M: WireMessage`.
 ///
 /// Spawning fails with the I/O error of binding the address. Also handles
 /// [`GetLocalAddr`] and [`ConnectionHalfClosed`].
@@ -190,14 +187,14 @@ where
 }
 
 /// Sends the message to the peer of the current connection.
-impl<M, C> Message<Relay<M>> for TcpServerActor<M, C>
+impl<M, C> Message<M> for TcpServerActor<M, C>
 where
-    M: Send + 'static,
+    M: WireMessage + Send + 'static,
     C: MessageCodec<M>,
 {
     type Reply = ();
 
-    async fn handle(&mut self, Relay(item): Relay<M>, _ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(&mut self, item: M, _ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let Some((peer_addr, writer)) = &self.writer else {
             warn!("TcpServerActor: message dropped, no connection");
             return;
@@ -536,8 +533,8 @@ pub struct TcpClientArgs<M: Send + 'static> {
 /// Messages:
 /// - [`Connect`]: connects; replies with the peer address, or an error of
 ///   kind [`io::ErrorKind::AlreadyExists`] if already connected.
-/// - [`Relay<M>`]: sends a message over the connection (dropped with a
-///   warning if not connected).
+/// - `M`: sends the message over the connection (dropped with a warning
+///   if not connected; requires `M: WireMessage`).
 /// - [`Close`], [`CloseRead`], [`CloseWrite`]: close both or one half.
 /// - [`PeerHalfClosed`]: mirrors a half-close of a coupled connection.
 /// - [`ConnectionHalfClosed`]: sent by the reader and writer; once both
@@ -767,16 +764,16 @@ where
     }
 }
 
-impl<M, C> Message<Relay<M>> for TcpClientActor<M, C>
+impl<M, C> Message<M> for TcpClientActor<M, C>
 where
-    M: Send + 'static,
+    M: WireMessage + Send + 'static,
     C: MessageCodec<M>,
 {
     type Reply = ();
 
     async fn handle(
         &mut self,
-        Relay(item): Relay<M>,
+        item: M,
         _ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
         match &self.connection {

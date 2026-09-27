@@ -1,4 +1,4 @@
-//! Tests for sending through a `TcpServerActor`: a `Relay<M>` sent to the
+//! Tests for sending through a `TcpServerActor`: a message sent to the
 //! server is written to the client of its current connection.
 
 use std::time::Duration;
@@ -6,7 +6,7 @@ use std::time::Duration;
 use futures::{SinkExt, StreamExt};
 use kameo::actor::{ActorRef, Spawn};
 use groundlink::{
-    GetLocalAddr, Relay, SimpleString, SimpleStringCodec, SimpleStringServer, TcpServerArgs,
+    GetLocalAddr, SimpleString, SimpleStringCodec, SimpleStringServer, TcpServerArgs,
     TestActor,
 };
 use tokio::net::TcpStream;
@@ -30,7 +30,7 @@ async fn server() -> (ActorRef<SimpleStringServer>, ActorRef<TestActor<SimpleStr
 
 /// Connects a client and waits until the server has set up the
 /// connection: the reader only starts after the writer is registered, so
-/// once a message from the client arrives downstream, relaying works.
+/// once a message from the client arrives downstream, sending works.
 async fn connect(
     server: &ActorRef<SimpleStringServer>,
     received: &ActorRef<TestActor<SimpleString>>,
@@ -52,30 +52,30 @@ async fn next(client: &mut Client) -> SimpleString {
 }
 
 #[tokio::test]
-async fn relay_is_written_to_the_connected_client() {
+async fn message_is_written_to_the_connected_client() {
     let (server, received) = server().await;
     let mut client = connect(&server, &received, 1).await;
 
-    server.tell(Relay(text("one"))).await.unwrap();
-    server.tell(Relay(text("two"))).await.unwrap();
+    server.tell(text("one")).await.unwrap();
+    server.tell(text("two")).await.unwrap();
 
     assert_eq!(next(&mut client).await, text("one"));
     assert_eq!(next(&mut client).await, text("two"));
 }
 
 #[tokio::test]
-async fn relay_without_connection_is_dropped() {
+async fn message_without_connection_is_dropped() {
     let (server, received) = server().await;
 
-    server.ask(Relay(text("lost"))).await.unwrap();
+    server.ask(text("lost")).await.unwrap();
     let mut client = connect(&server, &received, 1).await;
-    server.tell(Relay(text("delivered"))).await.unwrap();
+    server.tell(text("delivered")).await.unwrap();
 
     assert_eq!(next(&mut client).await, text("delivered"));
 }
 
 #[tokio::test]
-async fn relay_goes_to_the_next_client_after_reconnect() {
+async fn message_goes_to_the_next_client_after_reconnect() {
     let (server, received) = server().await;
 
     let first = connect(&server, &received, 1).await;
@@ -83,6 +83,6 @@ async fn relay_goes_to_the_next_client_after_reconnect() {
     // The server accepts the next client once the first one is closed.
     let mut second = connect(&server, &received, 2).await;
 
-    server.tell(Relay(text("to second"))).await.unwrap();
+    server.tell(text("to second")).await.unwrap();
     assert_eq!(next(&mut second).await, text("to second"));
 }

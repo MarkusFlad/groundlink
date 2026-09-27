@@ -280,6 +280,8 @@ pub enum PusPacket {
     Tm(PusTm),
 }
 
+impl crate::WireMessage for PusPacket {}
+
 impl From<PusTc> for PusPacket {
     fn from(tc: PusTc) -> Self {
         PusPacket::Tc(tc)

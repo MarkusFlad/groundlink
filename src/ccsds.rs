@@ -203,6 +203,8 @@ pub struct SpacePacket {
     pub data: Bytes,
 }
 
+impl crate::WireMessage for SpacePacket {}
+
 impl SpacePacket {
     /// Creates an unsegmented Space Packet without secondary header,
     /// carrying `data`.

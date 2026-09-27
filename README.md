@@ -84,7 +84,7 @@ telemetry:
 ```text
 TC port: PusServer ──PusPacket──▶ PusTcAcceptor ────────TM(1,x)───────────┐
                                        │                                  │
-                                       └──TC(17,1)──▶ PusTestServiceActor ┤ Relay<PusPacket>
+                                       └──TC(17,1)──▶ PusTestServiceActor ┤ PusPacket
                                                                           ▼
 TM port:                                                    TM client ◀── PusServer
 ```
@@ -132,9 +132,9 @@ RUST_LOG=debug cargo run --example pus_server -- 9000 9001
 
 ## Documentation
 
-- [Relay and MessageSink](docs/relay-and-message-sink.md): why outgoing
-  messages are wrapped in `Relay<M>` and how producing actors send to
-  either processing actors or TCP connections.
+- [WireMessage](docs/wire-message.md): how servers and clients send
+  messages, and why message types implement the `WireMessage` marker
+  trait.
 
 ## Development
 

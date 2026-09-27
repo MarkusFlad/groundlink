@@ -3,7 +3,7 @@
 //! ```text
 //! TC port: PusServer ──PusPacket──▶ PusTcAcceptor ────────TM(1,x)───────────┐
 //!                                        │                                  │
-//!                                        └──TC(17,1)──▶ PusTestServiceActor ┤ Relay<PusPacket>
+//!                                        └──TC(17,1)──▶ PusTestServiceActor ┤ PusPacket
 //!                                                                           ▼
 //! TM port:                                                    TM client ◀── PusServer
 //! ```
@@ -26,7 +26,7 @@ use kameo::error::Infallible;
 use kameo::message::{Context, Message};
 use groundlink::pus::service17;
 use groundlink::{
-    GetLocalAddr, PusServer, PusPacket, PusTc, PusTcAcceptor, PusTestServiceActor, Relay,
+    GetLocalAddr, PusServer, PusPacket, PusTc, PusTcAcceptor, PusTestServiceActor,
     TcpServerArgs,
 };
 use tracing::warn;
@@ -74,13 +74,13 @@ async fn main() -> anyhow::Result<()> {
     let tc_port = parse_port(args.next(), usage)?;
     let tm_port = parse_port(args.next(), usage)?;
 
-    // Telemetry: the TM server writes every `Relay<PusPacket>` to its
+    // Telemetry: the TM server writes every `PusPacket` it receives to its
     // connected client.
     let tm_server = PusServer::spawn(TcpServerArgs {
         bind_addr: SocketAddr::from(([0, 0, 0, 0], tm_port)),
         downstream: IgnoreIncoming::spawn(IgnoreIncoming).recipient::<PusPacket>(),
     });
-    let telemetry = tm_server.clone().recipient::<Relay<PusPacket>>();
+    let telemetry = tm_server.clone().recipient::<PusPacket>();
 
     // Telecommands: acceptance check, then service 17.
     let acceptor = PusTcAcceptor::for_packets(APID, telemetry.clone());

@@ -24,7 +24,7 @@ use kameo::message::{Context, Message};
 use groundlink::ccsds::SEQUENCE_COUNT_MAX;
 use groundlink::{
     AreYouAliveReport, AreYouAliveRequest, Close, Connect, ConnectionHalfClosed, CucFormat,
-    PusClient, PusPacket, Relay, TcpClientArgs, VerificationReport,
+    PusClient, PusPacket, TcpClientArgs, VerificationReport,
 };
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tracing_subscriber::EnvFilter;
@@ -173,7 +173,7 @@ async fn main() -> anyhow::Result<()> {
                 sequence_count = if sequence_count >= SEQUENCE_COUNT_MAX { 0 } else { sequence_count + 1 };
                 let packet = PusPacket::from(request);
                 println!("[TC] > {}", describe(&packet));
-                if let Err(err) = tc_client.tell(Relay(packet)).await {
+                if let Err(err) = tc_client.tell(packet).await {
                     println!("[TC] sending failed: {err}");
                 }
             }

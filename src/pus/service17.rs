@@ -5,7 +5,7 @@
 //! [`PusCodec`](crate::PusCodec) and the PUS actors.
 //!
 //! ```
-//! use kameo_tcp_example::{AreYouAliveReport, AreYouAliveRequest, PusPacket};
+//! use groundlink::{AreYouAliveReport, AreYouAliveRequest, PusPacket};
 //!
 //! let request = AreYouAliveRequest::new(0x042, 1);
 //! let packet = PusPacket::from(request.clone());

@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use futures::{SinkExt, StreamExt};
 use kameo::actor::{ActorRef, Spawn};
-use kameo_tcp_example::{
+use groundlink::{
     GetLocalAddr, Relay, SimpleString, SimpleStringCodec, SimpleStringServer, TcpServerArgs,
     TestActor,
 };

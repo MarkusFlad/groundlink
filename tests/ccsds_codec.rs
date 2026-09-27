@@ -4,7 +4,7 @@
 
 use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
-use kameo_tcp_example::{PacketType, SequenceFlags, SpacePacket, SpacePacketCodec, SpacePacketHeader};
+use groundlink::{PacketType, SequenceFlags, SpacePacket, SpacePacketCodec, SpacePacketHeader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_util::codec::Framed;
 

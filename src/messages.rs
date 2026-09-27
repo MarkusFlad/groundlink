@@ -129,7 +129,7 @@ pub struct Relay<M>(pub M);
 ///
 /// ```
 /// use kameo::actor::Spawn;
-/// use kameo_tcp_example::{GetMessages, MessageSink, Relay, TestActor};
+/// use groundlink::{GetMessages, MessageSink, Relay, TestActor};
 ///
 /// # #[tokio::main]
 /// # async fn main() {

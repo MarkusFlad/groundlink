@@ -12,7 +12,7 @@
 use std::time::Duration;
 
 use kameo::actor::Spawn;
-use kameo_tcp_example::{
+use groundlink::{
     CloseReason, ConnectionHalf, ConnectionHalfClosed, Shutdown, SimpleString, SimpleStringWriter,
     TcpWriterArgs, TestActor,
 };

@@ -17,7 +17,7 @@
 //! [`crate::pus::DEFAULT_TM_TIME_LEN`].
 //!
 //! ```
-//! use kameo_tcp_example::{CucFormat, CucTime, PusTm};
+//! use groundlink::{CucFormat, CucTime, PusTm};
 //!
 //! let t: CucTime = "2026-09-26T12:00:00.5Z".parse().unwrap();
 //! assert_eq!(t.to_string(), "2026-09-26T12:00:00.500000Z");
@@ -80,7 +80,7 @@ const LEAP_SECONDS: &[(i64, i64)] = &[
 ///
 /// ```
 /// use chrono::{TimeZone, Utc};
-/// use kameo_tcp_example::cuc::tai_minus_utc;
+/// use groundlink::cuc::tai_minus_utc;
 ///
 /// assert_eq!(tai_minus_utc(&Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap()), Some(37));
 /// assert_eq!(tai_minus_utc(&Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap()), None);
@@ -171,7 +171,7 @@ impl CucFormat {
 /// [`Display`](fmt::Display).
 ///
 /// ```
-/// use kameo_tcp_example::{CucFormat, CucTime};
+/// use groundlink::{CucFormat, CucTime};
 ///
 /// let t = CucTime::from_utc_str("2026-09-26T12:00:00.25Z", CucFormat::default()).unwrap();
 /// assert_eq!(t.fine, 0x4000); // 0.25 s in units of 2^-16 s

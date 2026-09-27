@@ -3,7 +3,7 @@
 //!
 //! ```
 //! use bytes::BytesMut;
-//! use kameo_tcp_example::{encode_frame, SimpleString, SimpleStringCodec};
+//! use groundlink::{encode_frame, SimpleString, SimpleStringCodec};
 //! use tokio_util::codec::Decoder;
 //!
 //! assert_eq!(encode_frame("hi"), vec![0x00, 0x02, b'h', b'i']);

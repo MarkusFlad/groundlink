@@ -33,7 +33,7 @@ use crate::pus::{PusPacket, PusTc};
 /// [`SEQUENCE_COUNT_MAX`].
 ///
 /// ```
-/// use kameo_tcp_example::SequenceCounter;
+/// use groundlink::SequenceCounter;
 ///
 /// let counter = SequenceCounter::new();
 /// let shared = counter.clone();
@@ -292,8 +292,8 @@ impl Message<PusPacket> for PusTcAcceptor {
 /// ```
 /// # use std::time::Duration;
 /// # use kameo::actor::Spawn;
-/// # use kameo_tcp_example::pus::service17;
-/// # use kameo_tcp_example::{
+/// # use groundlink::pus::service17;
+/// # use groundlink::{
 /// #     AreYouAliveRequest, PusPacket, PusTc, PusTcAcceptor, PusTestServiceActor, TestActor,
 /// # };
 /// # #[tokio::main]
@@ -464,7 +464,7 @@ impl Message<PusTc> for PusTestServiceActor {
 /// ```
 /// # use std::time::Duration;
 /// # use kameo::actor::Spawn;
-/// # use kameo_tcp_example::{
+/// # use groundlink::{
 /// #     PusPacket, PusPacketAdapter, PusTc, RequestId, TestActor, VerificationKind,
 /// #     VerificationReport,
 /// # };

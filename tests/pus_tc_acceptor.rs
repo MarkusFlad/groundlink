@@ -7,7 +7,7 @@ use std::time::Duration;
 use bytes::Bytes;
 use futures::SinkExt;
 use kameo::actor::{ActorRef, Recipient, Spawn};
-use kameo_tcp_example::{
+use groundlink::{
     AckFlags, CucFormat, CucTime, FailureCode, GetLocalAddr, GetMessages, PusCodec, PusServer,
     PusPacket, PusTc, PusTcAcceptor, PusTm, RequestId, TcpServerArgs, TestActor,
     VerificationKind, VerificationReport,
@@ -115,7 +115,7 @@ async fn end_to_end_over_tcp() {
 #[tokio::test]
 async fn tm_1_1_is_sent_back_over_tcp_via_adapter_and_pus_writer() {
     use futures::StreamExt;
-    use kameo_tcp_example::{ConnectionHalfClosed, PusPacketAdapter, PusWriter, TcpWriterArgs};
+    use groundlink::{ConnectionHalfClosed, PusPacketAdapter, PusWriter, TcpWriterArgs};
     use tokio::net::TcpListener;
 
     // Set up a TCP connection: the server side writes, the client reads.
@@ -153,7 +153,7 @@ async fn tm_1_1_is_sent_back_over_tcp_via_adapter_and_pus_writer() {
 
 #[tokio::test]
 async fn adapter_accepts_infallible_conversions() {
-    use kameo_tcp_example::{AreYouAliveReport, PusPacketAdapter};
+    use groundlink::{AreYouAliveReport, PusPacketAdapter};
 
     let packets = TestActor::<PusPacket>::spawn(TestActor::new());
     let adapter = PusPacketAdapter::<AreYouAliveReport>::spawn(PusPacketAdapter::new(packets.clone().recipient::<PusPacket>()));

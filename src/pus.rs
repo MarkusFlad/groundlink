@@ -27,7 +27,7 @@
 //!
 //! ```
 //! use bytes::BytesMut;
-//! use kameo_tcp_example::{PusCodec, PusPacket, PusTc};
+//! use groundlink::{PusCodec, PusPacket, PusTc};
 //! use tokio_util::codec::{Decoder, Encoder};
 //!
 //! let tc = PusPacket::from(PusTc::new(0x042, 1, 17, 1, &b""[..]));
@@ -69,7 +69,7 @@ pub const DEFAULT_TM_TIME_LEN: usize = 7;
 /// no final XOR).
 ///
 /// ```
-/// use kameo_tcp_example::pus::crc16_ccitt;
+/// use groundlink::pus::crc16_ccitt;
 ///
 /// assert_eq!(crc16_ccitt(b"123456789"), 0x29B1);
 /// ```

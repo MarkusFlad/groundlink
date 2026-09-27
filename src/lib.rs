@@ -68,7 +68,7 @@
 //!
 //! use futures::SinkExt;
 //! use kameo::actor::Spawn;
-//! use kameo_tcp_example::{
+//! use groundlink::{
 //!     GetLocalAddr, SimpleString, SimpleStringCodec, SimpleStringServer, TcpServerArgs,
 //!     TestActor,
 //! };

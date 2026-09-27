@@ -24,8 +24,8 @@ use anyhow::{anyhow, Context as _};
 use kameo::actor::{Actor, ActorRef, Spawn};
 use kameo::error::Infallible;
 use kameo::message::{Context, Message};
-use kameo_tcp_example::pus::service17;
-use kameo_tcp_example::{
+use groundlink::pus::service17;
+use groundlink::{
     GetLocalAddr, PusServer, PusPacket, PusTc, PusTcAcceptor, PusTestServiceActor, Relay,
     TcpServerArgs,
 };

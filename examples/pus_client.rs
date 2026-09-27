@@ -21,8 +21,8 @@ use anyhow::Context as _;
 use kameo::actor::{Actor, ActorRef, Spawn};
 use kameo::error::Infallible;
 use kameo::message::{Context, Message};
-use kameo_tcp_example::ccsds::SEQUENCE_COUNT_MAX;
-use kameo_tcp_example::{
+use groundlink::ccsds::SEQUENCE_COUNT_MAX;
+use groundlink::{
     AreYouAliveReport, AreYouAliveRequest, Close, Connect, ConnectionHalfClosed, CucFormat,
     PusClient, PusPacket, Relay, TcpClientArgs, VerificationReport,
 };

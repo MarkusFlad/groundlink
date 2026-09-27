@@ -13,7 +13,7 @@
 //! e.g. `RUST_LOG=debug cargo run --example simple_string_server`.
 
 use kameo::actor::{Recipient, Spawn};
-use kameo_tcp_example::{
+use groundlink::{
     GetMessages, SimpleString, SimpleStringServer, TcpServerArgs, TestActor,
 };
 use tracing_subscriber::EnvFilter;

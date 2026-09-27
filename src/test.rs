@@ -16,7 +16,7 @@ use kameo::message::{Context, Message};
 ///
 /// ```
 /// use kameo::actor::Spawn;
-/// use kameo_tcp_example::{GetMessages, TestActor};
+/// use groundlink::{GetMessages, TestActor};
 ///
 /// # #[tokio::main]
 /// # async fn main() {

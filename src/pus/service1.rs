@@ -19,7 +19,7 @@
 //! | 10 | `RoutingFailure` | failure notice |
 //!
 //! ```
-//! use kameo_tcp_example::{
+//! use groundlink::{
 //!     FailureCode, PusPacket, PusTc, VerificationKind, VerificationReport,
 //! };
 //!

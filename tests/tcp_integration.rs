@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use futures::FutureExt;
 use kameo::actor::{Recipient, Spawn};
-use kameo_tcp_example::{
+use groundlink::{
     encode_frame, GetLocalAddr, SimpleString, SimpleStringServer, TcpServerArgs, TestActor,
 };
 use tokio::io::AsyncWriteExt;

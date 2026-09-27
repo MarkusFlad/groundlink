@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use futures::{SinkExt, StreamExt};
 use kameo::actor::{Recipient, Spawn};
-use kameo_tcp_example::{
+use groundlink::{
     ConnectionHalfClosed, GetLocalAddr, PacketType, SpacePacket, SpacePacketCodec,
     SpacePacketServer, SpacePacketWriter, TcpServerArgs, TcpWriterArgs, TestActor,
 };

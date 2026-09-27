@@ -15,7 +15,7 @@
 //!
 //! ```
 //! use bytes::BytesMut;
-//! use kameo_tcp_example::{PacketType, SpacePacket, SpacePacketCodec};
+//! use groundlink::{PacketType, SpacePacket, SpacePacketCodec};
 //! use tokio_util::codec::{Decoder, Encoder};
 //!
 //! let packet = SpacePacket::new(PacketType::Telemetry, 42, 7, &b"payload"[..]);
@@ -232,7 +232,7 @@ impl SpacePacket {
 ///
 /// ```no_run
 /// # use futures::StreamExt;
-/// # use kameo_tcp_example::SpacePacketCodec;
+/// # use groundlink::SpacePacketCodec;
 /// # #[tokio::main]
 /// # async fn main() -> std::io::Result<()> {
 /// # let tcp_stream = tokio::net::TcpStream::connect("127.0.0.1:9000").await?;

@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use kameo::actor::Spawn;
-use kameo_tcp_example::{
+use groundlink::{
     AckFlags, AreYouAliveReport, AreYouAliveRequest, FailureCode, GetMessages, PusPacket, PusTc,
     PusTcAcceptor, PusTestServiceActor, RequestId, TestActor, VerificationKind, VerificationReport,
 };

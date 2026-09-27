@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use futures::SinkExt;
 use kameo::actor::{Recipient, Spawn};
-use kameo_tcp_example::{
+use groundlink::{
     GetLocalAddr, PusCodec, PusServer, PusPacket, PusTc, PusTm, TcpServerArgs, TestActor,
 };
 use tokio::net::TcpStream;

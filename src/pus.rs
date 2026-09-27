@@ -45,6 +45,7 @@
 use bytes::{Bytes, BytesMut};
 use std::io;
 use tokio_util::codec::{Decoder, Encoder};
+use tracing::warn;
 
 use crate::ccsds::{PacketType, SequenceFlags, SpacePacket, SpacePacketCodec, SpacePacketHeader};
 use crate::cuc::{CucFormat, CucTime};
@@ -497,11 +498,15 @@ impl Default for PusConfig {
 /// [`PusConfig::default`]. For other parameters, create the codec with
 /// [`PusCodec::new`] and use it directly with `Framed`.
 ///
+/// When decoding, a complete Space Packet that is not a valid PUS packet
+/// (see [`PusPacket::from_space_packet`]) is dropped with a warning and
+/// decoding continues with the next packet. The framing stays intact, so a
+/// single invalid packet does not close the connection.
+///
 /// # Errors
 ///
 /// Encoding fails as described at [`PusPacket::to_space_packet`] and
-/// [`SpacePacketCodec`]; decoding fails as described at
-/// [`PusPacket::from_space_packet`].
+/// [`SpacePacketCodec`]. Decoding does not fail.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PusCodec {
     config: PusConfig,
@@ -525,10 +530,21 @@ impl Decoder for PusCodec {
     type Error = io::Error;
 
     fn decode(&mut self, src: &mut BytesMut) -> io::Result<Option<Self::Item>> {
-        match self.inner.decode(src)? {
-            Some(space_packet) => PusPacket::from_space_packet(space_packet, &self.config).map(Some),
-            None => Ok(None),
+        // Loop so that a valid packet buffered behind an invalid one is
+        // returned right away instead of waiting for more input.
+        while let Some(space_packet) = self.inner.decode(src)? {
+            let header = space_packet.header;
+            match PusPacket::from_space_packet(space_packet, &self.config) {
+                Ok(packet) => return Ok(Some(packet)),
+                Err(err) => warn!(
+                    apid = header.apid,
+                    sequence_count = header.sequence_count,
+                    error = %err,
+                    "dropping invalid PUS packet"
+                ),
+            }
         }
+        Ok(None)
     }
 }
 
@@ -630,14 +646,27 @@ mod tests {
     }
 
     #[test]
-    fn decode_detects_crc_error() {
+    fn decode_drops_packet_with_crc_error() {
         let mut codec = PusCodec::default();
         let mut buf = encode(&mut codec, PusTc::new(1, 1, 17, 1, &b"x"[..]).into());
         let last = buf.len() - 1;
         buf[last] ^= 0xFF;
 
-        let err = codec.decode(&mut buf).unwrap_err();
-        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(codec.decode(&mut buf).unwrap(), None);
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn decode_continues_after_invalid_packet() {
+        let mut codec = PusCodec::default();
+        let mut buf = encode(&mut codec, PusTc::new(1, 1, 17, 1, &b"bad"[..]).into());
+        let last = buf.len() - 1;
+        buf[last] ^= 0xFF;
+        let valid: PusPacket = PusTc::new(1, 2, 17, 1, &b"good"[..]).into();
+        buf.extend_from_slice(&encode(&mut codec, valid.clone()));
+
+        assert_eq!(codec.decode(&mut buf).unwrap(), Some(valid));
+        assert!(buf.is_empty());
     }
 
     #[test]
@@ -657,7 +686,8 @@ mod tests {
         SpacePacketCodec
             .encode(SpacePacket::new(PacketType::Telecommand, 1, 1, &b"0123456789"[..]), &mut buf)
             .unwrap();
-        assert!(PusCodec::default().decode(&mut buf).is_err());
+        assert_eq!(PusCodec::default().decode(&mut buf).unwrap(), None);
+        assert!(buf.is_empty());
     }
 
     #[test]

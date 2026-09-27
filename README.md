@@ -130,6 +130,12 @@ Set the log level with `RUST_LOG`, for example:
 RUST_LOG=debug cargo run --example pus_server -- 9000 9001
 ```
 
+## Documentation
+
+- [Relay and MessageSink](docs/relay-and-message-sink.md): why outgoing
+  messages are wrapped in `Relay<M>` and how producing actors send to
+  either processing actors or TCP connections.
+
 ## Development
 
 ```sh

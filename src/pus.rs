@@ -545,7 +545,8 @@ impl Default for PusConfig {
 /// # Errors
 ///
 /// Encoding fails as described at [`PusPacket::to_space_packet`] and
-/// [`SpacePacketCodec`]. Decoding does not fail.
+/// [`SpacePacketCodec`]. Decoding fails only if the framing fails, as
+/// described at [`SpacePacketCodec`] (wrong packet version number).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PusCodec {
     config: PusConfig,

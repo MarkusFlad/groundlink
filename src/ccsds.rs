@@ -33,6 +33,9 @@ use tokio_util::codec::{Decoder, Encoder};
 
 /// Length of the primary header in bytes (CCSDS 133.0-B-2, section 4.1.2).
 pub const PRIMARY_HEADER_LEN: usize = 6;
+/// Packet version number of Space Packets (CCSDS 133.0-B-2, section
+/// 4.1.3.2): the top 3 bits of the primary header, always `000`.
+pub const PACKET_VERSION_NUMBER: u8 = 0;
 /// Largest value of [`SpacePacketHeader::apid`] (11 bits).
 pub const APID_MAX: u16 = 0x07FF;
 /// Largest value of [`SpacePacketHeader::sequence_count`] (14 bits).
@@ -259,9 +262,15 @@ impl SpacePacket {
 ///
 /// Encoding fails with [`io::ErrorKind::InvalidInput`] if a header field
 /// exceeds its bit width or the packet data field is empty or longer than
-/// [`MAX_PACKET_DATA_LEN`]. Decoding never fails: any 6 bytes form a valid
-/// header, and incomplete packets stay in the buffer until the rest
-/// arrives.
+/// [`MAX_PACKET_DATA_LEN`].
+///
+/// Decoding fails with [`io::ErrorKind::InvalidData`] if the packet version
+/// number is not [`PACKET_VERSION_NUMBER`]. The data are then not a Space
+/// Packet, or the stream is out of sync; because Space Packets carry no
+/// sync marker, decoding cannot resume reliably, so the generic TCP actors
+/// close the connection. The check happens on the first byte, before the
+/// codec waits for a length taken from invalid data. Incomplete packets
+/// stay in the buffer until the rest arrives.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SpacePacketCodec;
 
@@ -270,6 +279,15 @@ impl Decoder for SpacePacketCodec {
     type Error = io::Error;
 
     fn decode(&mut self, src: &mut BytesMut) -> io::Result<Option<Self::Item>> {
+        if let Some(&first) = src.first() {
+            let version = first >> 5;
+            if version != PACKET_VERSION_NUMBER {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("packet version number {version} is not a Space Packet (expected {PACKET_VERSION_NUMBER})"),
+                ));
+            }
+        }
         if src.len() < PRIMARY_HEADER_LEN {
             return Ok(None);
         }
@@ -306,6 +324,19 @@ impl Encoder<SpacePacket> for SpacePacketCodec {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decode_rejects_wrong_packet_version_on_the_first_byte() {
+        let mut buf = BytesMut::from(&[0b0010_0000][..]);
+        let err = SpacePacketCodec.decode(&mut buf).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn decode_accepts_version_zero_and_waits_for_the_header() {
+        let mut buf = BytesMut::from(&[0b0001_1111][..]);
+        assert_eq!(SpacePacketCodec.decode(&mut buf).unwrap(), None);
+    }
 
     #[test]
     fn encode_produces_exact_expected_bytes() {

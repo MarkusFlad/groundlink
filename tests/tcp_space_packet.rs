@@ -69,3 +69,27 @@ async fn space_packet_writer_writes_packet_readable_with_framed() {
     let received = client_framed.next().await.unwrap().unwrap();
     assert_eq!(received, packet);
 }
+
+#[tokio::test]
+async fn data_with_wrong_packet_version_closes_the_connection() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let test_actor_ref = TestActor::<SpacePacket>::spawn(TestActor::new());
+    let listener_ref = SpacePacketServer::spawn(TcpServerArgs {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        downstream: test_actor_ref.clone().recipient::<SpacePacket>(),
+    });
+    let local_addr = listener_ref.ask(GetLocalAddr).await.unwrap();
+    let mut stream = TcpStream::connect(local_addr).await.unwrap();
+
+    // Not a Space Packet: the version bits of the first byte are 0b111.
+    stream.write_all(b"\xFFgarbage").await.unwrap();
+
+    // The server closes the connection instead of waiting for more data.
+    let mut buf = [0u8; 16];
+    let read = tokio::time::timeout(Duration::from_secs(1), stream.read(&mut buf))
+        .await
+        .expect("connection should be closed");
+    assert!(matches!(read, Ok(0) | Err(_)), "expected EOF or reset, got {read:?}");
+    assert!(test_actor_ref.ask(groundlink::GetMessages::new()).await.unwrap().is_empty());
+}

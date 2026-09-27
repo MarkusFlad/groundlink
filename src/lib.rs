@@ -104,8 +104,7 @@ pub mod simple_string;
 pub mod test;
 
 pub use actors::{
-    PusClient, PusReader, PusServer, PusWriter, RelayAdapter, RelayAdapterArgs,
-    SimpleStringClient, SimpleStringReader,
+    PusClient, PusReader, PusServer, PusWriter, SimpleStringClient, SimpleStringReader,
     SimpleStringServer, SimpleStringWriter, SpacePacketClient, SpacePacketReader,
     SpacePacketServer, SpacePacketWriter, TcpClientActor, TcpClientArgs, TcpReaderActor,
     TcpReaderArgs, TcpServerActor, TcpServerArgs, TcpWriterActor, TcpWriterArgs,

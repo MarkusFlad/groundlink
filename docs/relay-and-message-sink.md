@@ -4,71 +4,75 @@ This document explains why groundlink wraps outgoing messages in `Relay<M>`
 and how `MessageSink<M>` lets message-producing actors send either to a
 processing actor or to a TCP connection.
 
-## The problem: one message type, two directions
+## How messages flow through a server
 
-A `TcpServerActor<M, C>` (for example `PusServer`) deals with messages of
-type `M` in two directions:
+A `TcpServerActor<M, C>` (for example `PusServer`) is not on the path of
+incoming messages. For each accepted connection, it spawns a
+`TcpReaderActor` and a `TcpWriterActor`:
 
-1. **Incoming:** it reads `M` from the TCP socket and forwards it to its
-   `downstream: Recipient<M>`.
-2. **Outgoing:** other actors want it to *write* an `M` to the connected
-   peer.
+- The **reader** decodes messages from the socket and sends them directly
+  to the `downstream: Recipient<M>` that was passed when the server was
+  spawned.
+- The **writer** implements `Message<M>` and encodes every `M` it receives
+  onto the socket.
 
-In kameo, handling a message type means implementing `Message<M>`. If the
-server implemented `Message<M>` for the outgoing direction, a
-`Recipient<M>` would mean different things depending on the actor behind
-it:
+The server itself only handles control messages: `GetLocalAddr`,
+`ConnectionHalfClosed`, an internal notification when a writer has been
+spawned, and the request to send an `M` to the connected peer. The
+`TcpClientActor` works the same way, with its own control messages
+(`Connect`, `Close`, `CloseRead`, `CloseWrite`, …).
 
-- for a `PusTcAcceptor`: "process this packet"
-- for a `PusServer`: "send this packet over the network"
+## Why `Relay<M>` is needed
 
-The type system could not tell these apart. You could, for example, pass a
-server as the `downstream` of another server, or even as its own
-`downstream`. This would compile, and every received packet would be
-written straight back to the network.
+The natural way to send an `M` through a server would be to implement
+`Message<M>` on it, just like the writer does. That does not compile:
 
-## The solution: `Relay<M>`
+```rust
+impl<M, C> Message<GetLocalAddr> for TcpServerActor<M, C> { /* ... */ }
+impl<M, C> Message<M> for TcpServerActor<M, C> { /* ... */ }
+```
 
-`Relay<M>` (defined in [`src/messages.rs`](../src/messages.rs)) is a plain
-newtype:
+```text
+error[E0119]: conflicting implementations of trait `Message<GetLocalAddr>`
+              for type `TcpServerActor<GetLocalAddr, _>`
+```
+
+Rust's coherence rules reject any two implementations that *could* apply
+to the same type. If `M` were `GetLocalAddr`, both implementations would
+provide `Message<GetLocalAddr>` for the same actor. It does not matter that
+nobody ever instantiates a server with that message type. The same
+conflict would occur for every other control message of the server and
+the client.
+
+The writer does not have this problem: besides `Message<M>`, it only
+implements `Message<Shutdown<M>>`, and `M` can never be `Shutdown<M>`.
+
+`Relay<M>` (defined in [`src/messages.rs`](../src/messages.rs)) solves the
+conflict with a plain newtype:
 
 ```rust
 pub struct Relay<M>(pub M);
 ```
 
-It means "write `M` to your current connection". This puts the direction
-into the type:
-
-| Type | Meaning |
-|---|---|
-| `Recipient<PusPacket>` | an actor that **processes** packets |
-| `Recipient<Relay<PusPacket>>` | a server or client that **sends** packets over TCP |
-
-Both `TcpServerActor` and `TcpClientActor` implement `Message<Relay<M>>`
-(see [`src/actors.rs`](../src/actors.rs)). The server writes the message to
-the peer of its current connection, and the client writes it to the
-server it is connected to. Without a connection, the message is dropped
-with a warning.
+It means "write `M` to your current connection". Because `Relay<M>` is a
+distinct type, `Message<Relay<M>>` can never overlap with the control
+messages. Both `TcpServerActor` and `TcpClientActor` implement it (see
+[`src/actors.rs`](../src/actors.rs)): the server writes the message to the
+peer of its current connection, and the client writes it to the server it
+is connected to. Without a connection, the message is dropped with a
+warning.
 
 `Relay` does not change the content of a message. Converting a specific
 message into a packet is done separately, through `From`/`TryFrom`, for
 example `PusPacket::from(AreYouAliveRequest::new(apid, seq))`.
 
-### Further benefits
-
-- **Server and client are interchangeable for senders.** Code that sends
-  `Relay<PusPacket>` works the same whether the target is a `PusServer` or
-  a `PusClient`.
-- **Tests are unambiguous.** A `TestActor<Relay<PusPacket>>` stands for
-  "this would have gone out over the network", while a
-  `TestActor<PusPacket>` stands for "this would have been processed".
-
 ## `MessageSink<M>`: sending to either kind of target
 
-Actors that produce messages, such as `PusTcAcceptor` and
-`PusTestServiceActor`, should not have to know whether their output goes
-to another processing actor or out over a TCP connection. They therefore
-take an `impl Into<MessageSink<M>>`:
+Because of `Relay`, a server or client is a `Recipient<Relay<M>>`, while a
+processing actor (or a `TcpWriterActor`) is a `Recipient<M>`. Actors that
+produce messages, such as `PusTcAcceptor` and `PusTestServiceActor`,
+should not have to care about this difference. They therefore take an
+`impl Into<MessageSink<M>>`:
 
 ```rust
 pub enum MessageSink<M: Send + 'static> {
@@ -107,10 +111,10 @@ instead, and the same actors send the unwrapped packets to it.
 
 ## Summary
 
-- `Recipient<M>` means "process `M`". `Recipient<Relay<M>>` means "send `M`
-  over TCP".
-- `TcpServerActor` and `TcpClientActor` handle `Relay<M>`, never `M`
-  itself. This keeps a server from being wired up as a processing actor
-  by accident.
-- Actors that produce messages take a `MessageSink<M>`, so they can target
-  either kind of recipient without an adapter.
+- Incoming messages go from the reader directly to `downstream`. The
+  server and client only handle control messages and outgoing messages.
+- Outgoing messages are wrapped in `Relay<M>` because a generic
+  `Message<M>` implementation would conflict with the control message
+  implementations.
+- Actors that produce messages take a `MessageSink<M>`, so they can send
+  to a `Recipient<M>` or a `Recipient<Relay<M>>` without an adapter.

@@ -7,12 +7,13 @@
 //!   forwards decoded messages to a `downstream` recipient) and a
 //!   [`TcpWriterActor`] (write half, encodes and sends every `M` it
 //!   receives).
-//! - [`RelayAdapter`] wraps messages into [`Relay`] for a
-//!   [`TcpClientActor`] or [`TcpServerActor`].
 //!
 //! Both [`TcpServerActor`] and [`TcpClientActor`] send a [`Relay<M>`]
 //! over their current connection, so the same code can send to an
-//! accepted or to an opened connection.
+//! accepted or to an opened connection. The wrapper is needed because a
+//! generic `Message<M>` implementation would conflict with the actors'
+//! other message implementations (e.g. `Message<GetLocalAddr>` when `M`
+//! is `GetLocalAddr`).
 //!
 //! The protocols of this crate get type aliases, e.g. [`PusServer`] for
 //! `TcpServerActor<PusPacket, PusCodec>`.
@@ -787,52 +788,6 @@ where
             None => {
                 warn!("TcpClientActor: message dropped, not connected (yet)");
             }
-        }
-    }
-}
-
-/// Arguments for spawning a [`RelayAdapter<M>`].
-pub struct RelayAdapterArgs<M: Send + 'static> {
-    /// Actor that receives the wrapped messages, typically a
-    /// [`TcpClientActor`] or [`TcpServerActor`].
-    pub target: Recipient<Relay<M>>,
-}
-
-/// Small adapter actor: accepts plain messages of type `M` and forwards
-/// them to `target` wrapped in [`Relay<M>`].
-///
-/// Useful where an actor only accepts a `Recipient<M>` but the messages
-/// should be sent over a connection, e.g. as the `downstream` of a server,
-/// to relay everything it receives through a [`TcpClientActor`]. Actors
-/// that take a [`MessageSink<M>`](crate::MessageSink) do not need it; this
-/// avoids the extra actor hop.
-pub struct RelayAdapter<M: Send + 'static> {
-    target: Recipient<Relay<M>>,
-}
-
-impl<M> Actor for RelayAdapter<M>
-where
-    M: Send + 'static,
-{
-    type Args = RelayAdapterArgs<M>;
-    type Error = Infallible;
-
-    async fn on_start(args: Self::Args, _actor_ref: ActorRef<Self>) -> Result<Self, Self::Error> {
-        Ok(RelayAdapter {
-            target: args.target,
-        })
-    }
-}
-
-impl<M> Message<M> for RelayAdapter<M>
-where
-    M: Send + 'static,
-{
-    type Reply = ();
-
-    async fn handle(&mut self, item: M, _ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        if let Err(err) = self.target.tell(Relay(item)).await {
-            warn!("RelayAdapter: could not forward message: {err}");
         }
     }
 }

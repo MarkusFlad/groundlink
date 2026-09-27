@@ -113,6 +113,10 @@ pub struct PeerHalfClosed(pub ConnectionHalfClosed);
 /// contained message over its current connection.
 ///
 /// Without a connection the message is dropped with a warning.
+///
+/// The wrapper is needed because these actors cannot implement a generic
+/// `Message<M>`: it would conflict with their control messages, e.g. with
+/// `Message<GetLocalAddr>` if `M` were `GetLocalAddr`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Relay<M>(pub M);
 

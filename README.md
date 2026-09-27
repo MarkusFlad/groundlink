@@ -15,8 +15,8 @@ and [tokio](https://tokio.rs).
   with typed messages for
   - service 1 (request verification) and
   - service 17 (test, "Are-You-Alive").
-- **PUS actors**: `PusTcAcceptor` performs the acceptance check and reports
-  it via service 1; `PusTestServiceActor` implements service 17.
+- **PUS actors**: `PusTcAcceptor` performs the acceptance check (packet
+  format, CRC, APID, service and subtype) and reports it via service 1; `PusTestServiceActor` implements service 17.
 - **Simple string protocol**: a length-prefixed string protocol, useful for
   getting started and for tests.
 - **Test helpers**: `TestActor` records messages for assertions in tests.
@@ -82,11 +82,11 @@ The PUS examples use separate TCP connections for telecommands and
 telemetry:
 
 ```text
-TC port: PusServer ──PusPacket──▶ PusTcAcceptor ────────TM(1,x)───────────┐
-                                       │                                  │
-                                       └──TC(17,1)──▶ PusTestServiceActor ┤ PusPacket
-                                                                          ▼
-TM port:                                                    TM client ◀── PusServer
+TC port: SpacePacketServer ──SpacePacket──▶ PusTcAcceptor ────────TM(1,x)───────────┐
+                                                 │                                  │
+                                                 └──TC(17,1)──▶ PusTestServiceActor ┤ PusPacket
+                                                                                    ▼
+TM port:                                                              TM client ◀── PusServer
 ```
 
 Start the server with a TC port and a TM port:
@@ -111,7 +111,10 @@ The client reads these commands from stdin:
 | `Quit` | Exits |
 
 The server answers a TC(17,1) on the TM connection with TM(1,1) (acceptance),
-TM(17,2) (Are-You-Alive report) and TM(1,7) (completion).
+TM(17,2) (Are-You-Alive report) and TM(1,7) (completion). The TC side
+receives plain Space Packets, so that the `PusTcAcceptor` can answer an
+invalid PUS packet (for example one with a CRC error) with TM(1,2) instead
+of dropping it.
 
 ### Simple string server
 

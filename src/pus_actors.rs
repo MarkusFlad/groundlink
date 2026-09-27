@@ -3,9 +3,9 @@
 //! Typical chain for an application with a fixed APID:
 //!
 //! ```text
-//! PusServer ──PusPacket──▶ PusTcAcceptor ──TM(1,1)──▶ …
-//!                                 │
-//!                                 └─PusTc (Service 17)──▶ PusTestServiceActor ──TM(17,2), TM(1,7)──▶ …
+//! SpacePacketServer ──SpacePacket──▶ PusTcAcceptor ──TM(1,1), TM(1,2)──▶ …
+//!                                         │
+//!                                         └─PusTc (Service 17)──▶ PusTestServiceActor ──TM(17,2), TM(1,7)──▶ …
 //! ```
 
 use std::collections::HashMap;
@@ -19,11 +19,13 @@ use kameo::error::Infallible;
 use kameo::message::{Context, Message};
 use tracing::{error, warn};
 
-use crate::ccsds::SEQUENCE_COUNT_MAX;
+use bytes::Bytes;
+
+use crate::ccsds::{PacketType, SpacePacket, SEQUENCE_COUNT_MAX};
 use crate::cuc::{CucFormat, CucTime};
 use crate::pus::service1::{FailureCode, RequestId, VerificationKind, VerificationReport};
 use crate::pus::service17::{AreYouAliveReport, AreYouAliveRequest};
-use crate::pus::{PusPacket, PusTc};
+use crate::pus::{PusConfig, PusPacket, PusTc};
 
 /// Packet sequence count of an APID that several actors can share, so that
 /// all TM packets of that APID are numbered consecutively.
@@ -85,31 +87,40 @@ fn now(actor: &str, apid: u16, format: CucFormat) -> Option<CucTime> {
 /// [`with_service_handler`](Self::with_service_handler)).
 ///
 /// For each TC:
-/// 1. No handler for the service type → TM(1,2) with
+/// 1. Only for a [`SpacePacket`]: if it is not a valid PUS packet (see
+///    [`PusPacket::from_space_packet`]), TM(1,2) with the
+///    [`FailureCode`] for the [`PusDecodeError`](crate::PusDecodeError)
+///    (e.g. [`FailureCode::ChecksumError`]) and empty failure data. The
+///    request ID comes from the primary header; the destination ID is 0,
+///    because the source ID of the TC is unknown. The TC is dropped.
+/// 2. No handler for the service type → TM(1,2) with
 ///    [`FailureCode::UnsupportedService`]; subtype not supported → TM(1,2)
 ///    with [`FailureCode::UnsupportedSubtype`]. The TC is dropped.
-/// 2. Otherwise TM(1,1), if the TC has the acknowledgement flag
+/// 3. Otherwise TM(1,1), if the TC has the acknowledgement flag
 ///    `acceptance` set.
-/// 3. The TC is forwarded to the handler. If that fails (the handler actor
+/// 4. The TC is forwarded to the handler. If that fails (the handler actor
 ///    has stopped), TM(1,10) with [`FailureCode::RoutingFailed`] follows.
 ///
 /// As PUS-C specifies, failure reports are generated regardless of the
-/// acknowledgement flags; their failure data contain the service type and
-/// subtype of the TC. TCs for other APIDs and telemetry packets are
-/// ignored.
+/// acknowledgement flags; except for step 1, their failure data contain the
+/// service type and subtype of the TC. TCs for other APIDs and telemetry
+/// packets are ignored.
 ///
 /// The reports carry the actor's own APID, the packet sequence count from
 /// [`sequence_counter`](Self::sequence_counter), a message type counter per
 /// (service type, subtype, destination ID), the source ID of the TC as
 /// destination ID, and the current time as [`CucTime`].
 ///
-/// Handles both [`PusPacket`] (e.g. directly as the `downstream` of a
-/// [`PusServer`](crate::PusServer)) and [`PusTc`]. See
-/// [`PusTestServiceActor`] for a complete example.
+/// Handles [`SpacePacket`] (e.g. as the `downstream` of a
+/// [`SpacePacketServer`](crate::SpacePacketServer)), [`PusPacket`] and
+/// [`PusTc`]. Prefer [`SpacePacket`] for TCs received from outside, so
+/// that invalid packets are answered with TM(1,2) instead of being dropped
+/// by the codec. See [`PusTestServiceActor`] for a complete example.
 pub struct PusTcAcceptor {
     apid: u16,
     tm_recipient: ReportRecipient,
     service_handlers: HashMap<u8, ServiceHandler>,
+    pus_config: PusConfig,
     time_format: CucFormat,
     sequence_counter: SequenceCounter,
     message_type_counters: MessageTypeCounters,
@@ -154,6 +165,7 @@ impl PusTcAcceptor {
             apid,
             tm_recipient,
             service_handlers: HashMap::new(),
+            pus_config: PusConfig::default(),
             time_format: CucFormat::default(),
             sequence_counter: SequenceCounter::new(),
             message_type_counters: MessageTypeCounters::default(),
@@ -169,6 +181,13 @@ impl PusTcAcceptor {
     pub fn with_service_handler(mut self, service_type: u8, subtypes: &[u8], handler: Recipient<PusTc>) -> Self {
         self.service_handlers
             .insert(service_type, ServiceHandler { subtypes: subtypes.to_vec(), recipient: handler });
+        self
+    }
+
+    /// Uses `config` to interpret received [`SpacePacket`]s (default:
+    /// [`PusConfig::default`]).
+    pub fn with_pus_config(mut self, config: PusConfig) -> Self {
+        self.pus_config = config;
         self
     }
 
@@ -199,11 +218,18 @@ impl PusTcAcceptor {
     /// Creates a verification report for `tc` and sends it to
     /// `tm_recipient`.
     async fn report(&mut self, tc: &PusTc, kind: VerificationKind) {
+        self.send_report(RequestId::from(tc), tc.secondary_header.source_id, kind).await;
+    }
+
+    /// Creates a verification report for the TC identified by `request_id`
+    /// and sends it to `tm_recipient`.
+    async fn send_report(&mut self, request_id: RequestId, destination_id: u16, kind: VerificationKind) {
         let Some(time) = now("PusTcAcceptor", self.apid, self.time_format) else {
             return;
         };
         let subtype = kind.subtype();
-        let mut report = VerificationReport::for_tc(self.apid, self.sequence_counter.next(), time, tc, kind);
+        let mut report = VerificationReport::new(self.apid, self.sequence_counter.next(), time, request_id, kind);
+        report.destination_id = destination_id;
         report.message_type_counter =
             self.message_type_counters.next(crate::pus::service1::SERVICE_TYPE, subtype, report.destination_id);
         let result = match &self.tm_recipient {
@@ -218,6 +244,22 @@ impl PusTcAcceptor {
         };
         if let Err(err) = result {
             warn!(apid = self.apid, error = %err, "could not send TM(1,{subtype})");
+        }
+    }
+
+    async fn handle_space_packet(&mut self, packet: SpacePacket) {
+        let header = packet.header;
+        if header.packet_type != PacketType::Telecommand || header.apid != self.apid {
+            return;
+        }
+        match PusPacket::from_space_packet(packet, &self.pus_config) {
+            Ok(PusPacket::Tc(tc)) => self.handle_tc(tc).await,
+            Ok(PusPacket::Tm(_)) => {}
+            Err(err) => {
+                warn!(apid = self.apid, sequence_count = header.sequence_count, error = %err, "rejecting invalid TC");
+                let kind = VerificationKind::AcceptanceFailure(FailureCode::from(&err).notice(Bytes::new()));
+                self.send_report(RequestId::from_header(&header), 0, kind).await;
+            }
         }
     }
 
@@ -276,6 +318,14 @@ impl Message<PusPacket> for PusTcAcceptor {
         if let PusPacket::Tc(tc) = packet {
             self.handle_tc(tc).await;
         }
+    }
+}
+
+impl Message<SpacePacket> for PusTcAcceptor {
+    type Reply = ();
+
+    async fn handle(&mut self, packet: SpacePacket, _ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.handle_space_packet(packet).await;
     }
 }
 

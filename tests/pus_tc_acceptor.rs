@@ -1,19 +1,20 @@
 //! Tests for `PusTcAcceptor`: acknowledges TCs for its APID with TM(1,1),
-//! rejects unsupported ones with TM(1,2) and reports failed forwarding
-//! with TM(1,10).
+//! rejects unsupported and invalid ones with TM(1,2) and reports failed
+//! forwarding with TM(1,10).
 
 use std::time::Duration;
 
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use futures::SinkExt;
 use kameo::actor::{ActorRef, Recipient, Spawn};
 use groundlink::{
-    AckFlags, CucFormat, CucTime, FailureCode, GetLocalAddr, GetMessages, PusCodec, PusServer,
-    PusPacket, PusTc, PusTcAcceptor, PusTm, RequestId, TcpServerArgs, TestActor,
+    AckFlags, CucFormat, CucTime, FailureCode, GetLocalAddr, GetMessages, PacketType, PusCodec,
+    PusConfig, PusServer, PusPacket, PusTc, PusTcAcceptor, PusTm, RequestId, SpacePacket,
+    SpacePacketCodec, SpacePacketHeader, SpacePacketServer, TcpServerArgs, TestActor,
     VerificationKind, VerificationReport,
 };
 use tokio::net::TcpStream;
-use tokio_util::codec::Framed;
+use tokio_util::codec::{Encoder, Framed};
 
 const APID: u16 = 0x042;
 
@@ -228,4 +229,114 @@ async fn failed_forwarding_is_reported_with_tm_1_10() {
     let VerificationKind::RoutingFailure(failure) = &received[1].kind else { unreachable!() };
     assert_eq!(received[1].request_id, RequestId::from(&tc));
     assert_eq!(FailureCode::from_code(failure.code), Some(FailureCode::RoutingFailed));
+}
+
+/// Encodes `packet` as a Space Packet with the default PUS configuration.
+fn space_packet(packet: impl Into<PusPacket>) -> SpacePacket {
+    packet.into().to_space_packet(&PusConfig::default()).unwrap()
+}
+
+/// Space Packet of `tc` with a broken CRC.
+fn with_crc_error(tc: PusTc) -> SpacePacket {
+    let mut packet = space_packet(tc);
+    let mut data = BytesMut::from(&packet.data[..]);
+    let last = data.len() - 1;
+    data[last] ^= 0xFF;
+    packet.data = data.freeze();
+    packet
+}
+
+#[tokio::test]
+async fn valid_space_packet_is_accepted_and_forwarded() {
+    let reports = TestActor::<VerificationReport>::spawn(TestActor::new());
+    let (acceptor, handler) = acceptor(reports.clone().recipient());
+    let acceptor = PusTcAcceptor::spawn(acceptor);
+
+    let tc = PusTc::new(APID, 3, 17, 1, Bytes::new());
+    acceptor.ask(space_packet(tc.clone())).await.unwrap();
+
+    let received = reports.ask(GetMessages::new()).await.unwrap();
+    assert_eq!(received.len(), 1);
+    assert_eq!(received[0].kind, VerificationKind::AcceptanceSuccess);
+    assert_eq!(TestActor::assert_received(&handler, 1, Duration::from_secs(1)).await, vec![tc]);
+}
+
+#[tokio::test]
+async fn invalid_space_packets_are_rejected_with_tm_1_2() {
+    let reports = TestActor::<VerificationReport>::spawn(TestActor::new());
+    let (acceptor, handler) = acceptor(reports.clone().recipient());
+    let acceptor = PusTcAcceptor::spawn(acceptor);
+
+    let crc_error = with_crc_error(PusTc::new(APID, 1, 17, 1, Bytes::new()));
+    let no_secondary_header = SpacePacket::new(PacketType::Telecommand, APID, 2, &b"0123456789"[..]);
+    let too_short = SpacePacket {
+        header: SpacePacketHeader { secondary_header_flag: true, ..no_secondary_header.header },
+        data: Bytes::from_static(&[0]),
+    };
+    for packet in [&crc_error, &no_secondary_header, &too_short] {
+        acceptor.ask(packet.clone()).await.unwrap();
+    }
+
+    let received = reports.ask(GetMessages::new()).await.unwrap();
+    let expected = [
+        (&crc_error, FailureCode::ChecksumError),
+        (&no_secondary_header, FailureCode::MissingSecondaryHeader),
+        (&too_short, FailureCode::PacketTooShort),
+    ];
+    assert_eq!(received.len(), expected.len());
+    for (report, (packet, code)) in received.iter().zip(expected) {
+        let VerificationKind::AcceptanceFailure(failure) = &report.kind else {
+            panic!("expected TM(1,2), got: {:?}", report.kind);
+        };
+        assert_eq!(report.request_id, RequestId::from_header(&packet.header));
+        assert_eq!(report.destination_id, 0);
+        assert_eq!(FailureCode::from_code(failure.code), Some(code));
+        assert!(failure.data.is_empty());
+    }
+
+    assert!(handler.ask(GetMessages::new()).await.unwrap().is_empty(), "invalid TCs are not forwarded");
+}
+
+#[tokio::test]
+async fn invalid_space_packets_for_other_apids_or_telemetry_are_ignored() {
+    let reports = TestActor::<VerificationReport>::spawn(TestActor::new());
+    let (acceptor, _handler) = acceptor(reports.clone().recipient());
+    let acceptor = PusTcAcceptor::spawn(acceptor);
+
+    acceptor.ask(with_crc_error(PusTc::new(APID + 1, 0, 17, 1, Bytes::new()))).await.unwrap();
+    acceptor.ask(SpacePacket::new(PacketType::Telemetry, APID, 0, &b"0123456789"[..])).await.unwrap();
+
+    assert!(reports.ask(GetMessages::new()).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn tc_with_crc_error_over_tcp_is_rejected_and_connection_stays_open() {
+    use tokio::io::AsyncWriteExt;
+
+    let reports = TestActor::<VerificationReport>::spawn(TestActor::new());
+    let (acceptor, _handler) = acceptor(reports.clone().recipient());
+    let acceptor = PusTcAcceptor::spawn(acceptor);
+
+    let server = SpacePacketServer::spawn(TcpServerArgs {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        downstream: acceptor.recipient::<SpacePacket>(),
+    });
+    let addr = server.ask(GetLocalAddr).await.unwrap();
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+
+    let mut bytes = BytesMut::new();
+    for packet in [
+        with_crc_error(PusTc::new(APID, 8, 17, 1, Bytes::new())),
+        space_packet(PusTc::new(APID, 9, 17, 1, Bytes::new())),
+    ] {
+        SpacePacketCodec.encode(packet, &mut bytes).unwrap();
+    }
+    stream.write_all(&bytes).await.unwrap();
+
+    let received = TestActor::assert_received(&reports, 2, Duration::from_secs(1)).await;
+    let kinds: Vec<_> = received
+        .iter()
+        .map(|r| (r.request_id.sequence_count, r.kind.subtype()))
+        .collect();
+    assert_eq!(kinds, vec![(8, 2), (9, 1)]);
 }

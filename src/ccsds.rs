@@ -155,6 +155,14 @@ impl SpacePacketHeader {
             ));
         }
 
+        dst.extend_from_slice(&self.to_bytes(data_len));
+        Ok(())
+    }
+
+    /// The header (6 bytes, big-endian) for a packet data field of length
+    /// `data_len`, without validation: fields that exceed their bit width
+    /// are truncated.
+    pub(crate) fn to_bytes(&self, data_len: usize) -> [u8; PRIMARY_HEADER_LEN] {
         // Version number (3 bits, always 0) | type (1 bit) |
         // secondary header flag (1 bit) | APID (11 bits)
         let word0: u16 = ((self.packet_type.to_bit() as u16) << 12)
@@ -164,12 +172,13 @@ impl SpacePacketHeader {
         let word1: u16 =
             ((self.sequence_flags.to_bits() as u16) << 14) | (self.sequence_count & SEQUENCE_COUNT_MAX);
         // Packet data length = actual length - 1
-        let word2: u16 = (data_len - 1) as u16;
+        let word2: u16 = data_len.wrapping_sub(1) as u16;
 
-        dst.extend_from_slice(&word0.to_be_bytes());
-        dst.extend_from_slice(&word1.to_be_bytes());
-        dst.extend_from_slice(&word2.to_be_bytes());
-        Ok(())
+        let mut bytes = [0; PRIMARY_HEADER_LEN];
+        bytes[0..2].copy_from_slice(&word0.to_be_bytes());
+        bytes[2..4].copy_from_slice(&word1.to_be_bytes());
+        bytes[4..6].copy_from_slice(&word2.to_be_bytes());
+        bytes
     }
 
     /// Decodes a 6-byte header and also returns the length of the packet

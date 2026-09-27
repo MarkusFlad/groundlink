@@ -89,8 +89,52 @@ fn invalid_input(msg: String) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, msg)
 }
 
-fn invalid_data(msg: String) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, msg)
+/// Why a Space Packet is not a valid PUS packet; see
+/// [`PusPacket::from_space_packet`].
+///
+/// Converts into an [`io::Error`] of kind [`io::ErrorKind::InvalidData`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PusDecodeError {
+    /// The secondary header flag of the primary header is not set.
+    MissingSecondaryHeader,
+    /// The packet data field is too short for the packet error control
+    /// field or the PUS secondary header.
+    PacketTooShort {
+        /// Length of the packet data field in bytes (without the packet
+        /// error control field, if that has already been checked).
+        len: usize,
+        /// Minimum length in bytes.
+        min_len: usize,
+    },
+    /// The CRC of the packet error control field is wrong.
+    ChecksumError,
+    /// The PUS version in the secondary header is not [`PUS_VERSION`].
+    UnsupportedPusVersion(u8),
+}
+
+impl std::fmt::Display for PusDecodeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PusDecodeError::MissingSecondaryHeader => {
+                f.write_str("Space Packet without secondary header is not a PUS packet")
+            }
+            PusDecodeError::PacketTooShort { len, min_len } => {
+                write!(f, "packet data field ({len} bytes) too short (at least {min_len} bytes expected)")
+            }
+            PusDecodeError::ChecksumError => f.write_str("CRC error in packet error control field"),
+            PusDecodeError::UnsupportedPusVersion(version) => {
+                write!(f, "PUS version {version} not supported (expected {PUS_VERSION}, PUS-C)")
+            }
+        }
+    }
+}
+
+impl std::error::Error for PusDecodeError {}
+
+impl From<PusDecodeError> for io::Error {
+    fn from(err: PusDecodeError) -> Self {
+        io::Error::new(io::ErrorKind::InvalidData, err)
+    }
 }
 
 /// Acknowledgement flags of a telecommand: which successful verification
@@ -393,27 +437,27 @@ impl PusPacket {
     ///
     /// # Errors
     ///
-    /// Fails with [`io::ErrorKind::InvalidData`] if the secondary header flag
-    /// is not set, the packet data field is too short for the secondary
-    /// header, the PUS version is not [`PUS_VERSION`], or (if enabled in
-    /// `config`) the CRC of the packet error control field is wrong.
-    pub fn from_space_packet(packet: SpacePacket, config: &PusConfig) -> io::Result<Self> {
+    /// Fails with a [`PusDecodeError`] if the secondary header flag is not
+    /// set, the packet data field is too short, the PUS version is not
+    /// [`PUS_VERSION`], or (if enabled in `config`) the CRC of the packet
+    /// error control field is wrong.
+    pub fn from_space_packet(packet: SpacePacket, config: &PusConfig) -> Result<Self, PusDecodeError> {
         let SpacePacket { header, mut data } = packet;
 
         if !header.secondary_header_flag {
-            return Err(invalid_data("Space Packet without secondary header is not a PUS packet".into()));
+            return Err(PusDecodeError::MissingSecondaryHeader);
         }
 
         if config.packet_error_control {
             if data.len() < PEC_LEN {
-                return Err(invalid_data("packet data field too short for the packet error control field".into()));
+                return Err(PusDecodeError::PacketTooShort { len: data.len(), min_len: PEC_LEN });
             }
             let mut crc_input = BytesMut::with_capacity(crate::ccsds::PRIMARY_HEADER_LEN + data.len());
-            header.encode(data.len(), &mut crc_input)?;
+            crc_input.extend_from_slice(&header.to_bytes(data.len()));
             crc_input.extend_from_slice(&data);
             // The CRC over data + appended CRC is 0 if it is correct.
             if crc16_ccitt(&crc_input) != 0 {
-                return Err(invalid_data("CRC error in packet error control field".into()));
+                return Err(PusDecodeError::ChecksumError);
             }
             data.truncate(data.len() - PEC_LEN);
         }
@@ -423,17 +467,12 @@ impl PusPacket {
             PacketType::Telemetry => TM_SECONDARY_HEADER_LEN_WITHOUT_TIME + config.tm_time_len,
         };
         if data.len() < min_len {
-            return Err(invalid_data(format!(
-                "packet data field ({} bytes) too short for the PUS secondary header ({min_len} bytes)",
-                data.len()
-            )));
+            return Err(PusDecodeError::PacketTooShort { len: data.len(), min_len });
         }
 
         let version = data[0] >> 4;
         if version != PUS_VERSION {
-            return Err(invalid_data(format!(
-                "PUS version {version} not supported (expected {PUS_VERSION}, PUS-C)"
-            )));
+            return Err(PusDecodeError::UnsupportedPusVersion(version));
         }
 
         let low_nibble = data[0] & 0x0F;
@@ -701,7 +740,7 @@ mod tests {
         space_packet.data = data.freeze();
 
         let err = PusPacket::from_space_packet(space_packet, &config).unwrap_err();
-        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(err, PusDecodeError::UnsupportedPusVersion(1));
     }
 
     #[test]

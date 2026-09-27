@@ -35,7 +35,7 @@
 use bytes::{BufMut, Bytes, BytesMut};
 use std::io;
 
-use super::{PusPacket, PusTc, PusTm, PusTmSecondaryHeader};
+use super::{PusDecodeError, PusPacket, PusTc, PusTm, PusTmSecondaryHeader};
 use crate::ccsds::{PacketType, SequenceFlags, SpacePacketHeader, APID_MAX, SEQUENCE_COUNT_MAX};
 
 /// Service type of the request verification service.
@@ -166,6 +166,14 @@ pub enum FailureCode {
     InvalidApplicationData = 3,
     /// The TC could not be forwarded to the service handler.
     RoutingFailed = 4,
+    /// The TC is not a PUS packet: its secondary header flag is not set.
+    MissingSecondaryHeader = 5,
+    /// The packet data field of the TC is too short.
+    PacketTooShort = 6,
+    /// The CRC of the TC's packet error control field is wrong.
+    ChecksumError = 7,
+    /// The TC has an unsupported PUS version.
+    UnsupportedPusVersion = 8,
 }
 
 impl FailureCode {
@@ -176,6 +184,10 @@ impl FailureCode {
             FailureCode::UnsupportedSubtype,
             FailureCode::InvalidApplicationData,
             FailureCode::RoutingFailed,
+            FailureCode::MissingSecondaryHeader,
+            FailureCode::PacketTooShort,
+            FailureCode::ChecksumError,
+            FailureCode::UnsupportedPusVersion,
         ]
         .into_iter()
         .find(|c| *c as u16 == code)
@@ -184,6 +196,17 @@ impl FailureCode {
     /// A failure notice with this code and the given data.
     pub fn notice(self, data: impl Into<Bytes>) -> FailureNotice {
         FailureNotice::new(self as u16, data)
+    }
+}
+
+impl From<&PusDecodeError> for FailureCode {
+    fn from(err: &PusDecodeError) -> Self {
+        match err {
+            PusDecodeError::MissingSecondaryHeader => FailureCode::MissingSecondaryHeader,
+            PusDecodeError::PacketTooShort { .. } => FailureCode::PacketTooShort,
+            PusDecodeError::ChecksumError => FailureCode::ChecksumError,
+            PusDecodeError::UnsupportedPusVersion(_) => FailureCode::UnsupportedPusVersion,
+        }
     }
 }
 
@@ -597,6 +620,10 @@ mod tests {
             FailureCode::UnsupportedSubtype,
             FailureCode::InvalidApplicationData,
             FailureCode::RoutingFailed,
+            FailureCode::MissingSecondaryHeader,
+            FailureCode::PacketTooShort,
+            FailureCode::ChecksumError,
+            FailureCode::UnsupportedPusVersion,
         ] {
             assert_eq!(FailureCode::from_code(code.into()), Some(code));
             assert_eq!(code.notice(Bytes::new()).code, u16::from(code));

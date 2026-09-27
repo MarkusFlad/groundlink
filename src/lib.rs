@@ -16,7 +16,8 @@
 //!
 //! On top of the PUS packets, [`pus_actors`] provides actors that handle
 //! telecommands for an application process: [`PusTcAcceptor`] performs
-//! the acceptance check and reports it via PUS service 1, and
+//! the acceptance check (including the PUS format, when it receives
+//! [`SpacePacket`]s) and reports it via PUS service 1, and
 //! [`PusTestServiceActor`] implements PUS service 17.
 //!
 //! # Modules
@@ -41,7 +42,7 @@
 //! - `simple_string_server`: a [`SimpleStringServer`] that records what
 //!   it receives.
 //! - `pus_server <tc_port> <tm_port>`: receives telecommands on one port
-//!   with the actor chain [`PusServer`] → [`PusTcAcceptor`] →
+//!   with the actor chain [`SpacePacketServer`] → [`PusTcAcceptor`] →
 //!   [`PusTestServiceActor`] and sends all telemetry to a
 //!   second [`PusServer`], which writes it to the client connected to the
 //!   second port.
@@ -116,7 +117,7 @@ pub use messages::{
     GetLocalAddr, MessageCodec, PeerHalfClosed, Shutdown, WireMessage,
 };
 pub use pus::{
-    AckFlags, PusCodec, PusConfig, PusPacket, PusTc, PusTcSecondaryHeader, PusTm,
+    AckFlags, PusCodec, PusConfig, PusDecodeError, PusPacket, PusTc, PusTcSecondaryHeader, PusTm,
     PusTmSecondaryHeader,
 };
 pub use pus::service1::{FailureCode, FailureNotice, RequestId, VerificationKind, VerificationReport};

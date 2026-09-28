@@ -8,11 +8,11 @@
 
 use std::time::Duration;
 
-use kameo::actor::Spawn;
 use groundlink::{
-    CloseReason, ConnectionHalf, ConnectionHalfClosed, Shutdown, SimpleString, SimpleStringCodec,
-    SimpleStringReader, TcpReaderArgs, TestActor,
+    CloseReason, ConnectionHalf, ConnectionHalfClosed, Shutdown, SimpleString, SimpleStringCodec, SimpleStringReader,
+    TcpReaderArgs, TestActor,
 };
+use kameo::actor::Spawn;
 use tokio::net::{TcpListener, TcpStream};
 
 #[tokio::test]
@@ -50,8 +50,7 @@ async fn reader_actor_reports_read_half_closed_and_shuts_down_writer() {
     // The client closes the connection -> the server reads EOF on the read half.
     drop(client_stream);
 
-    let received_closed =
-        TestActor::assert_received(&listener_ref, 1, Duration::from_secs(1)).await;
+    let received_closed = TestActor::assert_received(&listener_ref, 1, Duration::from_secs(1)).await;
 
     assert_eq!(received_closed.len(), 1);
     assert_eq!(received_closed[0].peer_addr, peer_addr);
@@ -60,7 +59,6 @@ async fn reader_actor_reports_read_half_closed_and_shuts_down_writer() {
 
     // The reader actor must also have sent a Shutdown message to the
     // writer actor.
-    let received_shutdowns =
-        TestActor::assert_received(&writer_stub_ref, 1, Duration::from_secs(1)).await;
+    let received_shutdowns = TestActor::assert_received(&writer_stub_ref, 1, Duration::from_secs(1)).await;
     assert_eq!(received_shutdowns.len(), 1);
 }

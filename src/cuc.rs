@@ -87,7 +87,11 @@ const LEAP_SECONDS: &[(i64, i64)] = &[
 /// ```
 pub fn tai_minus_utc(utc: &DateTime<Utc>) -> Option<i64> {
     let unix = utc.timestamp();
-    LEAP_SECONDS.iter().rev().find(|(since, _)| unix >= *since).map(|&(_, offset)| offset)
+    LEAP_SECONDS
+        .iter()
+        .rev()
+        .find(|(since, _)| unix >= *since)
+        .map(|&(_, offset)| offset)
 }
 
 fn invalid_input(msg: String) -> io::Error {
@@ -128,7 +132,12 @@ pub struct CucFormat {
 impl Default for CucFormat {
     /// CCSDS epoch, 4 bytes coarse, 2 bytes fine, with P-field (7 bytes).
     fn default() -> Self {
-        CucFormat { epoch: CucEpoch::Ccsds, coarse_len: 4, fine_len: 2, p_field: true }
+        CucFormat {
+            epoch: CucEpoch::Ccsds,
+            coarse_len: 4,
+            fine_len: 2,
+            p_field: true,
+        }
     }
 }
 
@@ -217,13 +226,16 @@ impl CucTime {
         let (mut seconds, mut nanos) = match format.epoch {
             CucEpoch::Ccsds => {
                 let leap = tai_minus_utc(utc).ok_or_else(|| {
-                    invalid_input(format!("{utc} is before 1972, where TAI−UTC is not an integer number of seconds"))
+                    invalid_input(format!(
+                        "{utc} is before 1972, where TAI−UTC is not an integer number of seconds"
+                    ))
                 })?;
                 (utc.timestamp() + SECONDS_1958_TO_1970 + leap, nanos)
             }
-            CucEpoch::Agency(epoch) => {
-                (utc.timestamp() - epoch.timestamp(), nanos - epoch.timestamp_subsec_nanos() as i64)
-            }
+            CucEpoch::Agency(epoch) => (
+                utc.timestamp() - epoch.timestamp(),
+                nanos - epoch.timestamp_subsec_nanos() as i64,
+            ),
         };
         if nanos < 0 {
             seconds -= 1;
@@ -238,7 +250,11 @@ impl CucTime {
         }
 
         let fine = ((nanos as u64) << format.fine_bits()) / 1_000_000_000;
-        Ok(CucTime { format, coarse: seconds as u32, fine: fine as u32 })
+        Ok(CucTime {
+            format,
+            coarse: seconds as u32,
+            fine: fine as u32,
+        })
     }
 
     /// Converts a human-readable UTC timestamp to a CUC time.
@@ -306,10 +322,16 @@ impl CucTime {
         let coarse_len = self.format.coarse_len as usize;
         let fine_len = self.format.fine_len as usize;
         if coarse_len < 4 && self.coarse >> (8 * coarse_len) != 0 {
-            return Err(invalid_input(format!("coarse {} does not fit into {coarse_len} bytes", self.coarse)));
+            return Err(invalid_input(format!(
+                "coarse {} does not fit into {coarse_len} bytes",
+                self.coarse
+            )));
         }
         if self.fine >> (8 * fine_len) != 0 {
-            return Err(invalid_input(format!("fine {} does not fit into {fine_len} bytes", self.fine)));
+            return Err(invalid_input(format!(
+                "fine {} does not fit into {fine_len} bytes",
+                self.fine
+            )));
         }
 
         dst.reserve(self.format.len());
@@ -364,7 +386,11 @@ impl CucTime {
 
         let (coarse, fine) = rest.split_at(format.coarse_len as usize);
         let be = |bytes: &[u8]| bytes.iter().fold(0u32, |acc, &b| acc << 8 | b as u32);
-        Ok(CucTime { format, coarse: be(coarse), fine: be(fine) })
+        Ok(CucTime {
+            format,
+            coarse: be(coarse),
+            fine: be(fine),
+        })
     }
 }
 
@@ -410,11 +436,16 @@ fn parse_utc(s: &str) -> io::Result<DateTime<Utc>> {
         return Ok(dt.with_timezone(&Utc));
     }
     let naive = s.strip_suffix('Z').unwrap_or(s);
-    ["%Y-%m-%dT%H:%M:%S%.f", "%Y-%m-%d %H:%M:%S%.f", "%Y-%jT%H:%M:%S%.f", "%Y-%j %H:%M:%S%.f"]
-        .iter()
-        .find_map(|fmt| NaiveDateTime::parse_from_str(naive, fmt).ok())
-        .map(|dt| dt.and_utc())
-        .ok_or_else(|| invalid_input(format!("'{s}' is not a supported UTC timestamp")))
+    [
+        "%Y-%m-%dT%H:%M:%S%.f",
+        "%Y-%m-%d %H:%M:%S%.f",
+        "%Y-%jT%H:%M:%S%.f",
+        "%Y-%j %H:%M:%S%.f",
+    ]
+    .iter()
+    .find_map(|fmt| NaiveDateTime::parse_from_str(naive, fmt).ok())
+    .map(|dt| dt.and_utc())
+    .ok_or_else(|| invalid_input(format!("'{s}' is not a supported UTC timestamp")))
 }
 
 #[cfg(test)]
@@ -429,15 +460,46 @@ mod tests {
     #[test]
     fn leap_second_table_matches_calendar_dates() {
         let dates = [
-            (1972, 1), (1972, 7), (1973, 1), (1974, 1), (1975, 1), (1976, 1), (1977, 1),
-            (1978, 1), (1979, 1), (1980, 1), (1981, 7), (1982, 7), (1983, 7), (1985, 7),
-            (1988, 1), (1990, 1), (1991, 1), (1992, 7), (1993, 7), (1994, 7), (1996, 1),
-            (1997, 7), (1999, 1), (2006, 1), (2009, 1), (2012, 7), (2015, 7), (2017, 1),
+            (1972, 1),
+            (1972, 7),
+            (1973, 1),
+            (1974, 1),
+            (1975, 1),
+            (1976, 1),
+            (1977, 1),
+            (1978, 1),
+            (1979, 1),
+            (1980, 1),
+            (1981, 7),
+            (1982, 7),
+            (1983, 7),
+            (1985, 7),
+            (1988, 1),
+            (1990, 1),
+            (1991, 1),
+            (1992, 7),
+            (1993, 7),
+            (1994, 7),
+            (1996, 1),
+            (1997, 7),
+            (1999, 1),
+            (2006, 1),
+            (2009, 1),
+            (2012, 7),
+            (2015, 7),
+            (2017, 1),
         ];
         assert_eq!(dates.len(), LEAP_SECONDS.len());
         for ((y, m), &(unix, offset)) in dates.iter().zip(LEAP_SECONDS) {
-            assert_eq!(Utc.with_ymd_and_hms(*y, *m, 1, 0, 0, 0).unwrap().timestamp(), unix, "{y}-{m}");
-            assert_eq!(offset, 10 + LEAP_SECONDS.iter().position(|e| e.0 == unix).unwrap() as i64);
+            assert_eq!(
+                Utc.with_ymd_and_hms(*y, *m, 1, 0, 0, 0).unwrap().timestamp(),
+                unix,
+                "{y}-{m}"
+            );
+            assert_eq!(
+                offset,
+                10 + LEAP_SECONDS.iter().position(|e| e.0 == unix).unwrap() as i64
+            );
         }
     }
 
@@ -462,24 +524,47 @@ mod tests {
 
     #[test]
     fn encoding_with_p_field() {
-        let t = CucTime { format: CucFormat::default(), coarse: 0x0102_0304, fine: 0x0506 };
+        let t = CucTime {
+            format: CucFormat::default(),
+            coarse: 0x0102_0304,
+            fine: 0x0506,
+        };
         assert_eq!(&t.to_bytes().unwrap()[..], &[0x1E, 1, 2, 3, 4, 5, 6]);
-        assert_eq!(CucTime::from_bytes(&[0x1E, 1, 2, 3, 4, 5, 6], CucFormat::default()).unwrap(), t);
+        assert_eq!(
+            CucTime::from_bytes(&[0x1E, 1, 2, 3, 4, 5, 6], CucFormat::default()).unwrap(),
+            t
+        );
     }
 
     #[test]
     fn encoding_without_p_field_and_other_lengths() {
-        let format = CucFormat { coarse_len: 2, fine_len: 1, p_field: false, ..CucFormat::default() };
-        let t = CucTime { format, coarse: 0xABCD, fine: 0xEF };
+        let format = CucFormat {
+            coarse_len: 2,
+            fine_len: 1,
+            p_field: false,
+            ..CucFormat::default()
+        };
+        let t = CucTime {
+            format,
+            coarse: 0xABCD,
+            fine: 0xEF,
+        };
         assert_eq!(&t.to_bytes().unwrap()[..], &[0xAB, 0xCD, 0xEF]);
         assert_eq!(CucTime::from_bytes(&[0xAB, 0xCD, 0xEF], format).unwrap(), t);
     }
 
     #[test]
     fn utc_roundtrip_within_resolution() {
-        for s in ["2026-09-26T12:34:56.789123Z", "2016-12-31T23:59:59.999Z", "1999-01-01T00:00:00Z"] {
+        for s in [
+            "2026-09-26T12:34:56.789123Z",
+            "2016-12-31T23:59:59.999Z",
+            "1999-01-01T00:00:00Z",
+        ] {
             let original = utc(s);
-            let back = CucTime::from_utc(&original, CucFormat::default()).unwrap().to_utc().unwrap();
+            let back = CucTime::from_utc(&original, CucFormat::default())
+                .unwrap()
+                .to_utc()
+                .unwrap();
             assert!((back - original).abs() < Duration::microseconds(16), "{s}: {back}");
         }
     }
@@ -500,7 +585,10 @@ mod tests {
 
     #[test]
     fn agency_epoch_without_leap_seconds() {
-        let format = CucFormat { epoch: CucEpoch::Agency(utc("2000-01-01T12:00:00Z")), ..CucFormat::default() };
+        let format = CucFormat {
+            epoch: CucEpoch::Agency(utc("2000-01-01T12:00:00Z")),
+            ..CucFormat::default()
+        };
         let t = CucTime::from_utc_str("2000-01-02T12:00:01.5Z", format).unwrap();
         assert_eq!((t.coarse, t.fine), (86_401, 0x8000));
         assert_eq!(t.to_bytes().unwrap()[0], 0x2E);
@@ -511,7 +599,10 @@ mod tests {
     #[test]
     fn error_cases() {
         assert!(CucTime::from_utc_str("1970-01-01T00:00:00Z", CucFormat::default()).is_err());
-        let small = CucFormat { coarse_len: 1, ..CucFormat::default() };
+        let small = CucFormat {
+            coarse_len: 1,
+            ..CucFormat::default()
+        };
         assert!(CucTime::from_utc_str("2026-01-01T00:00:00Z", small).is_err());
         let err = CucTime::from_bytes(&[0x2E, 0, 0, 0, 0, 0, 0], CucFormat::default()).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);

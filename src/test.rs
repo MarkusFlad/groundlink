@@ -32,9 +32,7 @@ pub struct TestActor<M> {
 impl<M> TestActor<M> {
     /// Creates an actor that has not received any messages yet.
     pub fn new() -> Self {
-        Self {
-            received: Vec::new(),
-        }
+        Self { received: Vec::new() }
     }
 }
 
@@ -94,11 +92,7 @@ where
 {
     type Reply = Vec<M>;
 
-    async fn handle(
-        &mut self,
-        _msg: GetMessages<M>,
-        _ctx: &mut Context<Self, Self::Reply>,
-    ) -> Self::Reply {
+    async fn handle(&mut self, _msg: GetMessages<M>, _ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         self.received.clone()
     }
 }
@@ -117,11 +111,7 @@ where
     ///
     /// Panics (like an `assert!`) if `timeout` elapses before enough
     /// messages have arrived, or if the actor is no longer running.
-    pub async fn assert_received(
-        actor_ref: &ActorRef<Self>,
-        expected_count: usize,
-        timeout: Duration,
-    ) -> Vec<M> {
+    pub async fn assert_received(actor_ref: &ActorRef<Self>, expected_count: usize, timeout: Duration) -> Vec<M> {
         const POLL_INTERVAL: Duration = Duration::from_millis(10);
         let deadline = tokio::time::Instant::now() + timeout;
 

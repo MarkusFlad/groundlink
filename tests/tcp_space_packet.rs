@@ -8,11 +8,11 @@
 use std::time::Duration;
 
 use futures::{SinkExt, StreamExt};
-use kameo::actor::{Recipient, Spawn};
 use groundlink::{
-    ConnectionHalfClosed, GetLocalAddr, PacketType, SpacePacket, SpacePacketCodec,
-    SpacePacketServer, SpacePacketWriter, TcpServerArgs, TcpWriterArgs, TestActor,
+    ConnectionHalfClosed, GetLocalAddr, PacketType, SpacePacket, SpacePacketCodec, SpacePacketServer,
+    SpacePacketWriter, TcpServerArgs, TcpWriterArgs, TestActor,
 };
+use kameo::actor::{Recipient, Spawn};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_util::codec::Framed;
 
@@ -94,5 +94,11 @@ async fn data_with_wrong_packet_version_closes_the_connection() {
         .await
         .expect("connection should be closed");
     assert!(matches!(read, Ok(0) | Err(_)), "expected EOF or reset, got {read:?}");
-    assert!(test_actor_ref.ask(groundlink::GetMessages::new()).await.unwrap().is_empty());
+    assert!(
+        test_actor_ref
+            .ask(groundlink::GetMessages::new())
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }

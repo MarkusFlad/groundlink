@@ -6,11 +6,11 @@ use std::time::Duration;
 
 use bytes::BytesMut;
 use futures::SinkExt;
-use kameo::actor::{Recipient, Spawn};
 use groundlink::{
-    GetLocalAddr, PusClient, PusCodec, PusConfig, PusServer, PusPacket, PusTc, PusTm, TcpClientArgs,
-    TcpServerArgs, TestActor,
+    GetLocalAddr, PusClient, PusCodec, PusConfig, PusPacket, PusServer, PusTc, PusTm, TcpClientArgs, TcpServerArgs,
+    TestActor,
 };
+use kameo::actor::{Recipient, Spawn};
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 use tokio_util::codec::{Encoder, Framed};
@@ -81,7 +81,10 @@ async fn pus_config_of_the_codec_reaches_server_and_client() {
     use groundlink::Connect;
 
     // No packet error control and a 4-byte time stamp, unlike the default.
-    let config = PusConfig { tm_time_len: 4, packet_error_control: false };
+    let config = PusConfig {
+        tm_time_len: 4,
+        packet_error_control: false,
+    };
     let codec = PusCodec::new(config);
 
     let at_server = TestActor::<PusPacket>::spawn(TestActor::new());
@@ -104,13 +107,19 @@ async fn pus_config_of_the_codec_reaches_server_and_client() {
     // the default configuration.
     let tm: PusPacket = PusTm::new(42, 1, 17, 2, vec![1u8, 2, 3, 4], &b"up"[..]).into();
     client.tell(tm.clone()).await.unwrap();
-    assert_eq!(TestActor::assert_received(&at_server, 1, Duration::from_secs(1)).await, vec![tm]);
+    assert_eq!(
+        TestActor::assert_received(&at_server, 1, Duration::from_secs(1)).await,
+        vec![tm]
+    );
 
     // Server -> client: if the server appended a CRC, the client (without
     // packet error control) would decode it as part of the application data.
     let tc: PusPacket = PusTc::new(42, 2, 17, 1, &b"down"[..]).into();
     server.tell(tc.clone()).await.unwrap();
-    assert_eq!(TestActor::assert_received(&at_client, 1, Duration::from_secs(1)).await, vec![tc]);
+    assert_eq!(
+        TestActor::assert_received(&at_client, 1, Duration::from_secs(1)).await,
+        vec![tc]
+    );
 }
 
 #[tokio::test]

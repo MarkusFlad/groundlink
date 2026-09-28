@@ -4,12 +4,11 @@
 use std::time::Duration;
 
 use bytes::Bytes;
-use kameo::actor::Spawn;
 use groundlink::{
-    AckFlags, AreYouAliveReport, AreYouAliveRequest, FailureCode, GetMessages, PusPacket, PusTc,
-    PusTcAcceptor, PusTestServiceActor, PusTm, PusTmStamper, RequestId, TestActor,
-    VerificationKind, VerificationReport,
+    AckFlags, AreYouAliveReport, AreYouAliveRequest, FailureCode, GetMessages, PusPacket, PusTc, PusTcAcceptor,
+    PusTestServiceActor, PusTm, PusTmStamper, RequestId, TestActor, VerificationKind, VerificationReport,
 };
+use kameo::actor::Spawn;
 
 const APID: u16 = 0x042;
 
@@ -48,9 +47,30 @@ async fn answers_tc_17_1_with_tm_1_3_then_tm_17_2_then_tm_1_7() {
 #[tokio::test]
 async fn ack_flags_select_the_verification_reports() {
     let cases = [
-        (AckFlags { start: false, completion: false, ..AckFlags::ALL }, vec![(17, 2)]),
-        (AckFlags { start: true, completion: false, ..AckFlags::NONE }, vec![(1, 3), (17, 2)]),
-        (AckFlags { start: false, completion: true, ..AckFlags::NONE }, vec![(17, 2), (1, 7)]),
+        (
+            AckFlags {
+                start: false,
+                completion: false,
+                ..AckFlags::ALL
+            },
+            vec![(17, 2)],
+        ),
+        (
+            AckFlags {
+                start: true,
+                completion: false,
+                ..AckFlags::NONE
+            },
+            vec![(1, 3), (17, 2)],
+        ),
+        (
+            AckFlags {
+                start: false,
+                completion: true,
+                ..AckFlags::NONE
+            },
+            vec![(17, 2), (1, 7)],
+        ),
     ];
     for (ack_flags, expected) in cases {
         let tms = TestActor::<PusTm>::spawn(TestActor::new());
@@ -114,13 +134,23 @@ async fn acceptor_and_service_share_one_stamper() {
     let tc: PusTc = request(3).into();
     acceptor.ask(PusPacket::from(tc.clone())).await.unwrap();
     // A TC for another APID is neither acknowledged nor passed on.
-    acceptor.ask(PusPacket::from(PusTc::new(APID + 1, 5, 17, 1, Bytes::new()))).await.unwrap();
+    acceptor
+        .ask(PusPacket::from(PusTc::new(APID + 1, 5, 17, 1, Bytes::new())))
+        .await
+        .unwrap();
 
     let received = TestActor::assert_received(&packets, 4, Duration::from_secs(1)).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
-    assert_eq!(packets.ask(GetMessages::new()).await.unwrap().len(), 4, "no further TMs");
+    assert_eq!(
+        packets.ask(GetMessages::new()).await.unwrap().len(),
+        4,
+        "no further TMs"
+    );
 
-    let types: Vec<_> = received.iter().map(|p| (p.service_type(), p.message_subtype())).collect();
+    let types: Vec<_> = received
+        .iter()
+        .map(|p| (p.service_type(), p.message_subtype()))
+        .collect();
     assert_eq!(types, vec![(1, 1), (1, 3), (17, 2), (1, 7)]);
     let completion = VerificationReport::try_from(received[3].clone()).unwrap();
     assert_eq!(completion.request_id, RequestId::from(&tc));
@@ -157,7 +187,10 @@ async fn sequence_counts_follow_the_order_on_the_wire() {
             .collect()
     };
     let (accepted, started, alive, completed) = (positions(1, 1), positions(1, 3), positions(17, 2), positions(1, 7));
-    assert_eq!((accepted.len(), started.len(), alive.len(), completed.len()), (20, 20, 20, 20));
+    assert_eq!(
+        (accepted.len(), started.len(), alive.len(), completed.len()),
+        (20, 20, 20, 20)
+    );
 
     // For each TC: TM(1,1), TM(1,3), TM(17,2), TM(1,7) in this order. Both
     // actors handle the TCs in order, so the k-th report of each kind belongs

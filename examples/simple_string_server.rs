@@ -12,18 +12,14 @@
 //! The library logs through `tracing`; set the log level with `RUST_LOG`,
 //! e.g. `RUST_LOG=debug cargo run --example simple_string_server`.
 
+use groundlink::{GetMessages, SimpleString, SimpleStringCodec, SimpleStringServer, TcpServerArgs, TestActor};
 use kameo::actor::{Recipient, Spawn};
-use groundlink::{
-    GetMessages, SimpleString, SimpleStringCodec, SimpleStringServer, TcpServerArgs, TestActor,
-};
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
+        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
         .init();
 
     let test_actor_ref = TestActor::<SimpleString>::spawn(TestActor::new());

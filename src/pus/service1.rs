@@ -36,7 +36,7 @@ use bytes::{BufMut, Bytes, BytesMut};
 use std::io;
 
 use super::{PusDecodeError, PusPacket, PusTc, PusTm, PusTmSecondaryHeader};
-use crate::ccsds::{PacketType, SequenceFlags, SpacePacketHeader, APID_MAX, SEQUENCE_COUNT_MAX};
+use crate::ccsds::{APID_MAX, PacketType, SEQUENCE_COUNT_MAX, SequenceFlags, SpacePacketHeader};
 
 /// Service type of the request verification service.
 pub const SERVICE_TYPE: u8 = 1;
@@ -94,7 +94,9 @@ impl RequestId {
     /// width.
     pub fn encode(&self, dst: &mut BytesMut) -> io::Result<()> {
         if self.packet_version > 0b111 || self.apid > APID_MAX || self.sequence_count > SEQUENCE_COUNT_MAX {
-            return Err(invalid_input(format!("request ID with values exceeding their bit widths: {self:?}")));
+            return Err(invalid_input(format!(
+                "request ID with values exceeding their bit widths: {self:?}"
+            )));
         }
         dst.put_u16(
             (self.packet_version as u16) << 13
@@ -113,9 +115,9 @@ impl RequestId {
     /// Fails with [`io::ErrorKind::InvalidData`] if `src` is not exactly
     /// [`REQUEST_ID_LEN`] bytes long.
     pub fn decode(src: &[u8]) -> io::Result<Self> {
-        let bytes: [u8; REQUEST_ID_LEN] = src.try_into().map_err(|_| {
-            invalid_data(format!("request ID has {} bytes, expected {REQUEST_ID_LEN}", src.len()))
-        })?;
+        let bytes: [u8; REQUEST_ID_LEN] = src
+            .try_into()
+            .map_err(|_| invalid_data(format!("request ID has {} bytes, expected {REQUEST_ID_LEN}", src.len())))?;
         let word0 = u16::from_be_bytes([bytes[0], bytes[1]]);
         let word1 = u16::from_be_bytes([bytes[2], bytes[3]]);
         Ok(RequestId {
@@ -148,7 +150,10 @@ pub struct FailureNotice {
 impl FailureNotice {
     /// Creates a failure notice.
     pub fn new(code: u16, data: impl Into<Bytes>) -> Self {
-        FailureNotice { code, data: data.into() }
+        FailureNotice {
+            code,
+            data: data.into(),
+        }
     }
 }
 
@@ -282,7 +287,8 @@ impl VerificationKind {
 
     /// Encodes the data after the request ID (step ID, failure notice).
     fn encode(&self, dst: &mut BytesMut) {
-        if let VerificationKind::ProgressSuccess { step_id } | VerificationKind::ProgressFailure { step_id, .. } = self {
+        if let VerificationKind::ProgressSuccess { step_id } | VerificationKind::ProgressFailure { step_id, .. } = self
+        {
             dst.put_u16(*step_id);
         }
         if let Some(failure) = self.failure() {
@@ -317,7 +323,10 @@ impl VerificationKind {
             if rest.is_empty() {
                 Ok(kind)
             } else {
-                Err(invalid_data(format!("TM(1,{subtype}) contains {} unexpected extra bytes", rest.len())))
+                Err(invalid_data(format!(
+                    "TM(1,{subtype}) contains {} unexpected extra bytes",
+                    rest.len()
+                )))
             }
         };
 
@@ -334,7 +343,10 @@ impl VerificationKind {
                 if subtype == 5 {
                     success(VerificationKind::ProgressSuccess { step_id }, &rest)
                 } else {
-                    Ok(VerificationKind::ProgressFailure { step_id, failure: failure(rest)? })
+                    Ok(VerificationKind::ProgressFailure {
+                        step_id,
+                        failure: failure(rest)?,
+                    })
                 }
             }
             7 => success(VerificationKind::CompletionSuccess, &rest),
@@ -398,13 +410,7 @@ impl VerificationReport {
 
     /// Creates the report for a received telecommand: the request ID is
     /// taken from its header and the destination ID is its source ID.
-    pub fn for_tc(
-        apid: u16,
-        sequence_count: u16,
-        time: impl Into<Bytes>,
-        tc: &PusTc,
-        kind: VerificationKind,
-    ) -> Self {
+    pub fn for_tc(apid: u16, sequence_count: u16, time: impl Into<Bytes>, tc: &PusTc, kind: VerificationKind) -> Self {
         let mut report = Self::new(apid, sequence_count, time, RequestId::from(tc), kind);
         report.destination_id = tc.secondary_header.source_id;
         report
@@ -510,7 +516,10 @@ mod tests {
             VerificationKind::StartSuccess,
             VerificationKind::StartFailure(FailureNotice::new(1, Bytes::new())),
             VerificationKind::ProgressSuccess { step_id: 3 },
-            VerificationKind::ProgressFailure { step_id: 4, failure: failure() },
+            VerificationKind::ProgressFailure {
+                step_id: 4,
+                failure: failure(),
+            },
             VerificationKind::CompletionSuccess,
             VerificationKind::CompletionFailure(failure()),
             VerificationKind::RoutingFailure(failure()),
@@ -537,10 +546,18 @@ mod tests {
 
     #[test]
     fn tm_1_1_produces_exact_expected_bytes() {
-        let report = VerificationReport::new(0x010, 5, time(), RequestId::from(&tc()), VerificationKind::AcceptanceSuccess);
+        let report = VerificationReport::new(
+            0x010,
+            5,
+            time(),
+            RequestId::from(&tc()),
+            VerificationKind::AcceptanceSuccess,
+        );
 
         let mut buf = BytesMut::new();
-        PusCodec::default().encode(report.try_into().unwrap(), &mut buf).unwrap();
+        PusCodec::default()
+            .encode(report.try_into().unwrap(), &mut buf)
+            .unwrap();
 
         // Data length = 7 (sec. header) + 7 (CUC) + 4 (request ID) + 2 (CRC) - 1 = 19
         assert_eq!(&buf[..6], &[0x08, 0x10, 0xC0, 0x05, 0x00, 19]);
@@ -553,13 +570,19 @@ mod tests {
     fn source_data_layout_per_subtype() {
         let id = [0x18, 0xAB, 0xC0, 0x01];
         assert_eq!(&source_data(VerificationKind::CompletionSuccess)[..], &id);
-        assert_eq!(&source_data(VerificationKind::ProgressSuccess { step_id: 0x0102 })[..], &[&id[..], &[1, 2]].concat()[..]);
+        assert_eq!(
+            &source_data(VerificationKind::ProgressSuccess { step_id: 0x0102 })[..],
+            &[&id[..], &[1, 2]].concat()[..]
+        );
         assert_eq!(
             &source_data(VerificationKind::StartFailure(FailureNotice::new(0xBEEF, &[9u8][..])))[..],
             &[&id[..], &[0xBE, 0xEF, 9]].concat()[..]
         );
         assert_eq!(
-            &source_data(VerificationKind::ProgressFailure { step_id: 7, failure: FailureNotice::new(0x0A0B, Bytes::new()) })[..],
+            &source_data(VerificationKind::ProgressFailure {
+                step_id: 7,
+                failure: FailureNotice::new(0x0A0B, Bytes::new())
+            })[..],
             &[&id[..], &[0, 7, 0x0A, 0x0B]].concat()[..]
         );
     }
@@ -582,7 +605,10 @@ mod tests {
 
             let decoded = VerificationReport::try_from(packet).unwrap();
             assert_eq!(decoded, original);
-            assert_eq!(CucTime::from_bytes(&decoded.time, CucFormat::default()).unwrap(), time());
+            assert_eq!(
+                CucTime::from_bytes(&decoded.time, CucFormat::default()).unwrap(),
+                time()
+            );
         }
     }
 
@@ -592,15 +618,18 @@ mod tests {
         let tm = |service, subtype, data: &[u8]| PusTm::new(1, 1, service, subtype, time(), data.to_vec());
 
         for (service, subtype, data) in [
-            (17, 1, &id[..]),              // wrong service
-            (1, 9, &id[..]),               // TM(1,9) does not exist
-            (1, 1, &id[..3]),              // request ID too short
-            (1, 1, &[&id[..], &[0]].concat()[..]), // extra bytes
-            (1, 2, &id[..]),               // failure code missing
-            (1, 5, &[&id[..], &[0]].concat()[..]), // step ID too short
+            (17, 1, &id[..]),                         // wrong service
+            (1, 9, &id[..]),                          // TM(1,9) does not exist
+            (1, 1, &id[..3]),                         // request ID too short
+            (1, 1, &[&id[..], &[0]].concat()[..]),    // extra bytes
+            (1, 2, &id[..]),                          // failure code missing
+            (1, 5, &[&id[..], &[0]].concat()[..]),    // step ID too short
             (1, 6, &[&id[..], &[0, 1]].concat()[..]), // failure code missing
         ] {
-            assert!(VerificationReport::try_from(tm(service, subtype, data)).is_err(), "TM({service},{subtype}) {data:?}");
+            assert!(
+                VerificationReport::try_from(tm(service, subtype, data)).is_err(),
+                "TM({service},{subtype}) {data:?}"
+            );
         }
         assert!(VerificationReport::try_from(PusPacket::Tc(tc())).is_err());
     }

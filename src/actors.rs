@@ -26,7 +26,7 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use bytes::BytesMut;
-use futures::{stream, StreamExt};
+use futures::{StreamExt, stream};
 use kameo::actor::{Actor, ActorRef, Recipient, Spawn};
 use kameo::error::Infallible;
 use kameo::message::{Context, Message, StreamMessage};
@@ -38,11 +38,11 @@ use tokio_util::codec::FramedRead;
 use tracing::{debug, error, info, warn};
 
 use crate::ccsds::{SpacePacket, SpacePacketCodec};
-use crate::pus::{PusCodec, PusPacket};
 use crate::messages::{
-    Close, CloseRead, CloseReason, CloseWrite, Connect, ConnectionHalf, ConnectionHalfClosed,
-    GetLocalAddr, MessageCodec, PeerHalfClosed, Shutdown, WireMessage,
+    Close, CloseRead, CloseReason, CloseWrite, Connect, ConnectionHalf, ConnectionHalfClosed, GetLocalAddr,
+    MessageCodec, PeerHalfClosed, Shutdown, WireMessage,
 };
+use crate::pus::{PusCodec, PusPacket};
 use crate::simple_string::{SimpleString, SimpleStringCodec};
 
 /// TCP keepalive settings that detect a peer that has failed or become
@@ -84,7 +84,11 @@ impl KeepAlive {
 impl Default for KeepAlive {
     /// 10 s idle, 5 s interval, 3 retries.
     fn default() -> Self {
-        KeepAlive { idle: Duration::from_secs(10), interval: Duration::from_secs(5), retries: 3 }
+        KeepAlive {
+            idle: Duration::from_secs(10),
+            interval: Duration::from_secs(5),
+            retries: 3,
+        }
     }
 }
 
@@ -260,11 +264,7 @@ where
 {
     type Reply = Result<SocketAddr, Infallible>;
 
-    async fn handle(
-        &mut self,
-        _msg: GetLocalAddr,
-        _ctx: &mut Context<Self, Self::Reply>,
-    ) -> Self::Reply {
+    async fn handle(&mut self, _msg: GetLocalAddr, _ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         Ok(self.local_addr)
     }
 }
@@ -276,11 +276,7 @@ where
 {
     type Reply = ();
 
-    async fn handle(
-        &mut self,
-        msg: ConnectionHalfClosed,
-        _ctx: &mut Context<Self, Self::Reply>,
-    ) -> Self::Reply {
+    async fn handle(&mut self, msg: ConnectionHalfClosed, _ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         info!(
             "TCP state: {} half {:?} closed ({:?})",
             msg.peer_addr, msg.half, msg.reason
@@ -404,7 +400,13 @@ async fn accept_loop<M, C>(
 
                 // Register the writer before the reader starts, so the
                 // server knows it before any close event of the connection.
-                if let Err(err) = listener_ref.tell(WriterSpawned { peer_addr, writer: writer_ref }).await {
+                if let Err(err) = listener_ref
+                    .tell(WriterSpawned {
+                        peer_addr,
+                        writer: writer_ref,
+                    })
+                    .await
+                {
                     warn!("could not register writer with listener: {err}");
                 }
 
@@ -563,11 +565,7 @@ where
 {
     type Reply = ();
 
-    async fn handle(
-        &mut self,
-        _msg: Shutdown<M>,
-        ctx: &mut Context<Self, Self::Reply>,
-    ) -> Self::Reply {
+    async fn handle(&mut self, _msg: Shutdown<M>, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         info!("closing read half of {} on request", self.peer_addr);
 
         if let Err(err) = self
@@ -644,16 +642,9 @@ where
 {
     type Reply = ();
 
-    async fn handle(
-        &mut self,
-        _msg: Shutdown<M>,
-        ctx: &mut Context<Self, Self::Reply>,
-    ) -> Self::Reply {
+    async fn handle(&mut self, _msg: Shutdown<M>, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         if let Err(err) = self.write_half.shutdown().await {
-            warn!(
-                "error while shutting down the write half to {}: {err}",
-                self.peer_addr
-            );
+            warn!("error while shutting down the write half to {}: {err}", self.peer_addr);
         }
 
         if let Err(send_err) = self
@@ -730,7 +721,13 @@ impl<M: Send + 'static, C> TcpClientArgs<M, C> {
     /// half-closes; change them with [`with_keepalive`](Self::with_keepalive)
     /// and [`with_on_half_closed`](Self::with_on_half_closed).
     pub fn new(remote_addr: SocketAddr, downstream: Recipient<M>, codec: C) -> Self {
-        TcpClientArgs { remote_addr, downstream, on_half_closed: None, keepalive: Some(KeepAlive::default()), codec }
+        TcpClientArgs {
+            remote_addr,
+            downstream,
+            on_half_closed: None,
+            keepalive: Some(KeepAlive::default()),
+            codec,
+        }
     }
 
     /// Uses `keepalive` for the connection; `None` keeps the system
@@ -815,11 +812,7 @@ where
 {
     type Reply = io::Result<SocketAddr>;
 
-    async fn handle(
-        &mut self,
-        _msg: Connect,
-        ctx: &mut Context<Self, Self::Reply>,
-    ) -> Self::Reply {
+    async fn handle(&mut self, _msg: Connect, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         if self.connection.is_some() {
             return Err(io::Error::new(
                 io::ErrorKind::AlreadyExists,
@@ -931,11 +924,7 @@ where
 {
     type Reply = ();
 
-    async fn handle(
-        &mut self,
-        msg: ConnectionHalfClosed,
-        _ctx: &mut Context<Self, Self::Reply>,
-    ) -> Self::Reply {
+    async fn handle(&mut self, msg: ConnectionHalfClosed, _ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         info!(
             "TcpClientActor: half {:?} of the connection to {} closed ({:?})",
             msg.half, msg.peer_addr, msg.reason
@@ -979,16 +968,12 @@ where
         match msg.half {
             ConnectionHalf::Read => {
                 if let Err(err) = conn.writer_ref.tell(Shutdown::<M>::new()).await {
-                    warn!(
-                        "TcpClientActor: could not send shutdown (via PeerHalfClosed) to writer: {err}"
-                    );
+                    warn!("TcpClientActor: could not send shutdown (via PeerHalfClosed) to writer: {err}");
                 }
             }
             ConnectionHalf::Write => {
                 if let Err(err) = conn.reader_ref.tell(Shutdown::<M>::new()).await {
-                    warn!(
-                        "TcpClientActor: could not send shutdown (via PeerHalfClosed) to reader: {err}"
-                    );
+                    warn!("TcpClientActor: could not send shutdown (via PeerHalfClosed) to reader: {err}");
                 }
             }
         }
@@ -1002,11 +987,7 @@ where
 {
     type Reply = ();
 
-    async fn handle(
-        &mut self,
-        item: M,
-        _ctx: &mut Context<Self, Self::Reply>,
-    ) -> Self::Reply {
+    async fn handle(&mut self, item: M, _ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         match &self.connection {
             Some(conn) => {
                 if let Err(err) = conn.writer_ref.tell(item).await {
@@ -1067,7 +1048,11 @@ mod tests {
     #[tokio::test]
     async fn keepalive_is_applied_to_the_socket() {
         let stream = connected_stream().await;
-        let keepalive = KeepAlive { idle: Duration::from_secs(7), interval: Duration::from_secs(2), retries: 4 };
+        let keepalive = KeepAlive {
+            idle: Duration::from_secs(7),
+            interval: Duration::from_secs(2),
+            retries: 4,
+        };
 
         configure_keepalive(&stream, Some(keepalive)).unwrap();
 

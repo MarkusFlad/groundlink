@@ -4,8 +4,8 @@
 use std::time::Duration;
 
 use bytes::Bytes;
-use kameo::actor::{ActorRef, Spawn};
 use groundlink::{CucFormat, CucTime, PusPacket, PusTm, PusTmStamper, TestActor};
+use kameo::actor::{ActorRef, Spawn};
 
 const APID: u16 = 0x042;
 
@@ -22,7 +22,9 @@ fn tm(service_type: u8, subtype: u8, destination_id: u16) -> PusTm {
 }
 
 fn unwrap_tm(packet: &PusPacket) -> &PusTm {
-    let PusPacket::Tm(tm) = packet else { panic!("expected TM, got {packet:?}") };
+    let PusPacket::Tm(tm) = packet else {
+        panic!("expected TM, got {packet:?}")
+    };
     tm
 }
 
@@ -38,7 +40,10 @@ async fn sets_apid_and_current_time() {
 
     let time = tm.secondary_header.cuc_time(CucFormat::default()).unwrap();
     let age = chrono::Utc::now() - time.to_utc().unwrap();
-    assert!(age < chrono::Duration::seconds(1), "time stamp should be current: {time}");
+    assert!(
+        age < chrono::Duration::seconds(1),
+        "time stamp should be current: {time}"
+    );
 
     // The packet can be encoded with the default configuration.
     PusPacket::Tm(tm.clone()).to_space_packet(&Default::default()).unwrap();
@@ -66,10 +71,12 @@ async fn counters_advance() {
 #[tokio::test]
 async fn uses_the_configured_time_format() {
     let packets = TestActor::<PusPacket>::spawn(TestActor::new());
-    let format = CucFormat { fine_len: 1, ..CucFormat::default() };
-    let stamper = PusTmStamper::spawn(
-        PusTmStamper::new(APID, packets.clone().recipient::<PusPacket>()).with_time_format(format),
-    );
+    let format = CucFormat {
+        fine_len: 1,
+        ..CucFormat::default()
+    };
+    let stamper =
+        PusTmStamper::spawn(PusTmStamper::new(APID, packets.clone().recipient::<PusPacket>()).with_time_format(format));
 
     stamper.tell(tm(17, 2, 0)).await.unwrap();
 

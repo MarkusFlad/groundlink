@@ -18,14 +18,14 @@
 use std::net::SocketAddr;
 
 use anyhow::Context as _;
+use groundlink::ccsds::SEQUENCE_COUNT_MAX;
+use groundlink::{
+    AreYouAliveReport, AreYouAliveRequest, Close, Connect, ConnectionHalfClosed, CucFormat, PusClient, PusCodec,
+    PusPacket, TcpClientArgs, VerificationReport,
+};
 use kameo::actor::{Actor, ActorRef, Spawn};
 use kameo::error::Infallible;
 use kameo::message::{Context, Message};
-use groundlink::ccsds::SEQUENCE_COUNT_MAX;
-use groundlink::{
-    AreYouAliveReport, AreYouAliveRequest, Close, Connect, ConnectionHalfClosed, CucFormat,
-    PusClient, PusCodec, PusPacket, TcpClientArgs, VerificationReport,
-};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tracing_subscriber::EnvFilter;
 
@@ -99,8 +99,12 @@ fn describe(packet: &PusPacket) -> String {
 /// printed under the name `connection`.
 fn spawn_client(connection: &'static str, remote_addr: SocketAddr) -> ActorRef<PusClient> {
     let printer = PacketPrinter::spawn(PacketPrinter { connection });
-    let args = TcpClientArgs::new(remote_addr, printer.clone().recipient::<PusPacket>(), PusCodec::default())
-        .with_on_half_closed(printer.recipient::<ConnectionHalfClosed>());
+    let args = TcpClientArgs::new(
+        remote_addr,
+        printer.clone().recipient::<PusPacket>(),
+        PusCodec::default(),
+    )
+    .with_on_half_closed(printer.recipient::<ConnectionHalfClosed>());
     PusClient::spawn(args)
 }
 
@@ -126,9 +130,7 @@ fn parse_port(arg: Option<String>, usage: &str) -> anyhow::Result<u16> {
 async fn main() -> anyhow::Result<()> {
     // Warnings of the library, e.g. a message dropped while not connected.
     tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn")),
-        )
+        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn")))
         .init();
 
     let usage = "usage: pus_client <address> <tc_port> <tm_port>";
@@ -168,7 +170,11 @@ async fn main() -> anyhow::Result<()> {
             }
             "tc17_1" => {
                 let request = AreYouAliveRequest::new(APID, sequence_count);
-                sequence_count = if sequence_count >= SEQUENCE_COUNT_MAX { 0 } else { sequence_count + 1 };
+                sequence_count = if sequence_count >= SEQUENCE_COUNT_MAX {
+                    0
+                } else {
+                    sequence_count + 1
+                };
                 let packet = PusPacket::from(request);
                 println!("[TC] > {}", describe(&packet));
                 if let Err(err) = tc_client.tell(packet).await {

@@ -24,7 +24,7 @@ use tracing::{error, warn};
 
 use bytes::Bytes;
 
-use crate::ccsds::{PacketType, SpacePacket, SEQUENCE_COUNT_MAX};
+use crate::ccsds::{PacketType, SEQUENCE_COUNT_MAX, SpacePacket};
 use crate::cuc::{CucFormat, CucTime};
 use crate::pus::service1::{FailureCode, RequestId, VerificationKind, VerificationReport};
 use crate::pus::service17::{AreYouAliveReport, AreYouAliveRequest};
@@ -166,7 +166,9 @@ impl Message<PusTm> for PusTmStamper {
         };
         let header = &mut tm.secondary_header;
         let (service_type, subtype) = (header.service_type, header.message_subtype);
-        header.message_type_counter = self.message_type_counters.next(service_type, subtype, header.destination_id);
+        header.message_type_counter = self
+            .message_type_counters
+            .next(service_type, subtype, header.destination_id);
         header.time = time.into();
         tm.header.apid = self.apid;
         tm.header.sequence_count = self.next_sequence_count();
@@ -236,7 +238,12 @@ impl PusTcAcceptor {
     /// reports go to `tm_recipient` as unstamped [`PusTm`]s, typically to
     /// a [`PusTmStamper`].
     pub fn new(apid: u16, tm_recipient: Recipient<PusTm>) -> Self {
-        PusTcAcceptor { apid, tm_recipient, service_handlers: HashMap::new(), pus_config: PusConfig::default() }
+        PusTcAcceptor {
+            apid,
+            tm_recipient,
+            service_handlers: HashMap::new(),
+            pus_config: PusConfig::default(),
+        }
     }
 
     /// Accepts TCs with service type `service_type` and one of `subtypes`
@@ -246,8 +253,13 @@ impl PusTcAcceptor {
     /// Registering the same service type again replaces the previous
     /// handler.
     pub fn with_service_handler(mut self, service_type: u8, subtypes: &[u8], handler: Recipient<PusTc>) -> Self {
-        self.service_handlers
-            .insert(service_type, ServiceHandler { subtypes: subtypes.to_vec(), recipient: handler });
+        self.service_handlers.insert(
+            service_type,
+            ServiceHandler {
+                subtypes: subtypes.to_vec(),
+                recipient: handler,
+            },
+        );
         self
     }
 
@@ -267,7 +279,8 @@ impl PusTcAcceptor {
     /// Creates a verification report for `tc` and sends it to
     /// `tm_recipient`.
     async fn report(&mut self, tc: &PusTc, kind: VerificationKind) {
-        self.send_report(RequestId::from(tc), tc.secondary_header.source_id, kind).await;
+        self.send_report(RequestId::from(tc), tc.secondary_header.source_id, kind)
+            .await;
     }
 
     /// Creates a verification report for the TC identified by `request_id`
@@ -428,8 +441,14 @@ impl PusTestServiceActor {
     async fn handle_request(&mut self, request: AreYouAliveRequest) {
         let request_id = RequestId::from_header(&request.header);
         if request.ack_flags.start {
-            send_report(self.apid, &self.tm_recipient, request_id, request.source_id, VerificationKind::StartSuccess)
-                .await;
+            send_report(
+                self.apid,
+                &self.tm_recipient,
+                request_id,
+                request.source_id,
+                VerificationKind::StartSuccess,
+            )
+            .await;
         }
 
         let alive = AreYouAliveReport::for_request(self.apid, 0, Bytes::new(), &request);
@@ -438,8 +457,14 @@ impl PusTestServiceActor {
         }
 
         if request.ack_flags.completion {
-            send_report(self.apid, &self.tm_recipient, request_id, request.source_id, VerificationKind::CompletionSuccess)
-                .await;
+            send_report(
+                self.apid,
+                &self.tm_recipient,
+                request_id,
+                request.source_id,
+                VerificationKind::CompletionSuccess,
+            )
+            .await;
         }
     }
 
@@ -453,8 +478,10 @@ impl PusTestServiceActor {
         }
 
         let code = if (service_type, subtype)
-            == (crate::pus::service17::SERVICE_TYPE, crate::pus::service17::ARE_YOU_ALIVE_REQUEST_SUBTYPE)
-        {
+            == (
+                crate::pus::service17::SERVICE_TYPE,
+                crate::pus::service17::ARE_YOU_ALIVE_REQUEST_SUBTYPE,
+            ) {
             FailureCode::InvalidApplicationData
         } else {
             FailureCode::UnsupportedSubtype
@@ -527,7 +554,10 @@ pub struct PusPacketAdapter<T> {
 impl<T> PusPacketAdapter<T> {
     /// Creates an adapter that forwards to `target`.
     pub fn new(target: Recipient<PusPacket>) -> Self {
-        PusPacketAdapter { target, _marker: PhantomData }
+        PusPacketAdapter {
+            target,
+            _marker: PhantomData,
+        }
     }
 }
 

@@ -101,10 +101,17 @@ impl TryFrom<PusTc> for AreYouAliveRequest {
         if !tc.app_data.is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("TC(17,1) must not contain application data (received {} bytes)", tc.app_data.len()),
+                format!(
+                    "TC(17,1) must not contain application data (received {} bytes)",
+                    tc.app_data.len()
+                ),
             ));
         }
-        Ok(AreYouAliveRequest { header: tc.header, ack_flags: sec.ack_flags, source_id: sec.source_id })
+        Ok(AreYouAliveRequest {
+            header: tc.header,
+            ack_flags: sec.ack_flags,
+            source_id: sec.source_id,
+        })
     }
 }
 
@@ -162,12 +169,7 @@ impl AreYouAliveReport {
 
     /// Creates the answer to a TC(17,1): the destination ID is the
     /// request's source ID.
-    pub fn for_request(
-        apid: u16,
-        sequence_count: u16,
-        time: impl Into<Bytes>,
-        request: &AreYouAliveRequest,
-    ) -> Self {
+    pub fn for_request(apid: u16, sequence_count: u16, time: impl Into<Bytes>, request: &AreYouAliveRequest) -> Self {
         let mut report = Self::new(apid, sequence_count, time);
         report.destination_id = request.source_id;
         report
@@ -215,7 +217,10 @@ impl TryFrom<PusTm> for AreYouAliveReport {
         if !tm.source_data.is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("TM(17,2) must not contain source data (received {} bytes)", tm.source_data.len()),
+                format!(
+                    "TM(17,2) must not contain source data (received {} bytes)",
+                    tm.source_data.len()
+                ),
             ));
         }
         Ok(AreYouAliveReport {
@@ -267,7 +272,10 @@ mod tests {
     #[test]
     fn roundtrip_through_pus_codec() {
         let mut original = AreYouAliveRequest::new(42, 7);
-        original.ack_flags = AckFlags { acceptance: true, ..AckFlags::NONE };
+        original.ack_flags = AckFlags {
+            acceptance: true,
+            ..AckFlags::NONE
+        };
         original.source_id = 5;
 
         let mut codec = PusCodec::default();
@@ -329,7 +337,10 @@ mod tests {
         let decoded = AreYouAliveReport::try_from(codec.decode(&mut buf).unwrap().unwrap()).unwrap();
 
         assert_eq!(decoded, original);
-        assert_eq!(CucTime::from_bytes(&decoded.time, CucFormat::default()).unwrap(), time());
+        assert_eq!(
+            CucTime::from_bytes(&decoded.time, CucFormat::default()).unwrap(),
+            time()
+        );
     }
 
     #[test]

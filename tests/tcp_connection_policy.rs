@@ -4,11 +4,11 @@
 use std::time::Duration;
 
 use futures::{SinkExt, StreamExt};
-use kameo::actor::{ActorRef, Spawn};
 use groundlink::{
-    ConnectionPolicy, GetLocalAddr, GetMessages, SimpleString, SimpleStringCodec,
-    SimpleStringServer, TcpServerArgs, TestActor,
+    ConnectionPolicy, GetLocalAddr, GetMessages, SimpleString, SimpleStringCodec, SimpleStringServer, TcpServerArgs,
+    TestActor,
 };
+use kameo::actor::{ActorRef, Spawn};
 use tokio::net::TcpStream;
 use tokio_util::codec::Framed;
 
@@ -22,8 +22,12 @@ fn text(s: &str) -> SimpleString {
 /// returned test actor.
 fn server(policy: ConnectionPolicy) -> (ActorRef<SimpleStringServer>, ActorRef<TestActor<SimpleString>>) {
     let received = TestActor::<SimpleString>::spawn(TestActor::new());
-    let args = TcpServerArgs::new("127.0.0.1:0".parse().unwrap(), received.clone().recipient(), SimpleStringCodec::default())
-        .with_connection_policy(policy);
+    let args = TcpServerArgs::new(
+        "127.0.0.1:0".parse().unwrap(),
+        received.clone().recipient(),
+        SimpleStringCodec::default(),
+    )
+    .with_connection_policy(policy);
     let server = SimpleStringServer::spawn(args);
     (server, received)
 }
@@ -74,7 +78,10 @@ async fn replace_current_closes_the_old_connection_for_a_new_client() {
     let end = tokio::time::timeout(Duration::from_secs(1), first.next())
         .await
         .expect("first connection should be closed");
-    assert!(matches!(end, None | Some(Err(_))), "expected end of stream, got {end:?}");
+    assert!(
+        matches!(end, None | Some(Err(_))),
+        "expected end of stream, got {end:?}"
+    );
 
     // Messages sent through the server go to the new client.
     server.tell(text("to second")).await.unwrap();

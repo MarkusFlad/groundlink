@@ -27,15 +27,15 @@
 
 use std::net::SocketAddr;
 
-use anyhow::{anyhow, Context as _};
+use anyhow::{Context as _, anyhow};
+use groundlink::pus::service17;
+use groundlink::{
+    GetLocalAddr, PusCodec, PusPacket, PusServer, PusTc, PusTcAcceptor, PusTestServiceActor, PusTm, PusTmStamper,
+    SpacePacket, SpacePacketCodec, SpacePacketServer, TcpServerArgs,
+};
 use kameo::actor::{Actor, ActorRef, Spawn};
 use kameo::error::Infallible;
 use kameo::message::{Context, Message};
-use groundlink::pus::service17;
-use groundlink::{
-    GetLocalAddr, PusCodec, PusServer, PusPacket, PusTc, PusTcAcceptor, PusTestServiceActor, PusTm,
-    PusTmStamper, SpacePacket, SpacePacketCodec, SpacePacketServer, TcpServerArgs,
-};
 use tracing::warn;
 use tracing_subscriber::EnvFilter;
 
@@ -71,9 +71,7 @@ fn parse_port(arg: Option<String>, usage: &str) -> anyhow::Result<u16> {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
+        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
         .init();
 
     let usage = "usage: pus_server <tc_port> <tm_port>";
@@ -115,9 +113,7 @@ async fn main() -> anyhow::Result<()> {
         .await
         .map_err(|err| anyhow!("cannot listen on TM port {tm_port}: {err}"))?;
 
-    println!(
-        "PUS server (APID {APID:#05x}): telecommands on {tc_addr}, telemetry on {tm_addr} - press Ctrl+C to stop"
-    );
+    println!("PUS server (APID {APID:#05x}): telecommands on {tc_addr}, telemetry on {tm_addr} - press Ctrl+C to stop");
     tokio::signal::ctrl_c().await?;
     Ok(())
 }

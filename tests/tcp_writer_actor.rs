@@ -13,11 +13,11 @@
 
 use std::time::Duration;
 
-use kameo::actor::Spawn;
 use groundlink::{
-    CloseReason, ConnectionHalf, ConnectionHalfClosed, Shutdown, SimpleString, SimpleStringCodec,
-    SimpleStringWriter, TcpWriterArgs, TestActor,
+    CloseReason, ConnectionHalf, ConnectionHalfClosed, Shutdown, SimpleString, SimpleStringCodec, SimpleStringWriter,
+    TcpWriterArgs, TestActor,
 };
+use kameo::actor::Spawn;
 use tokio::io::AsyncReadExt;
 use tokio::net::{TcpListener, TcpStream};
 
@@ -44,10 +44,7 @@ async fn writer_actor_writes_length_prefixed_frame() {
         codec: SimpleStringCodec::default(),
     });
 
-    writer_ref
-        .tell(SimpleString("hello world".to_string()))
-        .await
-        .unwrap();
+    writer_ref.tell(SimpleString("hello world".to_string())).await.unwrap();
 
     // Decode the frame by hand: 16-bit length field (big-endian) + payload.
     let mut len_buf = [0u8; 2];
@@ -94,8 +91,7 @@ async fn writer_actor_reports_write_half_closed_on_write_error() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
-    let received =
-        TestActor::assert_received(&listener_ref, 1, Duration::from_secs(3)).await;
+    let received = TestActor::assert_received(&listener_ref, 1, Duration::from_secs(3)).await;
 
     assert_eq!(received[0].peer_addr, peer_addr);
     assert_eq!(received[0].half, ConnectionHalf::Write);
@@ -132,8 +128,7 @@ async fn writer_actor_closes_gracefully_on_shutdown() {
     let n = client_read.read(&mut buf).await.unwrap();
     assert_eq!(n, 0, "client should have seen EOF");
 
-    let received =
-        TestActor::assert_received(&listener_ref, 1, Duration::from_secs(1)).await;
+    let received = TestActor::assert_received(&listener_ref, 1, Duration::from_secs(1)).await;
 
     assert_eq!(received[0].peer_addr, peer_addr);
     assert_eq!(received[0].half, ConnectionHalf::Write);
@@ -172,5 +167,11 @@ async fn message_that_cannot_be_encoded_is_dropped_and_connection_stays_open() {
     assert_eq!(&frame, b"\x00\x05after");
 
     assert!(writer_ref.is_alive());
-    assert!(listener_ref.ask(groundlink::GetMessages::new()).await.unwrap().is_empty());
+    assert!(
+        listener_ref
+            .ask(groundlink::GetMessages::new())
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }

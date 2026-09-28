@@ -152,9 +152,7 @@ impl SpacePacketHeader {
         if data_len == 0 || data_len > MAX_PACKET_DATA_LEN {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                format!(
-                    "packet data field length {data_len} outside the valid range (1..={MAX_PACKET_DATA_LEN})"
-                ),
+                format!("packet data field length {data_len} outside the valid range (1..={MAX_PACKET_DATA_LEN})"),
             ));
         }
 
@@ -172,8 +170,7 @@ impl SpacePacketHeader {
             | ((self.secondary_header_flag as u16) << 11)
             | (self.apid & APID_MAX);
         // Sequence flags (2 bits) | sequence count (14 bits)
-        let word1: u16 =
-            ((self.sequence_flags.to_bits() as u16) << 14) | (self.sequence_count & SEQUENCE_COUNT_MAX);
+        let word1: u16 = ((self.sequence_flags.to_bits() as u16) << 14) | (self.sequence_count & SEQUENCE_COUNT_MAX);
         // Packet data length = actual length - 1
         let word2: u16 = data_len.wrapping_sub(1) as u16;
 
@@ -358,15 +355,17 @@ mod tests {
         // word0 = (1<<12) | (0<<11) | 0x0AB          = 0x10AB
         // word1 = (0b11<<14) | 0x0001                 = 0xC001
         // word2 = data_len(2) - 1                      = 0x0001
-        assert_eq!(
-            &buf[..],
-            &[0x10, 0xAB, 0xC0, 0x01, 0x00, 0x01, b'h', b'i']
-        );
+        assert_eq!(&buf[..], &[0x10, 0xAB, 0xC0, 0x01, 0x00, 0x01, b'h', b'i']);
     }
 
     #[test]
     fn encode_decode_roundtrip() {
-        let original = SpacePacket::new(PacketType::Telemetry, APID_MAX, SEQUENCE_COUNT_MAX, &b"hello spacecraft"[..]);
+        let original = SpacePacket::new(
+            PacketType::Telemetry,
+            APID_MAX,
+            SEQUENCE_COUNT_MAX,
+            &b"hello spacecraft"[..],
+        );
 
         let mut codec = SpacePacketCodec;
         let mut buf = BytesMut::new();

@@ -7,11 +7,10 @@
 use std::time::Duration;
 
 use futures::FutureExt;
-use kameo::actor::{Recipient, Spawn};
 use groundlink::{
-    encode_frame, GetLocalAddr, SimpleString, SimpleStringCodec, SimpleStringServer, TcpServerArgs,
-    TestActor,
+    GetLocalAddr, SimpleString, SimpleStringCodec, SimpleStringServer, TcpServerArgs, TestActor, encode_frame,
 };
+use kameo::actor::{Recipient, Spawn};
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 
@@ -41,10 +40,7 @@ async fn simple_strings_are_forwarded_to_downstream_actor() {
 
     assert_eq!(
         received,
-        vec![
-            SimpleString("hello".to_string()),
-            SimpleString("world".to_string()),
-        ]
+        vec![SimpleString("hello".to_string()), SimpleString("world".to_string()),]
     );
 }
 

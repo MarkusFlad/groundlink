@@ -55,22 +55,12 @@ pub struct ConnectionHalfClosed {
 /// [`TcpServerArgs::codec`](crate::actors::TcpServerArgs::codec)); every
 /// connection uses a clone of it.
 pub trait MessageCodec<M>:
-    Decoder<Item = M, Error = io::Error>
-        + Encoder<M, Error = io::Error>
-        + Clone
-        + Unpin
-        + Send
-        + 'static
+    Decoder<Item = M, Error = io::Error> + Encoder<M, Error = io::Error> + Clone + Unpin + Send + 'static
 {
 }
 
 impl<M, C> MessageCodec<M> for C where
-    C: Decoder<Item = M, Error = io::Error>
-        + Encoder<M, Error = io::Error>
-        + Clone
-        + Unpin
-        + Send
-        + 'static
+    C: Decoder<Item = M, Error = io::Error> + Encoder<M, Error = io::Error> + Clone + Unpin + Send + 'static
 {
 }
 

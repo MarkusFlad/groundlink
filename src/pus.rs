@@ -79,7 +79,11 @@ pub fn crc16_ccitt(data: &[u8]) -> u16 {
     for &byte in data {
         crc ^= (byte as u16) << 8;
         for _ in 0..8 {
-            crc = if crc & 0x8000 != 0 { (crc << 1) ^ 0x1021 } else { crc << 1 };
+            crc = if crc & 0x8000 != 0 {
+                (crc << 1) ^ 0x1021
+            } else {
+                crc << 1
+            };
         }
     }
     crc
@@ -119,7 +123,10 @@ impl std::fmt::Display for PusDecodeError {
                 f.write_str("Space Packet without secondary header is not a PUS packet")
             }
             PusDecodeError::PacketTooShort { len, min_len } => {
-                write!(f, "packet data field ({len} bytes) too short (at least {min_len} bytes expected)")
+                write!(
+                    f,
+                    "packet data field ({len} bytes) too short (at least {min_len} bytes expected)"
+                )
             }
             PusDecodeError::ChecksumError => f.write_str("CRC error in packet error control field"),
             PusDecodeError::UnsupportedPusVersion(version) => {
@@ -155,9 +162,19 @@ pub struct AckFlags {
 
 impl AckFlags {
     /// All verification reports requested.
-    pub const ALL: AckFlags = AckFlags { acceptance: true, start: true, progress: true, completion: true };
+    pub const ALL: AckFlags = AckFlags {
+        acceptance: true,
+        start: true,
+        progress: true,
+        completion: true,
+    };
     /// No verification reports requested.
-    pub const NONE: AckFlags = AckFlags { acceptance: false, start: false, progress: false, completion: false };
+    pub const NONE: AckFlags = AckFlags {
+        acceptance: false,
+        start: false,
+        progress: false,
+        completion: false,
+    };
 
     fn from_bits(bits: u8) -> Self {
         AckFlags {
@@ -169,10 +186,7 @@ impl AckFlags {
     }
 
     fn to_bits(self) -> u8 {
-        (self.acceptance as u8)
-            | (self.start as u8) << 1
-            | (self.progress as u8) << 2
-            | (self.completion as u8) << 3
+        (self.acceptance as u8) | (self.start as u8) << 1 | (self.progress as u8) << 2 | (self.completion as u8) << 3
     }
 }
 
@@ -393,7 +407,11 @@ impl PusPacket {
                 header.packet_type = PacketType::Telecommand;
                 let sec = &tc.secondary_header;
                 data.reserve(TC_SECONDARY_HEADER_LEN + tc.app_data.len() + PEC_LEN);
-                data.extend_from_slice(&[PUS_VERSION << 4 | sec.ack_flags.to_bits(), sec.service_type, sec.message_subtype]);
+                data.extend_from_slice(&[
+                    PUS_VERSION << 4 | sec.ack_flags.to_bits(),
+                    sec.service_type,
+                    sec.message_subtype,
+                ]);
                 data.extend_from_slice(&sec.source_id.to_be_bytes());
                 data.extend_from_slice(&tc.app_data);
             }
@@ -414,7 +432,11 @@ impl PusPacket {
                     )));
                 }
                 data.reserve(TM_SECONDARY_HEADER_LEN_WITHOUT_TIME + sec.time.len() + tm.source_data.len() + PEC_LEN);
-                data.extend_from_slice(&[PUS_VERSION << 4 | sec.time_reference_status, sec.service_type, sec.message_subtype]);
+                data.extend_from_slice(&[
+                    PUS_VERSION << 4 | sec.time_reference_status,
+                    sec.service_type,
+                    sec.message_subtype,
+                ]);
                 data.extend_from_slice(&sec.message_type_counter.to_be_bytes());
                 data.extend_from_slice(&sec.destination_id.to_be_bytes());
                 data.extend_from_slice(&sec.time);
@@ -430,7 +452,10 @@ impl PusPacket {
             data.extend_from_slice(&crc16_ccitt(&crc_input).to_be_bytes());
         }
 
-        Ok(SpacePacket { header, data: data.freeze() })
+        Ok(SpacePacket {
+            header,
+            data: data.freeze(),
+        })
     }
 
     /// Interprets a Space Packet as a PUS packet.
@@ -450,7 +475,10 @@ impl PusPacket {
 
         if config.packet_error_control {
             if data.len() < PEC_LEN {
-                return Err(PusDecodeError::PacketTooShort { len: data.len(), min_len: PEC_LEN });
+                return Err(PusDecodeError::PacketTooShort {
+                    len: data.len(),
+                    min_len: PEC_LEN,
+                });
             }
             let mut crc_input = BytesMut::with_capacity(crate::ccsds::PRIMARY_HEADER_LEN + data.len());
             crc_input.extend_from_slice(&header.to_bytes(data.len()));
@@ -467,7 +495,10 @@ impl PusPacket {
             PacketType::Telemetry => TM_SECONDARY_HEADER_LEN_WITHOUT_TIME + config.tm_time_len,
         };
         if data.len() < min_len {
-            return Err(PusDecodeError::PacketTooShort { len: data.len(), min_len });
+            return Err(PusDecodeError::PacketTooShort {
+                len: data.len(),
+                min_len,
+            });
         }
 
         let version = data[0] >> 4;
@@ -522,7 +553,10 @@ pub struct PusConfig {
 impl Default for PusConfig {
     /// Time stamp of [`DEFAULT_TM_TIME_LEN`] bytes, with packet error control.
     fn default() -> Self {
-        PusConfig { tm_time_len: DEFAULT_TM_TIME_LEN, packet_error_control: true }
+        PusConfig {
+            tm_time_len: DEFAULT_TM_TIME_LEN,
+            packet_error_control: true,
+        }
     }
 }
 
@@ -557,7 +591,10 @@ pub struct PusCodec {
 impl PusCodec {
     /// Creates a codec with the given mission parameters.
     pub fn new(config: PusConfig) -> Self {
-        PusCodec { config, inner: SpacePacketCodec }
+        PusCodec {
+            config,
+            inner: SpacePacketCodec,
+        }
     }
 
     /// The mission parameters of this codec.
@@ -620,7 +657,9 @@ mod tests {
 
         let mut codec = PusCodec::default();
         let mut buf = encode(&mut codec, original);
-        let Some(PusPacket::Tm(tm)) = codec.decode(&mut buf).unwrap() else { panic!("expected TM") };
+        let Some(PusPacket::Tm(tm)) = codec.decode(&mut buf).unwrap() else {
+            panic!("expected TM")
+        };
 
         assert_eq!(tm.secondary_header.cuc_time(CucFormat::default()).unwrap(), time);
     }
@@ -650,7 +689,11 @@ mod tests {
     #[test]
     fn tc_roundtrip() {
         let mut tc = PusTc::new(42, 7, 8, 1, &b"command"[..]);
-        tc.secondary_header.ack_flags = AckFlags { acceptance: true, completion: true, ..AckFlags::NONE };
+        tc.secondary_header.ack_flags = AckFlags {
+            acceptance: true,
+            completion: true,
+            ..AckFlags::NONE
+        };
         let original = PusPacket::Tc(tc);
 
         let mut codec = PusCodec::default();
@@ -663,7 +706,10 @@ mod tests {
 
     #[test]
     fn tm_roundtrip_with_custom_config() {
-        let config = PusConfig { tm_time_len: 4, packet_error_control: false };
+        let config = PusConfig {
+            tm_time_len: 4,
+            packet_error_control: false,
+        };
         let mut tm = PusTm::new(3, 99, 3, 25, &[1u8, 2, 3, 4][..], &b"housekeeping"[..]);
         tm.secondary_header.time_reference_status = 0x5;
         tm.secondary_header.message_type_counter = 0xBEEF;
@@ -725,7 +771,10 @@ mod tests {
     fn decode_rejects_space_packet_without_secondary_header() {
         let mut buf = BytesMut::new();
         SpacePacketCodec
-            .encode(SpacePacket::new(PacketType::Telecommand, 1, 1, &b"0123456789"[..]), &mut buf)
+            .encode(
+                SpacePacket::new(PacketType::Telecommand, 1, 1, &b"0123456789"[..]),
+                &mut buf,
+            )
             .unwrap();
         assert_eq!(PusCodec::default().decode(&mut buf).unwrap(), None);
         assert!(buf.is_empty());
@@ -733,7 +782,10 @@ mod tests {
 
     #[test]
     fn decode_rejects_wrong_pus_version() {
-        let config = PusConfig { packet_error_control: false, ..PusConfig::default() };
+        let config = PusConfig {
+            packet_error_control: false,
+            ..PusConfig::default()
+        };
         let mut space_packet = PusPacket::from(PusTc::new(1, 1, 17, 1, Bytes::new()))
             .to_space_packet(&config)
             .unwrap();

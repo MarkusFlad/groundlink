@@ -14,9 +14,10 @@
 //! Telecommands are received on the TC port as Space Packets, so that the
 //! `PusTcAcceptor` can answer invalid PUS packets (e.g. with a CRC error)
 //! with TM(1,2). The application process has APID 0x042 and supports
-//! TC(17,1). All telemetry (TM(1,1), TM(17,2), TM(1,7)) goes through one
-//! `PusTmStamper`, which numbers it consecutively and adds the time stamp,
-//! and is sent to the client connected to the TM port, in that order.
+//! TC(17,1). All telemetry (TM(1,1), TM(1,3), TM(17,2), TM(1,7)) goes
+//! through one `PusTmStamper`, which numbers it consecutively and adds the
+//! time stamp, and is sent to the client connected to the TM port, in that
+//! order.
 //! Telemetry produced while no client is connected to the TM port is
 //! dropped. Each port serves one client at a time.
 //!

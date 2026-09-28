@@ -5,7 +5,7 @@
 //! ```text
 //! SpacePacketServer ──SpacePacket──▶ PusTcAcceptor ──TM(1,1), TM(1,2)──────────────▶ PusTmStamper ──PusPacket──▶ PusServer
 //!                                         │                                               ▲
-//!                                         └─PusTc (Service 17)──▶ PusTestServiceActor ──TM(17,2), TM(1,7)
+//!                                         └─PusTc (Service 17)──▶ PusTestServiceActor ──TM(1,3), TM(17,2), TM(1,7)
 //! ```
 //!
 //! The service actors send unstamped [`PusTm`]s. The [`PusTmStamper`] of
@@ -359,11 +359,17 @@ impl Message<SpacePacket> for PusTcAcceptor {
 }
 
 /// Actor for PUS service 17 "Test": answers every TC(17,1) "Are-You-Alive"
-/// first with TM(17,2) "Are-You-Alive Connection Report" and then, if the
-/// TC has the acknowledgement flag `completion` set, with TM(1,7)
-/// "Successful Completion of Execution Verification Report". Both packets
-/// go as unstamped [`PusTm`]s to the same `tm_recipient`, typically the
-/// [`PusTmStamper`] of the APID, so that their order is preserved.
+/// with, in this order,
+/// 1. TM(1,3) "Successful Start of Execution Verification Report", if the
+///    TC has the acknowledgement flag `start` set,
+/// 2. TM(17,2) "Are-You-Alive Connection Report", and
+/// 3. TM(1,7) "Successful Completion of Execution Verification Report", if
+///    the TC has the acknowledgement flag `completion` set.
+///
+/// TC(17,1) has no execution steps, so no progress reports (TM(1,5)) are
+/// generated. All packets go as unstamped [`PusTm`]s to the same
+/// `tm_recipient`, typically the [`PusTmStamper`] of the APID, so that
+/// their order is preserved.
 ///
 /// Intended as a downstream actor of a [`PusTcAcceptor`]:
 ///
@@ -390,13 +396,13 @@ impl Message<SpacePacket> for PusTcAcceptor {
 ///
 /// acceptor.tell(PusTc::from(AreYouAliveRequest::new(apid, 0))).await.unwrap();
 ///
-/// // TM(1,1) from the acceptor, then TM(17,2) and TM(1,7) from the test
-/// // service, numbered consecutively by the stamper.
-/// let received = TestActor::assert_received(&tms, 3, Duration::from_secs(1)).await;
+/// // TM(1,1) from the acceptor, then TM(1,3), TM(17,2) and TM(1,7) from
+/// // the test service, numbered consecutively by the stamper.
+/// let received = TestActor::assert_received(&tms, 4, Duration::from_secs(1)).await;
 /// let types: Vec<_> = received.iter().map(|p| (p.service_type(), p.message_subtype())).collect();
-/// assert_eq!(types, vec![(1, 1), (17, 2), (1, 7)]);
+/// assert_eq!(types, vec![(1, 1), (1, 3), (17, 2), (1, 7)]);
 /// let counts: Vec<_> = received.iter().map(|p| p.header().sequence_count).collect();
-/// assert_eq!(counts, vec![0, 1, 2]);
+/// assert_eq!(counts, vec![0, 1, 2, 3]);
 /// # }
 /// ```
 ///
@@ -420,13 +426,18 @@ impl PusTestServiceActor {
     }
 
     async fn handle_request(&mut self, request: AreYouAliveRequest) {
+        let request_id = RequestId::from_header(&request.header);
+        if request.ack_flags.start {
+            send_report(self.apid, &self.tm_recipient, request_id, request.source_id, VerificationKind::StartSuccess)
+                .await;
+        }
+
         let alive = AreYouAliveReport::for_request(self.apid, 0, Bytes::new(), &request);
         if let Err(err) = self.tm_recipient.tell(PusTm::from(alive)).await {
             warn!(apid = self.apid, error = %err, "could not send TM(17,2)");
         }
 
         if request.ack_flags.completion {
-            let request_id = RequestId::from_header(&request.header);
             send_report(self.apid, &self.tm_recipient, request_id, request.source_id, VerificationKind::CompletionSuccess)
                 .await;
         }

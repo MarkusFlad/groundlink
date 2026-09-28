@@ -11,7 +11,7 @@
 //!
 //! Every packet received on either connection is printed to the console.
 //! Against the `pus_server` example, a TC(17,1) is answered on the TM
-//! connection with TM(1,1), TM(17,2) and TM(1,7).
+//! connection with TM(1,1), TM(1,3), TM(17,2) and TM(1,7).
 //!
 //! Usage: `cargo run --example pus_client -- <address> <tc_port> <tm_port>`
 

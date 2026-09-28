@@ -120,7 +120,8 @@ The client reads these commands from stdin:
 | `Quit` | Exits |
 
 The server answers a TC(17,1) on the TM connection with TM(1,1) (acceptance),
-TM(17,2) (Are-You-Alive report) and TM(1,7) (completion). The TC side
+TM(1,3) (start of execution), TM(17,2) (Are-You-Alive report) and TM(1,7)
+(completion). The TC side
 receives plain Space Packets, so that the `PusTcAcceptor` can answer an
 invalid PUS packet (for example one with a CRC error) with TM(1,2) instead
 of dropping it.

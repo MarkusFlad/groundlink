@@ -28,7 +28,7 @@
 use std::net::SocketAddr;
 
 use anyhow::{Context as _, anyhow};
-use groundlink::pus::service17;
+use groundlink::protocol::pus::service17;
 use groundlink::{
     GetLocalAddr, PusCodec, PusPacket, PusServer, PusTc, PusTcAcceptor, PusTestServiceActor, PusTm, PusTmStamper,
     SpacePacket, SpacePacketCodec, SpacePacketServer, TcpServerArgs,

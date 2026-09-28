@@ -10,7 +10,7 @@
 //! data field may start with a mission-specific secondary header; its
 //! format is not part of CCSDS 133.0 and is deliberately not interpreted
 //! here. [`SpacePacket::data`] therefore holds the complete packet data
-//! field as raw bytes. See [`crate::pus`] for PUS packets, which define
+//! field as raw bytes. See [`crate::protocol::pus`] for PUS packets, which define
 //! such a secondary header.
 //!
 //! ```

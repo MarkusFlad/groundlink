@@ -1,6 +1,6 @@
 //! ECSS Packet Utilisation Standard (PUS-C, ECSS-E-ST-70-41C).
 //!
-//! PUS packets are CCSDS Space Packets (see [`crate::ccsds`]) whose packet
+//! PUS packets are CCSDS Space Packets (see [`crate::protocol::ccsds`]) whose packet
 //! data field contains a standardised secondary header and, optionally, a
 //! packet error control field (CRC-16):
 //!
@@ -47,8 +47,8 @@ use std::io;
 use tokio_util::codec::{Decoder, Encoder};
 use tracing::warn;
 
-use crate::ccsds::{PacketType, SequenceFlags, SpacePacket, SpacePacketCodec, SpacePacketHeader};
-use crate::cuc::{CucFormat, CucTime};
+use crate::protocol::ccsds::{PacketType, SequenceFlags, SpacePacket, SpacePacketCodec, SpacePacketHeader};
+use crate::protocol::cuc::{CucFormat, CucTime};
 
 pub mod service1;
 pub mod service17;
@@ -70,7 +70,7 @@ pub const DEFAULT_TM_TIME_LEN: usize = 7;
 /// no final XOR).
 ///
 /// ```
-/// use groundlink::pus::crc16_ccitt;
+/// use groundlink::protocol::pus::crc16_ccitt;
 ///
 /// assert_eq!(crc16_ccitt(b"123456789"), 0x29B1);
 /// ```
@@ -446,7 +446,8 @@ impl PusPacket {
 
         if config.packet_error_control {
             // The CRC covers the whole packet, including the primary header.
-            let mut crc_input = BytesMut::with_capacity(crate::ccsds::PRIMARY_HEADER_LEN + data.len() + PEC_LEN);
+            let mut crc_input =
+                BytesMut::with_capacity(crate::protocol::ccsds::PRIMARY_HEADER_LEN + data.len() + PEC_LEN);
             header.encode(data.len() + PEC_LEN, &mut crc_input)?;
             crc_input.extend_from_slice(&data);
             data.extend_from_slice(&crc16_ccitt(&crc_input).to_be_bytes());
@@ -480,7 +481,7 @@ impl PusPacket {
                     min_len: PEC_LEN,
                 });
             }
-            let mut crc_input = BytesMut::with_capacity(crate::ccsds::PRIMARY_HEADER_LEN + data.len());
+            let mut crc_input = BytesMut::with_capacity(crate::protocol::ccsds::PRIMARY_HEADER_LEN + data.len());
             crc_input.extend_from_slice(&header.to_bytes(data.len()));
             crc_input.extend_from_slice(&data);
             // The CRC over data + appended CRC is 0 if it is correct.

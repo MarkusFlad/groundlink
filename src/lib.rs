@@ -4,17 +4,17 @@
 //!
 //! # Overview
 //!
-//! The TCP actors in [`actors`] are generic over a message type `M` and a
-//! codec `C` implementing [`MessageCodec<M>`]. Every protocol therefore gets
+//! The TCP actors in [`actor::tcp`] are generic over a message type `M` and
+//! a codec `C` implementing [`MessageCodec<M>`]. Every protocol therefore gets
 //! the same set of actors through type aliases:
 //!
 //! | Protocol | Message | Codec | Actors |
 //! |---|---|---|---|
-//! | [`simple_string`] | [`SimpleString`] | [`SimpleStringCodec`] | [`SimpleStringServer`], [`SimpleStringClient`], … |
-//! | [`ccsds`] | [`SpacePacket`] | [`SpacePacketCodec`] | [`SpacePacketServer`], [`SpacePacketClient`], … |
-//! | [`pus`] | [`PusPacket`] | [`PusCodec`] | [`PusServer`], [`PusClient`], … |
+//! | [`simple_string`](protocol::simple_string) | [`SimpleString`] | [`SimpleStringCodec`] | [`SimpleStringServer`], [`SimpleStringClient`], … |
+//! | [`ccsds`](protocol::ccsds) | [`SpacePacket`] | [`SpacePacketCodec`] | [`SpacePacketServer`], [`SpacePacketClient`], … |
+//! | [`pus`](protocol::pus) | [`PusPacket`] | [`PusCodec`] | [`PusServer`], [`PusClient`], … |
 //!
-//! On top of the PUS packets, [`pus_actors`] provides actors that handle
+//! On top of the PUS packets, [`actor::pus`] provides actors that handle
 //! telecommands for an application process: [`PusTcAcceptor`] performs
 //! the acceptance check (including the PUS format, when it receives
 //! [`SpacePacket`]s) and reports it via PUS service 1,
@@ -24,18 +24,21 @@
 //!
 //! # Modules
 //!
-//! - [`actors`]: generic TCP server, client, reader and writer actors
-//!   and the per-protocol type aliases.
-//! - [`ccsds`]: CCSDS Space Packet types and codec (CCSDS 133.0-B-2).
-//! - [`cuc`]: CCSDS Unsegmented Time Code with conversion from and to UTC.
-//! - [`messages`]: messages exchanged with the TCP actors and the
-//!   [`MessageCodec`] trait.
-//! - [`pus`]: ECSS PUS-C telecommand and telemetry packets on top of Space
-//!   Packets, their codec and typed service messages.
-//! - [`pus_actors`]: actors that process PUS packets.
-//! - [`simple_string`]: the simple string protocol.
-//! - [`test`](mod@test): a generic actor that records messages, for
-//!   assertions in tests.
+//! - [`protocol`]: the protocols and the traits [`MessageCodec`] and
+//!   [`WireMessage`] that connect them to the TCP actors.
+//!   - [`protocol::ccsds`]: CCSDS Space Packet types and codec (CCSDS
+//!     133.0-B-2).
+//!   - [`protocol::cuc`]: CCSDS Unsegmented Time Code with conversion from
+//!     and to UTC.
+//!   - [`protocol::pus`]: ECSS PUS-C telecommand and telemetry packets on
+//!     top of Space Packets, their codec and typed service messages.
+//!   - [`protocol::simple_string`]: the simple string protocol.
+//! - [`actor`]: the actors.
+//!   - [`actor::tcp`]: generic TCP server, client, reader and writer actors,
+//!     their control messages and the per-protocol type aliases.
+//!   - [`actor::pus`]: actors that process PUS packets.
+//!   - [`actor::test`]: a generic actor that records messages, for
+//!     assertions in tests.
 //!
 //! The most important items are re-exported at the crate root.
 //!
@@ -98,32 +101,24 @@
 
 #![warn(missing_docs)]
 
-pub mod actors;
-pub mod ccsds;
-pub mod cuc;
-pub mod messages;
-pub mod pus;
-pub mod pus_actors;
-pub mod simple_string;
-pub mod test;
+pub mod actor;
+pub mod protocol;
 
-pub use actors::{
-    ConnectionPolicy, KeepAlive, PusClient, PusReader, PusServer, PusWriter, SimpleStringClient, SimpleStringReader,
-    SimpleStringServer, SimpleStringWriter, SpacePacketClient, SpacePacketReader, SpacePacketServer, SpacePacketWriter,
-    TcpClientActor, TcpClientArgs, TcpReaderActor, TcpReaderArgs, TcpServerActor, TcpServerArgs, TcpWriterActor,
-    TcpWriterArgs,
+pub use actor::pus::{PusPacketAdapter, PusTcAcceptor, PusTestServiceActor, PusTmStamper};
+pub use actor::tcp::{
+    Close, CloseRead, CloseReason, CloseWrite, Connect, ConnectionHalf, ConnectionHalfClosed, ConnectionPolicy,
+    GetLocalAddr, KeepAlive, PeerHalfClosed, PusClient, PusReader, PusServer, PusWriter, Shutdown, SimpleStringClient,
+    SimpleStringReader, SimpleStringServer, SimpleStringWriter, SpacePacketClient, SpacePacketReader,
+    SpacePacketServer, SpacePacketWriter, TcpClientActor, TcpClientArgs, TcpReaderActor, TcpReaderArgs, TcpServerActor,
+    TcpServerArgs, TcpWriterActor, TcpWriterArgs,
 };
-pub use ccsds::{PacketType, SequenceFlags, SpacePacket, SpacePacketCodec, SpacePacketHeader};
-pub use cuc::{CucEpoch, CucFormat, CucTime};
-pub use messages::{
-    Close, CloseRead, CloseReason, CloseWrite, Connect, ConnectionHalf, ConnectionHalfClosed, GetLocalAddr,
-    MessageCodec, PeerHalfClosed, Shutdown, WireMessage,
-};
-pub use pus::service1::{FailureCode, FailureNotice, RequestId, VerificationKind, VerificationReport};
-pub use pus::service17::{AreYouAliveReport, AreYouAliveRequest};
-pub use pus::{
+pub use actor::test::{GetMessages, TestActor};
+pub use protocol::ccsds::{PacketType, SequenceFlags, SpacePacket, SpacePacketCodec, SpacePacketHeader};
+pub use protocol::cuc::{CucEpoch, CucFormat, CucTime};
+pub use protocol::pus::service1::{FailureCode, FailureNotice, RequestId, VerificationKind, VerificationReport};
+pub use protocol::pus::service17::{AreYouAliveReport, AreYouAliveRequest};
+pub use protocol::pus::{
     AckFlags, PusCodec, PusConfig, PusDecodeError, PusPacket, PusTc, PusTcSecondaryHeader, PusTm, PusTmSecondaryHeader,
 };
-pub use pus_actors::{PusPacketAdapter, PusTcAcceptor, PusTestServiceActor, PusTmStamper};
-pub use simple_string::{SimpleString, SimpleStringCodec, encode_frame};
-pub use test::{GetMessages, TestActor};
+pub use protocol::simple_string::{SimpleString, SimpleStringCodec, encode_frame};
+pub use protocol::{MessageCodec, WireMessage};

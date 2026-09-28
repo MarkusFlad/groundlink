@@ -24,11 +24,11 @@ use tracing::{error, warn};
 
 use bytes::Bytes;
 
-use crate::ccsds::{PacketType, SEQUENCE_COUNT_MAX, SpacePacket};
-use crate::cuc::{CucFormat, CucTime};
-use crate::pus::service1::{FailureCode, RequestId, VerificationKind, VerificationReport};
-use crate::pus::service17::{AreYouAliveReport, AreYouAliveRequest};
-use crate::pus::{PusConfig, PusPacket, PusTc, PusTm};
+use crate::protocol::ccsds::{PacketType, SEQUENCE_COUNT_MAX, SpacePacket};
+use crate::protocol::cuc::{CucFormat, CucTime};
+use crate::protocol::pus::service1::{FailureCode, RequestId, VerificationKind, VerificationReport};
+use crate::protocol::pus::service17::{AreYouAliveReport, AreYouAliveRequest};
+use crate::protocol::pus::{PusConfig, PusPacket, PusTc, PusTm};
 
 /// Message type counters per (service type, subtype, destination ID), as
 /// PUS-C specifies.
@@ -389,7 +389,7 @@ impl Message<SpacePacket> for PusTcAcceptor {
 /// ```
 /// # use std::time::Duration;
 /// # use kameo::actor::Spawn;
-/// # use groundlink::pus::service17;
+/// # use groundlink::protocol::pus::service17;
 /// # use groundlink::{
 /// #     AreYouAliveRequest, PusPacket, PusTc, PusTcAcceptor, PusTestServiceActor, PusTm,
 /// #     PusTmStamper, TestActor,
@@ -479,8 +479,8 @@ impl PusTestServiceActor {
 
         let code = if (service_type, subtype)
             == (
-                crate::pus::service17::SERVICE_TYPE,
-                crate::pus::service17::ARE_YOU_ALIVE_REQUEST_SUBTYPE,
+                crate::protocol::pus::service17::SERVICE_TYPE,
+                crate::protocol::pus::service17::ARE_YOU_ALIVE_REQUEST_SUBTYPE,
             ) {
             FailureCode::InvalidApplicationData
         } else {

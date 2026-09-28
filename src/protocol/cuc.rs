@@ -14,7 +14,7 @@
 //!
 //! The default format ([`CucFormat::default`]) is the CCSDS epoch, 4 bytes
 //! coarse, 2 bytes fine, with P-field: 7 bytes in total, matching
-//! [`crate::pus::DEFAULT_TM_TIME_LEN`].
+//! [`crate::protocol::pus::DEFAULT_TM_TIME_LEN`].
 //!
 //! ```
 //! use groundlink::{CucFormat, CucTime, PusTm};
@@ -80,7 +80,7 @@ const LEAP_SECONDS: &[(i64, i64)] = &[
 ///
 /// ```
 /// use chrono::{TimeZone, Utc};
-/// use groundlink::cuc::tai_minus_utc;
+/// use groundlink::protocol::cuc::tai_minus_utc;
 ///
 /// assert_eq!(tai_minus_utc(&Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap()), Some(37));
 /// assert_eq!(tai_minus_utc(&Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap()), None);

@@ -37,13 +37,17 @@ use tokio::sync::mpsc;
 use tokio_util::codec::FramedRead;
 use tracing::{debug, error, info, warn};
 
-use crate::ccsds::{SpacePacket, SpacePacketCodec};
-use crate::messages::{
+use crate::protocol::ccsds::{SpacePacket, SpacePacketCodec};
+use crate::protocol::pus::{PusCodec, PusPacket};
+use crate::protocol::simple_string::{SimpleString, SimpleStringCodec};
+use crate::protocol::{MessageCodec, WireMessage};
+
+mod message;
+
+pub use message::{
     Close, CloseRead, CloseReason, CloseWrite, Connect, ConnectionHalf, ConnectionHalfClosed, GetLocalAddr,
-    MessageCodec, PeerHalfClosed, Shutdown, WireMessage,
+    PeerHalfClosed, Shutdown,
 };
-use crate::pus::{PusCodec, PusPacket};
-use crate::simple_string::{SimpleString, SimpleStringCodec};
 
 /// TCP keepalive settings that detect a peer that has failed or become
 /// unreachable without closing the connection.

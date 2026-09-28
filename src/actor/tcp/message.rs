@@ -1,10 +1,8 @@
-//! Messages exchanged with the generic TCP actors in [`crate::actors`] and
-//! the [`MessageCodec`] trait that ties a message type to its codec.
+//! Control messages of the generic TCP actors: requests such as
+//! [`Connect`] or [`GetLocalAddr`] and notifications such as
+//! [`ConnectionHalfClosed`].
 
-use std::io;
 use std::net::SocketAddr;
-
-use tokio_util::codec::{Decoder, Encoder};
 
 /// Why one half of a connection (reading or writing) was closed.
 #[derive(Debug, Clone, PartialEq)]
@@ -29,10 +27,10 @@ pub enum ConnectionHalf {
 
 /// Notification that one half of a connection was closed.
 ///
-/// Sent to the [`TcpServerActor`](crate::actors::TcpServerActor) (or
-/// [`TcpClientActor`](crate::actors::TcpClientActor)) by the
-/// [`TcpReaderActor`](crate::actors::TcpReaderActor) for the read
-/// half and by the [`TcpWriterActor`](crate::actors::TcpWriterActor) for
+/// Sent to the [`TcpServerActor`](crate::actor::tcp::TcpServerActor) (or
+/// [`TcpClientActor`](crate::actor::tcp::TcpClientActor)) by the
+/// [`TcpReaderActor`](crate::actor::tcp::TcpReaderActor) for the read
+/// half and by the [`TcpWriterActor`](crate::actor::tcp::TcpWriterActor) for
 /// the write half.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConnectionHalfClosed {
@@ -44,27 +42,7 @@ pub struct ConnectionHalfClosed {
     pub reason: CloseReason,
 }
 
-/// A codec that can both decode (read) and encode (write) messages of type
-/// `M`.
-///
-/// This is the requirement for using `M` with
-/// [`TcpReaderActor<M, C>`](crate::actors::TcpReaderActor) and
-/// [`TcpWriterActor<M, C>`](crate::actors::TcpWriterActor). The trait has
-/// a blanket implementation, so any codec satisfying the bounds implements
-/// it automatically. The codec is passed to the actors as a value (e.g. in
-/// [`TcpServerArgs::codec`](crate::actors::TcpServerArgs::codec)); every
-/// connection uses a clone of it.
-pub trait MessageCodec<M>:
-    Decoder<Item = M, Error = io::Error> + Encoder<M, Error = io::Error> + Clone + Unpin + Send + 'static
-{
-}
-
-impl<M, C> MessageCodec<M> for C where
-    C: Decoder<Item = M, Error = io::Error> + Encoder<M, Error = io::Error> + Clone + Unpin + Send + 'static
-{
-}
-
-/// Asks a [`TcpServerActor`](crate::actors::TcpServerActor) for the local
+/// Asks a [`TcpServerActor`](crate::actor::tcp::TcpServerActor) for the local
 /// address it is actually bound to.
 ///
 /// Useful after binding to port 0 (e.g. in tests) to learn the port chosen
@@ -72,7 +50,7 @@ impl<M, C> MessageCodec<M> for C where
 #[derive(Debug)]
 pub struct GetLocalAddr;
 
-/// Asks the [`TcpClientActor`](crate::actors::TcpClientActor) to connect
+/// Asks the [`TcpClientActor`](crate::actor::tcp::TcpClientActor) to connect
 /// to its configured remote address.
 ///
 /// Replies with the actual peer address on success, or the I/O error that
@@ -98,28 +76,6 @@ pub struct CloseWrite;
 /// halves.
 #[derive(Debug)]
 pub struct PeerHalfClosed(pub ConnectionHalfClosed);
-
-/// Marker for message types that the generic TCP actors send and receive.
-///
-/// A [`TcpServerActor<M, C>`](crate::actors::TcpServerActor) or
-/// [`TcpClientActor<M, C>`](crate::actors::TcpClientActor) handles an `M`
-/// by writing it to its current connection, which requires
-/// `M: WireMessage`. Implement it for the message type of your own
-/// protocol:
-///
-/// ```
-/// use groundlink::WireMessage;
-///
-/// struct MyMessage(Vec<u8>);
-///
-/// impl WireMessage for MyMessage {}
-/// ```
-///
-/// The control messages of this crate (e.g. [`GetLocalAddr`] or
-/// [`Connect`]) never implement it. This lets the actors implement both
-/// `Message<M>` and `Message<GetLocalAddr>` without the implementations
-/// overlapping.
-pub trait WireMessage {}
 
 /// Asks the reader or writer actor for message type `M` to close its half
 /// of the connection in an orderly way and then stop.

@@ -18,7 +18,7 @@
 use std::net::SocketAddr;
 
 use anyhow::Context as _;
-use groundlink::ccsds::SEQUENCE_COUNT_MAX;
+use groundlink::protocol::ccsds::SEQUENCE_COUNT_MAX;
 use groundlink::{
     AreYouAliveReport, AreYouAliveRequest, Close, Connect, ConnectionHalfClosed, CucFormat, PusClient, PusCodec,
     PusPacket, TcpClientArgs, VerificationReport,

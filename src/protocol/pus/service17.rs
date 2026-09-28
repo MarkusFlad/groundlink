@@ -20,7 +20,7 @@ use bytes::Bytes;
 use std::io;
 
 use super::{AckFlags, PusPacket, PusTc, PusTcSecondaryHeader, PusTm, PusTmSecondaryHeader};
-use crate::ccsds::{PacketType, SequenceFlags, SpacePacketHeader};
+use crate::protocol::ccsds::{PacketType, SequenceFlags, SpacePacketHeader};
 
 /// Service type of the test service.
 pub const SERVICE_TYPE: u8 = 17;
@@ -250,8 +250,8 @@ impl TryFrom<PusPacket> for AreYouAliveReport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cuc::{CucFormat, CucTime};
-    use crate::pus::PusCodec;
+    use crate::protocol::cuc::{CucFormat, CucTime};
+    use crate::protocol::pus::PusCodec;
     use bytes::BytesMut;
     use tokio_util::codec::{Decoder, Encoder};
 

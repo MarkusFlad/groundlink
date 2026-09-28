@@ -36,7 +36,7 @@ use bytes::{BufMut, Bytes, BytesMut};
 use std::io;
 
 use super::{PusDecodeError, PusPacket, PusTc, PusTm, PusTmSecondaryHeader};
-use crate::ccsds::{APID_MAX, PacketType, SEQUENCE_COUNT_MAX, SequenceFlags, SpacePacketHeader};
+use crate::protocol::ccsds::{APID_MAX, PacketType, SEQUENCE_COUNT_MAX, SequenceFlags, SpacePacketHeader};
 
 /// Service type of the request verification service.
 pub const SERVICE_TYPE: u8 = 1;
@@ -496,8 +496,8 @@ impl TryFrom<PusPacket> for VerificationReport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cuc::{CucFormat, CucTime};
-    use crate::pus::PusCodec;
+    use crate::protocol::cuc::{CucFormat, CucTime};
+    use crate::protocol::pus::PusCodec;
     use tokio_util::codec::{Decoder, Encoder};
 
     fn time() -> CucTime {

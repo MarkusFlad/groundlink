@@ -60,7 +60,7 @@ provide `Message<GetLocalAddr>` for the same actor. It does not matter that
 nobody ever instantiates a server with that message type.
 
 The fix is a marker trait, defined in
-[`src/messages.rs`](../src/messages.rs):
+[`src/protocol.rs`](../src/protocol.rs):
 
 ```rust
 pub trait WireMessage {}

@@ -8,6 +8,8 @@
 //!    client sees EOF), reports
 //!    `ConnectionHalfClosed { half: Write, reason: Graceful }` and stops the
 //!    actor.
+//! 4. A message the codec cannot encode is dropped; the connection stays
+//!    open and the next message arrives intact.
 
 use std::time::Duration;
 
@@ -136,4 +138,39 @@ async fn writer_actor_closes_gracefully_on_shutdown() {
     assert_eq!(received[0].peer_addr, peer_addr);
     assert_eq!(received[0].half, ConnectionHalf::Write);
     assert_eq!(received[0].reason, CloseReason::Graceful);
+}
+
+#[tokio::test]
+async fn message_that_cannot_be_encoded_is_dropped_and_connection_stays_open() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let client_task = tokio::spawn(async move { TcpStream::connect(addr).await.unwrap() });
+    let (server_stream, peer_addr) = listener.accept().await.unwrap();
+    let client_stream = client_task.await.unwrap();
+
+    let (_server_read, server_write) = server_stream.into_split();
+    let (mut client_read, _client_write) = client_stream.into_split();
+
+    let listener_ref = TestActor::<ConnectionHalfClosed>::spawn(TestActor::new());
+    let writer_ref = SimpleStringWriter::spawn(TcpWriterArgs {
+        write_half: server_write,
+        peer_addr,
+        listener: listener_ref.clone().recipient(),
+        codec: SimpleStringCodec::default(),
+    });
+
+    // Too long for the 16-bit length field.
+    writer_ref.tell(SimpleString("x".repeat(70_000))).await.unwrap();
+    writer_ref.tell(SimpleString("after".to_string())).await.unwrap();
+
+    let mut frame = [0u8; 2 + 5];
+    tokio::time::timeout(Duration::from_secs(1), client_read.read_exact(&mut frame))
+        .await
+        .expect("the valid message should arrive")
+        .unwrap();
+    assert_eq!(&frame, b"\x00\x05after");
+
+    assert!(writer_ref.is_alive());
+    assert!(listener_ref.ask(groundlink::GetMessages::new()).await.unwrap().is_empty());
 }

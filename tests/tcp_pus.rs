@@ -112,3 +112,35 @@ async fn pus_config_of_the_codec_reaches_server_and_client() {
     server.tell(tc.clone()).await.unwrap();
     assert_eq!(TestActor::assert_received(&at_client, 1, Duration::from_secs(1)).await, vec![tc]);
 }
+
+#[tokio::test]
+async fn packet_that_cannot_be_encoded_does_not_close_the_connection() {
+    use futures::StreamExt;
+
+    let received = TestActor::<PusPacket>::spawn(TestActor::new());
+    let server = PusServer::spawn(TcpServerArgs::new(
+        "127.0.0.1:0".parse().unwrap(),
+        received.clone().recipient::<PusPacket>(),
+        PusCodec::default(),
+    ));
+    let addr = server.ask(GetLocalAddr).await.unwrap();
+    let mut client = Framed::new(TcpStream::connect(addr).await.unwrap(), PusCodec::default());
+
+    // Wait until the server serves the connection.
+    let hello: PusPacket = PusTc::new(42, 0, 17, 1, &b""[..]).into();
+    client.send(hello).await.unwrap();
+    TestActor::assert_received(&received, 1, Duration::from_secs(1)).await;
+
+    // A 3-byte time stamp cannot be encoded with the default 7-byte config.
+    let invalid: PusPacket = PusTm::new(42, 0, 17, 2, vec![0u8; 3], &b""[..]).into();
+    let valid: PusPacket = PusTm::new(42, 1, 17, 2, vec![0u8; 7], &b""[..]).into();
+    server.tell(invalid).await.unwrap();
+    server.tell(valid.clone()).await.unwrap();
+
+    let next = tokio::time::timeout(Duration::from_secs(1), client.next())
+        .await
+        .expect("the valid packet should arrive")
+        .expect("connection should stay open")
+        .unwrap();
+    assert_eq!(next, valid);
+}

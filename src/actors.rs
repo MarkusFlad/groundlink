@@ -25,7 +25,8 @@ use std::marker::PhantomData;
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use futures::{stream, SinkExt, StreamExt};
+use bytes::BytesMut;
+use futures::{stream, StreamExt};
 use kameo::actor::{Actor, ActorRef, Recipient, Spawn};
 use kameo::error::Infallible;
 use kameo::message::{Context, Message, StreamMessage};
@@ -33,7 +34,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
-use tokio_util::codec::{FramedRead, FramedWrite};
+use tokio_util::codec::FramedRead;
 use tracing::{debug, error, info, warn};
 
 use crate::ccsds::{SpacePacket, SpacePacketCodec};
@@ -600,13 +601,17 @@ pub struct TcpWriterArgs<C> {
 /// Actor that owns the write half ([`OwnedWriteHalf`]) of a TCP connection
 /// and writes messages of type `M` with the codec `C`.
 ///
-/// Every `M` sent to this actor is encoded and written. If writing fails,
-/// the actor reports [`ConnectionHalfClosed`] with
-/// [`CloseReason::Error`] and stops. [`Shutdown<M>`] shuts the write half
-/// down in an orderly way, reports it as [`CloseReason::Graceful`] and
-/// stops the actor.
+/// Every `M` sent to this actor is encoded and written. A message that the
+/// codec cannot encode is dropped with a warning; the connection stays
+/// open, and no partially encoded bytes reach the peer. If writing fails,
+/// the actor reports [`ConnectionHalfClosed`] with [`CloseReason::Error`]
+/// and stops. [`Shutdown<M>`] shuts the write half down in an orderly way,
+/// reports it as [`CloseReason::Graceful`] and stops the actor.
 pub struct TcpWriterActor<M, C> {
-    framed: FramedWrite<OwnedWriteHalf, C>,
+    write_half: OwnedWriteHalf,
+    codec: C,
+    /// Encoded bytes of the message being written; reused between messages.
+    buf: BytesMut,
     peer_addr: SocketAddr,
     listener: Recipient<ConnectionHalfClosed>,
     _msg: PhantomData<fn() -> M>,
@@ -622,7 +627,9 @@ where
 
     async fn on_start(args: Self::Args, _actor_ref: ActorRef<Self>) -> Result<Self, Self::Error> {
         Ok(TcpWriterActor {
-            framed: FramedWrite::new(args.write_half, args.codec),
+            write_half: args.write_half,
+            codec: args.codec,
+            buf: BytesMut::new(),
             peer_addr: args.peer_addr,
             listener: args.listener,
             _msg: PhantomData,
@@ -642,7 +649,7 @@ where
         _msg: Shutdown<M>,
         ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        if let Err(err) = self.framed.get_mut().shutdown().await {
+        if let Err(err) = self.write_half.shutdown().await {
             warn!(
                 "error while shutting down the write half to {}: {err}",
                 self.peer_addr
@@ -673,7 +680,16 @@ where
     type Reply = ();
 
     async fn handle(&mut self, item: M, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        if let Err(err) = self.framed.send(item).await {
+        // Encode separately from writing, so that a message the codec
+        // rejects neither closes the connection nor leaves a partial frame.
+        self.buf.clear();
+        if let Err(err) = self.codec.encode(item, &mut self.buf) {
+            self.buf.clear();
+            warn!("message to {} dropped, cannot be encoded: {err}", self.peer_addr);
+            return;
+        }
+
+        if let Err(err) = self.write_half.write_all(&self.buf).await {
             warn!("error while writing to {}: {err}", self.peer_addr);
 
             if let Err(send_err) = self

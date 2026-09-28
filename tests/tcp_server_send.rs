@@ -6,7 +6,7 @@ use std::time::Duration;
 use futures::{SinkExt, StreamExt};
 use kameo::actor::{ActorRef, Spawn};
 use groundlink::{
-    GetLocalAddr, SimpleString, SimpleStringCodec, SimpleStringServer, TcpServerArgs,
+    KeepAlive, GetLocalAddr, SimpleString, SimpleStringCodec, SimpleStringServer, TcpServerArgs,
     TestActor,
 };
 use tokio::net::TcpStream;
@@ -24,6 +24,7 @@ async fn server() -> (ActorRef<SimpleStringServer>, ActorRef<TestActor<SimpleStr
     let server = SimpleStringServer::spawn(TcpServerArgs {
         bind_addr: "127.0.0.1:0".parse().unwrap(),
         downstream: received.clone().recipient(),
+        keepalive: Some(KeepAlive::default()),
     });
     (server, received)
 }

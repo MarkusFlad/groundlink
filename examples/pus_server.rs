@@ -32,7 +32,7 @@ use kameo::error::Infallible;
 use kameo::message::{Context, Message};
 use groundlink::pus::service17;
 use groundlink::{
-    GetLocalAddr, PusServer, PusPacket, PusTc, PusTcAcceptor, PusTestServiceActor, PusTm,
+    KeepAlive, GetLocalAddr, PusServer, PusPacket, PusTc, PusTcAcceptor, PusTestServiceActor, PusTm,
     PusTmStamper, SpacePacket, SpacePacketServer, TcpServerArgs,
 };
 use tracing::warn;
@@ -85,6 +85,7 @@ async fn main() -> anyhow::Result<()> {
     let tm_server = PusServer::spawn(TcpServerArgs {
         bind_addr: SocketAddr::from(([0, 0, 0, 0], tm_port)),
         downstream: IgnoreIncoming::spawn(IgnoreIncoming).recipient::<PusPacket>(),
+        keepalive: Some(KeepAlive::default()),
     });
     // All telemetry of the APID is stamped by one stamper.
     let stamper = PusTmStamper::spawn(PusTmStamper::new(APID, tm_server.clone().recipient::<PusPacket>()));
@@ -101,6 +102,7 @@ async fn main() -> anyhow::Result<()> {
     let tc_server = SpacePacketServer::spawn(TcpServerArgs {
         bind_addr: SocketAddr::from(([0, 0, 0, 0], tc_port)),
         downstream: acceptor.recipient::<SpacePacket>(),
+        keepalive: Some(KeepAlive::default()),
     });
 
     let tc_addr = tc_server

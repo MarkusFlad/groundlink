@@ -44,6 +44,73 @@ use crate::messages::{
 };
 use crate::simple_string::{SimpleString, SimpleStringCodec};
 
+/// TCP keepalive settings that detect a peer that has failed or become
+/// unreachable without closing the connection.
+///
+/// Without keepalive, a connection to such a peer stays open until the
+/// operating system gives up, which by default takes about two hours on an
+/// idle connection. With these settings, the operating system sends a
+/// probe after `idle` without traffic and then every `interval`; after
+/// `retries` unanswered probes, reading from the connection fails and the
+/// actors close it. The default detects a failed peer after about 25
+/// seconds (10 s + 3 × 5 s).
+///
+/// On Linux and Android, the same total time is also set as
+/// `TCP_USER_TIMEOUT`. This covers the case keepalive does not: data sent
+/// to the peer that is never acknowledged, which would otherwise be
+/// retransmitted for about 15 minutes.
+///
+/// `interval` and `retries` are applied on Linux, Android, macOS, iOS,
+/// FreeBSD, NetBSD and Windows; on other systems only `idle` is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeepAlive {
+    /// Time without traffic before the first probe.
+    pub idle: Duration,
+    /// Time between two probes.
+    pub interval: Duration,
+    /// Number of unanswered probes after which the connection fails.
+    pub retries: u32,
+}
+
+impl KeepAlive {
+    /// The time after which a failed peer is detected on an idle
+    /// connection: `idle + retries × interval`.
+    pub fn timeout(&self) -> Duration {
+        self.idle + self.interval * self.retries
+    }
+}
+
+impl Default for KeepAlive {
+    /// 10 s idle, 5 s interval, 3 retries.
+    fn default() -> Self {
+        KeepAlive { idle: Duration::from_secs(10), interval: Duration::from_secs(5), retries: 3 }
+    }
+}
+
+/// Applies `keepalive` to `stream`; `None` leaves the system defaults.
+pub(crate) fn configure_keepalive(stream: &TcpStream, keepalive: Option<KeepAlive>) -> io::Result<()> {
+    let Some(keepalive) = keepalive else {
+        return Ok(());
+    };
+    let params = socket2::TcpKeepalive::new().with_time(keepalive.idle);
+    #[cfg(any(
+        target_os = "linux",
+        target_os = "android",
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd",
+        target_os = "netbsd",
+        windows
+    ))]
+    let params = params.with_interval(keepalive.interval).with_retries(keepalive.retries);
+
+    let socket = socket2::SockRef::from(stream);
+    socket.set_tcp_keepalive(&params)?;
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    socket.set_tcp_user_timeout(Some(keepalive.timeout()))?;
+    Ok(())
+}
+
 /// Arguments for spawning a [`TcpServerActor<M, C>`].
 pub struct TcpServerArgs<M: Send + 'static> {
     /// Address to bind to. Use port 0 to let the operating system choose a
@@ -51,6 +118,9 @@ pub struct TcpServerArgs<M: Send + 'static> {
     pub bind_addr: SocketAddr,
     /// Actor that receives every message read from any connection.
     pub downstream: Recipient<M>,
+    /// Keepalive settings for accepted connections; `None` keeps the
+    /// system defaults (usually no keepalive).
+    pub keepalive: Option<KeepAlive>,
 }
 
 /// Actor that binds a TCP port and spawns a [`TcpReaderActor<M, C>`]
@@ -107,7 +177,7 @@ where
 
         let (resume_tx, resume_rx) = mpsc::channel(1);
 
-        tokio::spawn(accept_loop::<M, C>(listener, args.downstream, actor_ref, resume_rx));
+        tokio::spawn(accept_loop::<M, C>(listener, args.downstream, args.keepalive, actor_ref, resume_rx));
 
         Ok(TcpServerActor {
             local_addr,
@@ -211,6 +281,7 @@ where
 async fn accept_loop<M, C>(
     listener: TcpListener,
     downstream: Recipient<M>,
+    keepalive: Option<KeepAlive>,
     listener_ref: ActorRef<TcpServerActor<M, C>>,
     mut resume_rx: mpsc::Receiver<()>,
 ) where
@@ -222,6 +293,9 @@ async fn accept_loop<M, C>(
         match listener.accept().await {
             Ok((stream, peer_addr)) => {
                 info!("new connection from {peer_addr}");
+                if let Err(err) = configure_keepalive(&stream, keepalive) {
+                    warn!("cannot set keepalive for {peer_addr}: {err}");
+                }
 
                 let (read_half, write_half) = stream.into_split();
 
@@ -523,6 +597,9 @@ pub struct TcpClientArgs<M: Send + 'static> {
     pub downstream: Recipient<M>,
     /// Optional observer that is notified of every [`ConnectionHalfClosed`].
     pub on_half_closed: Option<Recipient<ConnectionHalfClosed>>,
+    /// Keepalive settings for the connection; `None` keeps the system
+    /// defaults (usually no keepalive).
+    pub keepalive: Option<KeepAlive>,
 }
 
 /// Actor that opens an outgoing TCP connection to `remote_addr` on
@@ -547,6 +624,7 @@ where
     remote_addr: SocketAddr,
     downstream: Recipient<M>,
     on_half_closed: Option<Recipient<ConnectionHalfClosed>>,
+    keepalive: Option<KeepAlive>,
     connection: Option<ClientConnection<M, C>>,
 }
 
@@ -577,6 +655,7 @@ where
             remote_addr: args.remote_addr,
             downstream: args.downstream,
             on_half_closed: args.on_half_closed,
+            keepalive: args.keepalive,
             connection: None,
         })
     }
@@ -603,6 +682,9 @@ where
 
         let stream = TcpStream::connect(self.remote_addr).await?;
         let peer_addr = stream.peer_addr()?;
+        if let Err(err) = configure_keepalive(&stream, self.keepalive) {
+            warn!("cannot set keepalive for {peer_addr}: {err}");
+        }
         let (read_half, write_half) = stream.into_split();
 
         info!(
@@ -815,3 +897,45 @@ pub type PusReader = TcpReaderActor<PusPacket, PusCodec>;
 pub type PusWriter = TcpWriterActor<PusPacket, PusCodec>;
 /// [`TcpClientActor`] for ECSS PUS-C packets ([`PusPacket`]).
 pub type PusClient = TcpClientActor<PusPacket, PusCodec>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn connected_stream() -> TcpStream {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (client, _server) = tokio::join!(TcpStream::connect(addr), listener.accept());
+        client.unwrap()
+    }
+
+    #[test]
+    fn default_keepalive_detects_failed_peer_after_25_seconds() {
+        assert_eq!(KeepAlive::default().timeout(), Duration::from_secs(25));
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[tokio::test]
+    async fn keepalive_is_applied_to_the_socket() {
+        let stream = connected_stream().await;
+        let keepalive = KeepAlive { idle: Duration::from_secs(7), interval: Duration::from_secs(2), retries: 4 };
+
+        configure_keepalive(&stream, Some(keepalive)).unwrap();
+
+        let socket = socket2::SockRef::from(&stream);
+        assert!(socket.keepalive().unwrap());
+        assert_eq!(socket.tcp_keepalive_time().unwrap(), keepalive.idle);
+        assert_eq!(socket.tcp_keepalive_interval().unwrap(), keepalive.interval);
+        assert_eq!(socket.tcp_keepalive_retries().unwrap(), keepalive.retries);
+        assert_eq!(socket.tcp_user_timeout().unwrap(), Some(Duration::from_secs(15)));
+    }
+
+    #[tokio::test]
+    async fn no_keepalive_leaves_the_socket_unchanged() {
+        let stream = connected_stream().await;
+
+        configure_keepalive(&stream, None).unwrap();
+
+        assert!(!socket2::SockRef::from(&stream).keepalive().unwrap());
+    }
+}

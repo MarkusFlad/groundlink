@@ -8,7 +8,8 @@ and [tokio](https://tokio.rs).
 
 - **Generic TCP actors**: server, client, reader and writer actors that are
   generic over a message type and a codec. Any protocol that implements
-  `MessageCodec<M>` gets the full set of actors.
+  `MessageCodec<M>` gets the full set of actors. Optional TCP keepalive
+  (`KeepAlive`) detects a failed peer within seconds instead of hours.
 - **CCSDS Space Packets** (CCSDS 133.0-B-2): packet types and a codec.
 - **CCSDS Unsegmented Time Code (CUC)**: conversion from and to UTC.
 - **ECSS PUS-C**: telecommand and telemetry packets on top of Space Packets,
@@ -53,7 +54,7 @@ use std::time::Duration;
 use futures::SinkExt;
 use kameo::actor::Spawn;
 use groundlink::{
-    GetLocalAddr, SimpleString, SimpleStringCodec, SimpleStringServer, TcpServerArgs,
+    KeepAlive, GetLocalAddr, SimpleString, SimpleStringCodec, SimpleStringServer, TcpServerArgs,
     TestActor,
 };
 use tokio_util::codec::Framed;
@@ -64,6 +65,7 @@ async fn main() {
     let server = SimpleStringServer::spawn(TcpServerArgs {
         bind_addr: "127.0.0.1:0".parse().unwrap(),
         downstream: received.clone().recipient(),
+        keepalive: Some(KeepAlive::default()),
     });
     let addr = server.ask(GetLocalAddr).await.unwrap();
 

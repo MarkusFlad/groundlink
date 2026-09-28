@@ -72,7 +72,7 @@
 //! use futures::SinkExt;
 //! use kameo::actor::Spawn;
 //! use groundlink::{
-//!     GetLocalAddr, SimpleString, SimpleStringCodec, SimpleStringServer, TcpServerArgs,
+//!     KeepAlive, GetLocalAddr, SimpleString, SimpleStringCodec, SimpleStringServer, TcpServerArgs,
 //!     TestActor,
 //! };
 //! use tokio_util::codec::Framed;
@@ -83,6 +83,7 @@
 //! let server = SimpleStringServer::spawn(TcpServerArgs {
 //!     bind_addr: "127.0.0.1:0".parse().unwrap(),
 //!     downstream: received.clone().recipient(),
+//!     keepalive: Some(KeepAlive::default()),
 //! });
 //! let addr = server.ask(GetLocalAddr).await.unwrap();
 //!
@@ -107,7 +108,7 @@ pub mod simple_string;
 pub mod test;
 
 pub use actors::{
-    PusClient, PusReader, PusServer, PusWriter, SimpleStringClient, SimpleStringReader,
+    KeepAlive, PusClient, PusReader, PusServer, PusWriter, SimpleStringClient, SimpleStringReader,
     SimpleStringServer, SimpleStringWriter, SpacePacketClient, SpacePacketReader,
     SpacePacketServer, SpacePacketWriter, TcpClientActor, TcpClientArgs, TcpReaderActor,
     TcpReaderArgs, TcpServerActor, TcpServerArgs, TcpWriterActor, TcpWriterArgs,

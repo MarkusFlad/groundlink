@@ -9,6 +9,7 @@ bytes = "1"
 chrono = { version = "0.4.45", default-features = false, features = ["std", "clock"] }
 futures = "0.3"
 kameo = "0.22"
+socket2 = { version = "0.6", features = ["all"] }
 tokio = { version = "1", features = ["net", "io-util", "sync", "time", "macros", "rt-multi-thread"] }
 tokio-util = { version = "0.7", features = ["codec"] }
 tracing = "0.1.44"

@@ -8,7 +8,7 @@ use bytes::{Bytes, BytesMut};
 use futures::SinkExt;
 use kameo::actor::{ActorRef, Recipient, Spawn};
 use groundlink::{
-    AckFlags, FailureCode, GetLocalAddr, GetMessages, PacketType, PusCodec, PusConfig, PusServer,
+    KeepAlive, AckFlags, FailureCode, GetLocalAddr, GetMessages, PacketType, PusCodec, PusConfig, PusServer,
     PusPacket, PusTc, PusTcAcceptor, PusTm, RequestId, SpacePacket, SpacePacketCodec,
     SpacePacketHeader, SpacePacketServer, TcpServerArgs, TestActor, VerificationKind,
     VerificationReport,
@@ -84,6 +84,7 @@ async fn end_to_end_over_tcp() {
     let server = PusServer::spawn(TcpServerArgs {
         bind_addr: "127.0.0.1:0".parse().unwrap(),
         downstream: acceptor.recipient::<PusPacket>(),
+        keepalive: Some(KeepAlive::default()),
     });
     let addr = server.ask(GetLocalAddr).await.unwrap();
 
@@ -302,6 +303,7 @@ async fn tc_with_crc_error_over_tcp_is_rejected_and_connection_stays_open() {
     let server = SpacePacketServer::spawn(TcpServerArgs {
         bind_addr: "127.0.0.1:0".parse().unwrap(),
         downstream: acceptor.recipient::<SpacePacket>(),
+        keepalive: Some(KeepAlive::default()),
     });
     let addr = server.ask(GetLocalAddr).await.unwrap();
     let mut stream = TcpStream::connect(addr).await.unwrap();

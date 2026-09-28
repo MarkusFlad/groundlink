@@ -23,7 +23,7 @@ use kameo::error::Infallible;
 use kameo::message::{Context, Message};
 use groundlink::ccsds::SEQUENCE_COUNT_MAX;
 use groundlink::{
-    AreYouAliveReport, AreYouAliveRequest, Close, Connect, ConnectionHalfClosed, CucFormat,
+    KeepAlive, AreYouAliveReport, AreYouAliveRequest, Close, Connect, ConnectionHalfClosed, CucFormat,
     PusClient, PusPacket, TcpClientArgs, VerificationReport,
 };
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -103,6 +103,7 @@ fn spawn_client(connection: &'static str, remote_addr: SocketAddr) -> ActorRef<P
         remote_addr,
         downstream: printer.clone().recipient::<PusPacket>(),
         on_half_closed: Some(printer.recipient::<ConnectionHalfClosed>()),
+        keepalive: Some(KeepAlive::default()),
     })
 }
 

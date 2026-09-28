@@ -23,8 +23,8 @@ use kameo::error::Infallible;
 use kameo::message::{Context, Message};
 use groundlink::ccsds::SEQUENCE_COUNT_MAX;
 use groundlink::{
-    KeepAlive, AreYouAliveReport, AreYouAliveRequest, Close, Connect, ConnectionHalfClosed, CucFormat,
-    PusClient, PusPacket, TcpClientArgs, VerificationReport,
+    AreYouAliveReport, AreYouAliveRequest, Close, Connect, ConnectionHalfClosed, CucFormat,
+    KeepAlive, PusClient, PusPacket, TcpClientArgs, VerificationReport,
 };
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tracing_subscriber::EnvFilter;

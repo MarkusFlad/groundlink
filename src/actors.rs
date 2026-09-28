@@ -111,6 +111,23 @@ pub(crate) fn configure_keepalive(stream: &TcpStream, keepalive: Option<KeepAliv
     Ok(())
 }
 
+/// What a [`TcpServerActor`] does when a new client connects while a
+/// connection is active.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ConnectionPolicy {
+    /// The new client is accepted only after both halves of the current
+    /// connection have been closed. Until then, the operating system keeps
+    /// the new connection in the listen backlog: the client's connect
+    /// succeeds, but nothing it sends is read yet.
+    #[default]
+    WaitForClose,
+    /// The current connection is closed and the new client is served
+    /// instead. The new connection starts only after both halves of the
+    /// old one have been closed, so messages of the two connections never
+    /// interleave.
+    ReplaceCurrent,
+}
+
 /// Arguments for spawning a [`TcpServerActor<M, C>`].
 pub struct TcpServerArgs<M: Send + 'static> {
     /// Address to bind to. Use port 0 to let the operating system choose a
@@ -121,14 +138,20 @@ pub struct TcpServerArgs<M: Send + 'static> {
     /// Keepalive settings for accepted connections; `None` keeps the
     /// system defaults (usually no keepalive).
     pub keepalive: Option<KeepAlive>,
+    /// What happens when a new client connects while a connection is
+    /// active.
+    pub connection_policy: ConnectionPolicy,
 }
 
 /// Actor that binds a TCP port and spawns a [`TcpReaderActor<M, C>`]
 /// (reading) and a [`TcpWriterActor<M, C>`] (writing) for each incoming
 /// connection. `M` is the message type, `C` its [`MessageCodec<M>`].
 ///
-/// Connections are served one at a time: the next connection is accepted
-/// only after both halves of the current one have been closed.
+/// Connections are served one at a time. With
+/// [`ConnectionPolicy::WaitForClose`], the next connection is accepted only
+/// after both halves of the current one have been closed; with
+/// [`ConnectionPolicy::ReplaceCurrent`], a new client closes the current
+/// connection and takes its place.
 ///
 /// An `M` sent to the server is written to the peer of the current
 /// connection, which lets other actors send to whichever client is
@@ -177,7 +200,14 @@ where
 
         let (resume_tx, resume_rx) = mpsc::channel(1);
 
-        tokio::spawn(accept_loop::<M, C>(listener, args.downstream, args.keepalive, actor_ref, resume_rx));
+        tokio::spawn(accept_loop::<M, C>(
+            listener,
+            args.downstream,
+            args.keepalive,
+            args.connection_policy,
+            actor_ref,
+            resume_rx,
+        ));
 
         Ok(TcpServerActor {
             local_addr,
@@ -276,12 +306,24 @@ where
     }
 }
 
+/// Reader and writer of the connection an [`accept_loop`] is serving, for
+/// closing it when a new client replaces it.
+struct ActiveConnection<M: Send + 'static> {
+    peer_addr: SocketAddr,
+    reader_shutdown: Recipient<Shutdown<M>>,
+    writer_shutdown: Recipient<Shutdown<M>>,
+}
+
 /// Accepts connections and spawns reader and writer actors for each, one
-/// connection at a time (waits on `resume_rx` until it has been closed).
+/// connection at a time. `resume_rx` signals that both halves of the
+/// current connection have been closed. With
+/// [`ConnectionPolicy::ReplaceCurrent`], a new client closes the current
+/// connection first.
 async fn accept_loop<M, C>(
     listener: TcpListener,
     downstream: Recipient<M>,
     keepalive: Option<KeepAlive>,
+    policy: ConnectionPolicy,
     listener_ref: ActorRef<TcpServerActor<M, C>>,
     mut resume_rx: mpsc::Receiver<()>,
 ) where
@@ -289,10 +331,27 @@ async fn accept_loop<M, C>(
     C: MessageCodec<M>,
 {
     let listener_recipient = listener_ref.clone().recipient::<ConnectionHalfClosed>();
+    let mut active: Option<ActiveConnection<M>> = None;
     loop {
-        match listener.accept().await {
+        let accept_now = active.is_none() || policy == ConnectionPolicy::ReplaceCurrent;
+        let accepted = tokio::select! {
+            _ = resume_rx.recv(), if active.is_some() => {
+                active = None;
+                continue;
+            }
+            accepted = listener.accept(), if accept_now => accepted,
+        };
+        match accepted {
             Ok((stream, peer_addr)) => {
                 info!("new connection from {peer_addr}");
+                if let Some(old) = active.take() {
+                    info!("closing connection to {} for new client {peer_addr}", old.peer_addr);
+                    // Either actor may have stopped already; it has then
+                    // reported its half as closed.
+                    let _ = old.reader_shutdown.tell(Shutdown::new()).await;
+                    let _ = old.writer_shutdown.tell(Shutdown::new()).await;
+                    resume_rx.recv().await;
+                }
                 if let Err(err) = configure_keepalive(&stream, keepalive) {
                     warn!("cannot set keepalive for {peer_addr}: {err}");
                 }
@@ -312,15 +371,19 @@ async fn accept_loop<M, C>(
                     warn!("could not register writer with listener: {err}");
                 }
 
-                let _reader_ref = TcpReaderActor::<M, C>::spawn(TcpReaderArgs {
+                let reader_ref = TcpReaderActor::<M, C>::spawn(TcpReaderArgs {
                     read_half,
                     peer_addr,
                     downstream: downstream.clone(),
                     listener: listener_recipient.clone(),
-                    writer_shutdown,
+                    writer_shutdown: writer_shutdown.clone(),
                 });
 
-                resume_rx.recv().await;
+                active = Some(ActiveConnection {
+                    peer_addr,
+                    reader_shutdown: reader_ref.recipient::<Shutdown<M>>(),
+                    writer_shutdown,
+                });
             }
             Err(err) => {
                 error!("accept() failed: {err}");

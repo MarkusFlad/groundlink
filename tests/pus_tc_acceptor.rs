@@ -8,10 +8,10 @@ use bytes::{Bytes, BytesMut};
 use futures::SinkExt;
 use kameo::actor::{ActorRef, Recipient, Spawn};
 use groundlink::{
-    AckFlags, ConnectionPolicy, FailureCode, GetLocalAddr, GetMessages, KeepAlive, PacketType,
-    PusCodec, PusConfig, PusServer, PusPacket, PusTc, PusTcAcceptor, PusTm, RequestId, SpacePacket,
-    SpacePacketCodec, SpacePacketHeader, SpacePacketServer, TcpServerArgs, TestActor,
-    VerificationKind, VerificationReport,
+    AckFlags, FailureCode, GetLocalAddr, GetMessages, PacketType, PusCodec, PusConfig, PusServer,
+    PusPacket, PusTc, PusTcAcceptor, PusTm, RequestId, SpacePacket, SpacePacketCodec,
+    SpacePacketHeader, SpacePacketServer, TcpServerArgs, TestActor, VerificationKind,
+    VerificationReport,
 };
 use tokio::net::TcpStream;
 use tokio_util::codec::{Encoder, Framed};
@@ -81,13 +81,11 @@ async fn end_to_end_over_tcp() {
     let (acceptor, _handler) = acceptor(reports.clone().recipient());
     let acceptor = PusTcAcceptor::spawn(acceptor);
 
-    let server = PusServer::spawn(TcpServerArgs {
-        bind_addr: "127.0.0.1:0".parse().unwrap(),
-        downstream: acceptor.recipient::<PusPacket>(),
-        keepalive: Some(KeepAlive::default()),
-        connection_policy: ConnectionPolicy::WaitForClose,
-        codec: PusCodec::default(),
-    });
+    let server = PusServer::spawn(TcpServerArgs::new(
+        "127.0.0.1:0".parse().unwrap(),
+        acceptor.recipient::<PusPacket>(),
+        PusCodec::default(),
+    ));
     let addr = server.ask(GetLocalAddr).await.unwrap();
 
     let mut client = Framed::new(TcpStream::connect(addr).await.unwrap(), PusCodec::default());
@@ -303,13 +301,11 @@ async fn tc_with_crc_error_over_tcp_is_rejected_and_connection_stays_open() {
     let (acceptor, _handler) = acceptor(reports.clone().recipient());
     let acceptor = PusTcAcceptor::spawn(acceptor);
 
-    let server = SpacePacketServer::spawn(TcpServerArgs {
-        bind_addr: "127.0.0.1:0".parse().unwrap(),
-        downstream: acceptor.recipient::<SpacePacket>(),
-        keepalive: Some(KeepAlive::default()),
-        connection_policy: ConnectionPolicy::WaitForClose,
-        codec: SpacePacketCodec::default(),
-    });
+    let server = SpacePacketServer::spawn(TcpServerArgs::new(
+        "127.0.0.1:0".parse().unwrap(),
+        acceptor.recipient::<SpacePacket>(),
+        SpacePacketCodec::default(),
+    ));
     let addr = server.ask(GetLocalAddr).await.unwrap();
     let mut stream = TcpStream::connect(addr).await.unwrap();
 

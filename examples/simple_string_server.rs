@@ -14,8 +14,7 @@
 
 use kameo::actor::{Recipient, Spawn};
 use groundlink::{
-    ConnectionPolicy, GetMessages, KeepAlive, SimpleString, SimpleStringCodec, SimpleStringServer,
-    TcpServerArgs, TestActor,
+    GetMessages, SimpleString, SimpleStringCodec, SimpleStringServer, TcpServerArgs, TestActor,
 };
 use tracing_subscriber::EnvFilter;
 
@@ -30,13 +29,11 @@ async fn main() -> anyhow::Result<()> {
     let test_actor_ref = TestActor::<SimpleString>::spawn(TestActor::new());
     let downstream: Recipient<SimpleString> = test_actor_ref.clone().recipient::<SimpleString>();
 
-    let _listener_ref = SimpleStringServer::spawn(TcpServerArgs {
-        bind_addr: "127.0.0.1:9000".parse()?,
+    let _listener_ref = SimpleStringServer::spawn(TcpServerArgs::new(
+        "127.0.0.1:9000".parse()?,
         downstream,
-        keepalive: Some(KeepAlive::default()),
-        connection_policy: ConnectionPolicy::WaitForClose,
-        codec: SimpleStringCodec::default(),
-    });
+        SimpleStringCodec::default(),
+    ));
 
     println!("Server running on 127.0.0.1:9000 - press Ctrl+C to stop");
 

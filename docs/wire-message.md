@@ -31,7 +31,7 @@ in the [`pus_server`](../examples/pus_server.rs) example the
 
 ```rust
 // The TM server writes every `PusPacket` it receives to its connected client.
-let tm_server = PusServer::spawn(TcpServerArgs { /* ... */ });
+let tm_server = PusServer::spawn(TcpServerArgs::new(tm_addr, ignore_incoming, PusCodec::default()));
 let stamper = PusTmStamper::spawn(PusTmStamper::new(APID, tm_server.recipient::<PusPacket>()));
 ```
 

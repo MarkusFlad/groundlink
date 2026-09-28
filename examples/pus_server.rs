@@ -32,9 +32,8 @@ use kameo::error::Infallible;
 use kameo::message::{Context, Message};
 use groundlink::pus::service17;
 use groundlink::{
-    ConnectionPolicy, GetLocalAddr, KeepAlive, PusCodec, PusServer, PusPacket, PusTc, PusTcAcceptor,
-    PusTestServiceActor, PusTm, PusTmStamper, SpacePacket, SpacePacketCodec, SpacePacketServer,
-    TcpServerArgs,
+    GetLocalAddr, PusCodec, PusServer, PusPacket, PusTc, PusTcAcceptor, PusTestServiceActor, PusTm,
+    PusTmStamper, SpacePacket, SpacePacketCodec, SpacePacketServer, TcpServerArgs,
 };
 use tracing::warn;
 use tracing_subscriber::EnvFilter;
@@ -83,13 +82,11 @@ async fn main() -> anyhow::Result<()> {
 
     // Telemetry: the TM server writes every `PusPacket` it receives to its
     // connected client.
-    let tm_server = PusServer::spawn(TcpServerArgs {
-        bind_addr: SocketAddr::from(([0, 0, 0, 0], tm_port)),
-        downstream: IgnoreIncoming::spawn(IgnoreIncoming).recipient::<PusPacket>(),
-        keepalive: Some(KeepAlive::default()),
-        connection_policy: ConnectionPolicy::WaitForClose,
-        codec: PusCodec::default(),
-    });
+    let tm_server = PusServer::spawn(TcpServerArgs::new(
+        SocketAddr::from(([0, 0, 0, 0], tm_port)),
+        IgnoreIncoming::spawn(IgnoreIncoming).recipient::<PusPacket>(),
+        PusCodec::default(),
+    ));
     // All telemetry of the APID is stamped by one stamper.
     let stamper = PusTmStamper::spawn(PusTmStamper::new(APID, tm_server.clone().recipient::<PusPacket>()));
     let telemetry = stamper.recipient::<PusTm>();
@@ -102,13 +99,11 @@ async fn main() -> anyhow::Result<()> {
         &[service17::ARE_YOU_ALIVE_REQUEST_SUBTYPE],
         test_service.recipient::<PusTc>(),
     ));
-    let tc_server = SpacePacketServer::spawn(TcpServerArgs {
-        bind_addr: SocketAddr::from(([0, 0, 0, 0], tc_port)),
-        downstream: acceptor.recipient::<SpacePacket>(),
-        keepalive: Some(KeepAlive::default()),
-        connection_policy: ConnectionPolicy::WaitForClose,
-        codec: SpacePacketCodec::default(),
-    });
+    let tc_server = SpacePacketServer::spawn(TcpServerArgs::new(
+        SocketAddr::from(([0, 0, 0, 0], tc_port)),
+        acceptor.recipient::<SpacePacket>(),
+        SpacePacketCodec::default(),
+    ));
 
     let tc_addr = tc_server
         .ask(GetLocalAddr)

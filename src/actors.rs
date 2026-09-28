@@ -146,6 +146,36 @@ pub struct TcpServerArgs<M: Send + 'static, C> {
     pub codec: C,
 }
 
+impl<M: Send + 'static, C> TcpServerArgs<M, C> {
+    /// Arguments with [`KeepAlive::default`] and
+    /// [`ConnectionPolicy::WaitForClose`]; change them with
+    /// [`with_keepalive`](Self::with_keepalive) and
+    /// [`with_connection_policy`](Self::with_connection_policy).
+    pub fn new(bind_addr: SocketAddr, downstream: Recipient<M>, codec: C) -> Self {
+        TcpServerArgs {
+            bind_addr,
+            downstream,
+            keepalive: Some(KeepAlive::default()),
+            connection_policy: ConnectionPolicy::WaitForClose,
+            codec,
+        }
+    }
+
+    /// Uses `keepalive` for accepted connections; `None` keeps the system
+    /// defaults.
+    pub fn with_keepalive(mut self, keepalive: Option<KeepAlive>) -> Self {
+        self.keepalive = keepalive;
+        self
+    }
+
+    /// Uses `policy` when a new client connects while a connection is
+    /// active.
+    pub fn with_connection_policy(mut self, policy: ConnectionPolicy) -> Self {
+        self.connection_policy = policy;
+        self
+    }
+}
+
 /// Actor that binds a TCP port and spawns a [`TcpReaderActor<M, C>`]
 /// (reading) and a [`TcpWriterActor<M, C>`] (writing) for each incoming
 /// connection. `M` is the message type, `C` its [`MessageCodec<M>`].
@@ -677,6 +707,28 @@ pub struct TcpClientArgs<M: Send + 'static, C> {
     /// Codec for the connection, e.g. `PusCodec::new(config)`; every
     /// connection uses a clone of it.
     pub codec: C,
+}
+
+impl<M: Send + 'static, C> TcpClientArgs<M, C> {
+    /// Arguments with [`KeepAlive::default`] and without an observer for
+    /// half-closes; change them with [`with_keepalive`](Self::with_keepalive)
+    /// and [`with_on_half_closed`](Self::with_on_half_closed).
+    pub fn new(remote_addr: SocketAddr, downstream: Recipient<M>, codec: C) -> Self {
+        TcpClientArgs { remote_addr, downstream, on_half_closed: None, keepalive: Some(KeepAlive::default()), codec }
+    }
+
+    /// Uses `keepalive` for the connection; `None` keeps the system
+    /// defaults.
+    pub fn with_keepalive(mut self, keepalive: Option<KeepAlive>) -> Self {
+        self.keepalive = keepalive;
+        self
+    }
+
+    /// Notifies `observer` of every [`ConnectionHalfClosed`].
+    pub fn with_on_half_closed(mut self, observer: Recipient<ConnectionHalfClosed>) -> Self {
+        self.on_half_closed = Some(observer);
+        self
+    }
 }
 
 /// Actor that opens an outgoing TCP connection to `remote_addr` on

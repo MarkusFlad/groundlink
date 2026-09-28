@@ -24,7 +24,7 @@ use kameo::message::{Context, Message};
 use groundlink::ccsds::SEQUENCE_COUNT_MAX;
 use groundlink::{
     AreYouAliveReport, AreYouAliveRequest, Close, Connect, ConnectionHalfClosed, CucFormat,
-    KeepAlive, PusClient, PusCodec, PusPacket, TcpClientArgs, VerificationReport,
+    PusClient, PusCodec, PusPacket, TcpClientArgs, VerificationReport,
 };
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tracing_subscriber::EnvFilter;
@@ -99,13 +99,9 @@ fn describe(packet: &PusPacket) -> String {
 /// printed under the name `connection`.
 fn spawn_client(connection: &'static str, remote_addr: SocketAddr) -> ActorRef<PusClient> {
     let printer = PacketPrinter::spawn(PacketPrinter { connection });
-    PusClient::spawn(TcpClientArgs {
-        remote_addr,
-        downstream: printer.clone().recipient::<PusPacket>(),
-        on_half_closed: Some(printer.recipient::<ConnectionHalfClosed>()),
-        keepalive: Some(KeepAlive::default()),
-        codec: PusCodec::default(),
-    })
+    let args = TcpClientArgs::new(remote_addr, printer.clone().recipient::<PusPacket>(), PusCodec::default())
+        .with_on_half_closed(printer.recipient::<ConnectionHalfClosed>());
+    PusClient::spawn(args)
 }
 
 async fn open(connection: &str, client: &ActorRef<PusClient>) {

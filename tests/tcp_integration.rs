@@ -9,8 +9,8 @@ use std::time::Duration;
 use futures::FutureExt;
 use kameo::actor::{Recipient, Spawn};
 use groundlink::{
-    ConnectionPolicy, encode_frame, GetLocalAddr, KeepAlive, SimpleString, SimpleStringServer,
-    TcpServerArgs, TestActor,
+    ConnectionPolicy, encode_frame, GetLocalAddr, KeepAlive, SimpleString, SimpleStringCodec,
+    SimpleStringServer, TcpServerArgs, TestActor,
 };
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
@@ -27,6 +27,7 @@ async fn simple_strings_are_forwarded_to_downstream_actor() {
         downstream,
         keepalive: Some(KeepAlive::default()),
         connection_policy: ConnectionPolicy::WaitForClose,
+        codec: SimpleStringCodec::default(),
     });
     let local_addr = listener_ref.ask(GetLocalAddr).await.unwrap();
 
@@ -59,6 +60,7 @@ async fn assert_received_fails_on_timeout() {
         downstream,
         keepalive: Some(KeepAlive::default()),
         connection_policy: ConnectionPolicy::WaitForClose,
+        codec: SimpleStringCodec::default(),
     });
     let local_addr = listener_ref.ask(GetLocalAddr).await.unwrap();
 

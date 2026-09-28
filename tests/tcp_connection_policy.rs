@@ -27,6 +27,7 @@ fn server(policy: ConnectionPolicy) -> (ActorRef<SimpleStringServer>, ActorRef<T
         downstream: received.clone().recipient(),
         keepalive: Some(KeepAlive::default()),
         connection_policy: policy,
+        codec: SimpleStringCodec::default(),
     });
     (server, received)
 }

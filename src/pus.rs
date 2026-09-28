@@ -533,9 +533,10 @@ impl Default for PusConfig {
 /// [`SpacePacketCodec`] does the framing; this codec only converts between
 /// [`SpacePacket`] and [`PusPacket`].
 ///
-/// The TCP actors create their codec via [`Default`] and therefore use
-/// [`PusConfig::default`]. For other parameters, create the codec with
-/// [`PusCodec::new`] and use it directly with `Framed`.
+/// [`PusCodec::default`] uses [`PusConfig::default`]. For other
+/// parameters, create the codec with [`PusCodec::new`] and pass it to the
+/// TCP actors (e.g. as [`TcpServerArgs::codec`](crate::TcpServerArgs::codec))
+/// or use it directly with `Framed`.
 ///
 /// When decoding, a complete Space Packet that is not a valid PUS packet
 /// (see [`PusPacket::from_space_packet`]) is dropped with a warning and

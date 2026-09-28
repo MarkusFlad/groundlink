@@ -85,6 +85,7 @@
 //!     downstream: received.clone().recipient(),
 //!     keepalive: Some(KeepAlive::default()),
 //!     connection_policy: ConnectionPolicy::WaitForClose,
+//!     codec: SimpleStringCodec::default(),
 //! });
 //! let addr = server.ask(GetLocalAddr).await.unwrap();
 //!

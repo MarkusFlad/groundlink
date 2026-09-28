@@ -26,6 +26,7 @@ async fn space_packets_are_forwarded_to_downstream_actor() {
         downstream,
         keepalive: Some(KeepAlive::default()),
         connection_policy: ConnectionPolicy::WaitForClose,
+        codec: SpacePacketCodec::default(),
     });
     let local_addr = listener_ref.ask(GetLocalAddr).await.unwrap();
 
@@ -63,6 +64,7 @@ async fn space_packet_writer_writes_packet_readable_with_framed() {
         write_half: server_write,
         peer_addr,
         listener: listener_recipient,
+        codec: SpacePacketCodec::default(),
     });
 
     let packet = SpacePacket::new(PacketType::Telemetry, 7, 99, &b"status ok"[..]);
@@ -82,6 +84,7 @@ async fn data_with_wrong_packet_version_closes_the_connection() {
         downstream: test_actor_ref.clone().recipient::<SpacePacket>(),
         keepalive: Some(KeepAlive::default()),
         connection_policy: ConnectionPolicy::WaitForClose,
+        codec: SpacePacketCodec::default(),
     });
     let local_addr = listener_ref.ask(GetLocalAddr).await.unwrap();
     let mut stream = TcpStream::connect(local_addr).await.unwrap();

@@ -129,7 +129,7 @@ pub enum ConnectionPolicy {
 }
 
 /// Arguments for spawning a [`TcpServerActor<M, C>`].
-pub struct TcpServerArgs<M: Send + 'static> {
+pub struct TcpServerArgs<M: Send + 'static, C> {
     /// Address to bind to. Use port 0 to let the operating system choose a
     /// port and query it with [`GetLocalAddr`].
     pub bind_addr: SocketAddr,
@@ -141,6 +141,9 @@ pub struct TcpServerArgs<M: Send + 'static> {
     /// What happens when a new client connects while a connection is
     /// active.
     pub connection_policy: ConnectionPolicy,
+    /// Codec for the connections, e.g. `PusCodec::new(config)`; every
+    /// connection uses a clone of it.
+    pub codec: C,
 }
 
 /// Actor that binds a TCP port and spawns a [`TcpReaderActor<M, C>`]
@@ -187,7 +190,7 @@ where
     M: Send + 'static,
     C: MessageCodec<M>,
 {
-    type Args = TcpServerArgs<M>;
+    type Args = TcpServerArgs<M, C>;
     type Error = io::Error;
 
     async fn on_start(args: Self::Args, actor_ref: ActorRef<Self>) -> Result<Self, Self::Error> {
@@ -205,6 +208,7 @@ where
             args.downstream,
             args.keepalive,
             args.connection_policy,
+            args.codec,
             actor_ref,
             resume_rx,
         ));
@@ -324,6 +328,7 @@ async fn accept_loop<M, C>(
     downstream: Recipient<M>,
     keepalive: Option<KeepAlive>,
     policy: ConnectionPolicy,
+    codec: C,
     listener_ref: ActorRef<TcpServerActor<M, C>>,
     mut resume_rx: mpsc::Receiver<()>,
 ) where
@@ -362,6 +367,7 @@ async fn accept_loop<M, C>(
                     write_half,
                     peer_addr,
                     listener: listener_recipient.clone(),
+                    codec: codec.clone(),
                 });
                 let writer_shutdown = writer_ref.clone().recipient::<Shutdown<M>>();
 
@@ -377,6 +383,7 @@ async fn accept_loop<M, C>(
                     downstream: downstream.clone(),
                     listener: listener_recipient.clone(),
                     writer_shutdown: writer_shutdown.clone(),
+                    codec: codec.clone(),
                 });
 
                 active = Some(ActiveConnection {
@@ -394,7 +401,7 @@ async fn accept_loop<M, C>(
 }
 
 /// Arguments for spawning a [`TcpReaderActor<M, C>`].
-pub struct TcpReaderArgs<M: Send + 'static> {
+pub struct TcpReaderArgs<M: Send + 'static, C> {
     /// Read half of the connection.
     pub read_half: OwnedReadHalf,
     /// Address of the remote peer.
@@ -406,6 +413,8 @@ pub struct TcpReaderArgs<M: Send + 'static> {
     /// Writer of the same connection; asked to shut down when the read half
     /// ends.
     pub writer_shutdown: Recipient<Shutdown<M>>,
+    /// Codec that decodes the messages.
+    pub codec: C,
 }
 
 /// Actor that owns the read half ([`OwnedReadHalf`]) of a TCP connection and
@@ -439,11 +448,11 @@ where
     M: Send + 'static,
     C: MessageCodec<M>,
 {
-    type Args = TcpReaderArgs<M>;
+    type Args = TcpReaderArgs<M, C>;
     type Error = io::Error;
 
     async fn on_start(args: Self::Args, actor_ref: ActorRef<Self>) -> Result<Self, Self::Error> {
-        let framed: FramedRead<_, C> = FramedRead::new(args.read_half, C::default());
+        let framed: FramedRead<_, C> = FramedRead::new(args.read_half, args.codec);
 
         let item_stream = stream::unfold(Some(framed), |state| async move {
             let mut framed = state?;
@@ -547,13 +556,15 @@ where
 }
 
 /// Arguments for spawning a [`TcpWriterActor<M, C>`].
-pub struct TcpWriterArgs {
+pub struct TcpWriterArgs<C> {
     /// Write half of the connection.
     pub write_half: OwnedWriteHalf,
     /// Address of the remote peer.
     pub peer_addr: SocketAddr,
     /// Receives [`ConnectionHalfClosed`] when the write half is closed.
     pub listener: Recipient<ConnectionHalfClosed>,
+    /// Codec that encodes the messages.
+    pub codec: C,
 }
 
 /// Actor that owns the write half ([`OwnedWriteHalf`]) of a TCP connection
@@ -576,12 +587,12 @@ where
     M: Send + 'static,
     C: MessageCodec<M>,
 {
-    type Args = TcpWriterArgs;
+    type Args = TcpWriterArgs<C>;
     type Error = io::Error;
 
     async fn on_start(args: Self::Args, _actor_ref: ActorRef<Self>) -> Result<Self, Self::Error> {
         Ok(TcpWriterActor {
-            framed: FramedWrite::new(args.write_half, C::default()),
+            framed: FramedWrite::new(args.write_half, args.codec),
             peer_addr: args.peer_addr,
             listener: args.listener,
             _msg: PhantomData,
@@ -653,7 +664,7 @@ where
 }
 
 /// Arguments for spawning a [`TcpClientActor<M, C>`].
-pub struct TcpClientArgs<M: Send + 'static> {
+pub struct TcpClientArgs<M: Send + 'static, C> {
     /// Address to connect to on [`Connect`].
     pub remote_addr: SocketAddr,
     /// Actor that receives every message read from the connection.
@@ -663,6 +674,9 @@ pub struct TcpClientArgs<M: Send + 'static> {
     /// Keepalive settings for the connection; `None` keeps the system
     /// defaults (usually no keepalive).
     pub keepalive: Option<KeepAlive>,
+    /// Codec for the connection, e.g. `PusCodec::new(config)`; every
+    /// connection uses a clone of it.
+    pub codec: C,
 }
 
 /// Actor that opens an outgoing TCP connection to `remote_addr` on
@@ -688,6 +702,7 @@ where
     downstream: Recipient<M>,
     on_half_closed: Option<Recipient<ConnectionHalfClosed>>,
     keepalive: Option<KeepAlive>,
+    codec: C,
     connection: Option<ClientConnection<M, C>>,
 }
 
@@ -710,7 +725,7 @@ where
     M: Send + 'static,
     C: MessageCodec<M>,
 {
-    type Args = TcpClientArgs<M>;
+    type Args = TcpClientArgs<M, C>;
     type Error = Infallible;
 
     async fn on_start(args: Self::Args, _actor_ref: ActorRef<Self>) -> Result<Self, Self::Error> {
@@ -719,6 +734,7 @@ where
             downstream: args.downstream,
             on_half_closed: args.on_half_closed,
             keepalive: args.keepalive,
+            codec: args.codec,
             connection: None,
         })
     }
@@ -761,6 +777,7 @@ where
             write_half,
             peer_addr,
             listener: listener_recipient.clone(),
+            codec: self.codec.clone(),
         });
         let writer_shutdown = writer_ref.clone().recipient::<Shutdown<M>>();
 
@@ -770,6 +787,7 @@ where
             downstream: self.downstream.clone(),
             listener: listener_recipient,
             writer_shutdown,
+            codec: self.codec.clone(),
         });
 
         self.connection = Some(ClientConnection {

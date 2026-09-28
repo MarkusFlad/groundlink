@@ -26,6 +26,7 @@ async fn server() -> (ActorRef<SimpleStringServer>, ActorRef<TestActor<SimpleStr
         downstream: received.clone().recipient(),
         keepalive: Some(KeepAlive::default()),
         connection_policy: ConnectionPolicy::WaitForClose,
+        codec: SimpleStringCodec::default(),
     });
     (server, received)
 }

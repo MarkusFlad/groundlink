@@ -13,8 +13,8 @@ use std::time::Duration;
 
 use kameo::actor::Spawn;
 use groundlink::{
-    CloseReason, ConnectionHalf, ConnectionHalfClosed, Shutdown, SimpleString, SimpleStringWriter,
-    TcpWriterArgs, TestActor,
+    CloseReason, ConnectionHalf, ConnectionHalfClosed, Shutdown, SimpleString, SimpleStringCodec,
+    SimpleStringWriter, TcpWriterArgs, TestActor,
 };
 use tokio::io::AsyncReadExt;
 use tokio::net::{TcpListener, TcpStream};
@@ -39,6 +39,7 @@ async fn writer_actor_writes_length_prefixed_frame() {
         write_half: server_write,
         peer_addr,
         listener: listener_recipient,
+        codec: SimpleStringCodec::default(),
     });
 
     writer_ref
@@ -80,6 +81,7 @@ async fn writer_actor_reports_write_half_closed_on_write_error() {
         write_half: server_write,
         peer_addr,
         listener: listener_recipient,
+        codec: SimpleStringCodec::default(),
     });
 
     // A single write does not always fail right after the connection is
@@ -117,6 +119,7 @@ async fn writer_actor_closes_gracefully_on_shutdown() {
         write_half: server_write,
         peer_addr,
         listener: listener_recipient,
+        codec: SimpleStringCodec::default(),
     });
 
     writer_ref.tell(Shutdown::<SimpleString>::new()).await.unwrap();

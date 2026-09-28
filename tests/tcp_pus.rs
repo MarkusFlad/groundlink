@@ -8,8 +8,8 @@ use bytes::BytesMut;
 use futures::SinkExt;
 use kameo::actor::{Recipient, Spawn};
 use groundlink::{
-    ConnectionPolicy, GetLocalAddr, KeepAlive, PusCodec, PusServer, PusPacket, PusTc, PusTm,
-    TcpServerArgs, TestActor,
+    ConnectionPolicy, GetLocalAddr, KeepAlive, PusClient, PusCodec, PusConfig, PusServer,
+    PusPacket, PusTc, PusTm, TcpClientArgs, TcpServerArgs, TestActor,
 };
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
@@ -25,6 +25,7 @@ async fn pus_packets_are_forwarded_to_downstream_actor() {
         downstream,
         keepalive: Some(KeepAlive::default()),
         connection_policy: ConnectionPolicy::WaitForClose,
+        codec: PusCodec::default(),
     });
     let local_addr = listener_ref.ask(GetLocalAddr).await.unwrap();
 
@@ -56,6 +57,7 @@ async fn invalid_pus_packet_is_dropped_and_connection_stays_open() {
         downstream: test_actor_ref.clone().recipient::<PusPacket>(),
         keepalive: Some(KeepAlive::default()),
         connection_policy: ConnectionPolicy::WaitForClose,
+        codec: PusCodec::default(),
     });
     let local_addr = listener_ref.ask(GetLocalAddr).await.unwrap();
     let mut stream = TcpStream::connect(local_addr).await.unwrap();
@@ -76,4 +78,45 @@ async fn invalid_pus_packet_is_dropped_and_connection_stays_open() {
 
     let received = TestActor::assert_received(&test_actor_ref, 2, Duration::from_secs(1)).await;
     assert_eq!(received, vec![first, second]);
+}
+
+#[tokio::test]
+async fn pus_config_of_the_codec_reaches_server_and_client() {
+    use groundlink::Connect;
+
+    // No packet error control and a 4-byte time stamp, unlike the default.
+    let config = PusConfig { tm_time_len: 4, packet_error_control: false };
+    let codec = PusCodec::new(config);
+
+    let at_server = TestActor::<PusPacket>::spawn(TestActor::new());
+    let server = PusServer::spawn(TcpServerArgs {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        downstream: at_server.clone().recipient::<PusPacket>(),
+        keepalive: Some(KeepAlive::default()),
+        connection_policy: ConnectionPolicy::WaitForClose,
+        codec,
+    });
+    let addr = server.ask(GetLocalAddr).await.unwrap();
+
+    let at_client = TestActor::<PusPacket>::spawn(TestActor::new());
+    let client = PusClient::spawn(TcpClientArgs {
+        remote_addr: addr,
+        downstream: at_client.clone().recipient::<PusPacket>(),
+        on_half_closed: None,
+        keepalive: Some(KeepAlive::default()),
+        codec,
+    });
+    client.ask(Connect).await.unwrap();
+
+    // Client -> server: a TM with a 4-byte time stamp would be rejected by
+    // the default configuration.
+    let tm: PusPacket = PusTm::new(42, 1, 17, 2, vec![1u8, 2, 3, 4], &b"up"[..]).into();
+    client.tell(tm.clone()).await.unwrap();
+    assert_eq!(TestActor::assert_received(&at_server, 1, Duration::from_secs(1)).await, vec![tm]);
+
+    // Server -> client: if the server appended a CRC, the client (without
+    // packet error control) would decode it as part of the application data.
+    let tc: PusPacket = PusTc::new(42, 2, 17, 1, &b"down"[..]).into();
+    server.tell(tc.clone()).await.unwrap();
+    assert_eq!(TestActor::assert_received(&at_client, 1, Duration::from_secs(1)).await, vec![tc]);
 }

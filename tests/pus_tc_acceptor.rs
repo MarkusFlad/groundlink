@@ -86,6 +86,7 @@ async fn end_to_end_over_tcp() {
         downstream: acceptor.recipient::<PusPacket>(),
         keepalive: Some(KeepAlive::default()),
         connection_policy: ConnectionPolicy::WaitForClose,
+        codec: PusCodec::default(),
     });
     let addr = server.ask(GetLocalAddr).await.unwrap();
 
@@ -118,6 +119,7 @@ async fn tm_1_1_is_sent_back_over_tcp_via_stamper_and_pus_writer() {
         write_half: server_write,
         peer_addr,
         listener: closed.recipient(),
+        codec: PusCodec::default(),
     });
     let stamper = PusTmStamper::spawn(PusTmStamper::new(APID, writer.recipient::<PusPacket>()));
     let (acceptor, _handler) = acceptor(stamper.recipient());
@@ -306,6 +308,7 @@ async fn tc_with_crc_error_over_tcp_is_rejected_and_connection_stays_open() {
         downstream: acceptor.recipient::<SpacePacket>(),
         keepalive: Some(KeepAlive::default()),
         connection_policy: ConnectionPolicy::WaitForClose,
+        codec: SpacePacketCodec::default(),
     });
     let addr = server.ask(GetLocalAddr).await.unwrap();
     let mut stream = TcpStream::connect(addr).await.unwrap();

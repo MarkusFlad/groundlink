@@ -133,7 +133,9 @@ impl PusTmStamper {
         }
     }
 
-    /// Uses `format` for the time stamps.
+    /// Uses `format` for the time stamps. Its length must equal
+    /// [`PusConfig::tm_time_len`] of the [`PusCodec`](crate::PusCodec) that
+    /// encodes the packets, otherwise encoding fails.
     pub fn with_time_format(mut self, format: CucFormat) -> Self {
         self.time_format = format;
         self
@@ -250,7 +252,8 @@ impl PusTcAcceptor {
     }
 
     /// Uses `config` to interpret received [`SpacePacket`]s (default:
-    /// [`PusConfig::default`]).
+    /// [`PusConfig::default`]). Use the same configuration as the
+    /// [`PusCodec`](crate::PusCodec) of the peer.
     pub fn with_pus_config(mut self, config: PusConfig) -> Self {
         self.pus_config = config;
         self

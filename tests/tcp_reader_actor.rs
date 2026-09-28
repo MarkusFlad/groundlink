@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use kameo::actor::Spawn;
 use groundlink::{
-    CloseReason, ConnectionHalf, ConnectionHalfClosed, Shutdown, SimpleString,
+    CloseReason, ConnectionHalf, ConnectionHalfClosed, Shutdown, SimpleString, SimpleStringCodec,
     SimpleStringReader, TcpReaderArgs, TestActor,
 };
 use tokio::net::{TcpListener, TcpStream};
@@ -44,6 +44,7 @@ async fn reader_actor_reports_read_half_closed_and_shuts_down_writer() {
         downstream,
         listener: listener_recipient,
         writer_shutdown,
+        codec: SimpleStringCodec::default(),
     });
 
     // The client closes the connection -> the server reads EOF on the read half.

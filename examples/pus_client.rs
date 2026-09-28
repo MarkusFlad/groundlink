@@ -20,8 +20,8 @@ use std::net::SocketAddr;
 use anyhow::Context as _;
 use groundlink::protocol::ccsds::SEQUENCE_COUNT_MAX;
 use groundlink::{
-    AreYouAliveReport, AreYouAliveRequest, Close, Connect, ConnectionHalfClosed, CucFormat, PusClient, PusCodec,
-    PusPacket, TcpClientArgs, VerificationReport,
+    AreYouAliveReport, AreYouAliveRequest, Close, Connect, ConnectionEvent, ConnectionEventKind, CucFormat, PusClient,
+    PusCodec, PusPacket, TcpClientArgs, VerificationReport,
 };
 use kameo::actor::{Actor, ActorRef, Spawn};
 use kameo::error::Infallible;
@@ -57,14 +57,23 @@ impl Message<PusPacket> for PacketPrinter {
     }
 }
 
-impl Message<ConnectionHalfClosed> for PacketPrinter {
+impl Message<ConnectionEvent> for PacketPrinter {
     type Reply = ();
 
-    async fn handle(&mut self, msg: ConnectionHalfClosed, _ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        println!(
-            "[{}] {:?} half of the connection to {} closed ({:?})",
-            self.connection, msg.half, msg.peer_addr, msg.reason
-        );
+    async fn handle(&mut self, event: ConnectionEvent, _ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        match event.kind {
+            // Printed by `open`.
+            ConnectionEventKind::Connected | ConnectionEventKind::ConnectFailed { .. } => {}
+            ConnectionEventKind::HalfClosed { half, reason } => {
+                println!(
+                    "[{}] {half:?} half of the connection to {} closed ({reason:?})",
+                    self.connection, event.peer_addr
+                )
+            }
+            ConnectionEventKind::Disconnected => {
+                println!("[{}] disconnected from {}", self.connection, event.peer_addr)
+            }
+        }
     }
 }
 
@@ -104,7 +113,7 @@ fn spawn_client(connection: &'static str, remote_addr: SocketAddr) -> ActorRef<P
         printer.clone().recipient::<PusPacket>(),
         PusCodec::default(),
     )
-    .with_on_half_closed(printer.recipient::<ConnectionHalfClosed>());
+    .with_observer(printer.reply_recipient::<ConnectionEvent>());
     PusClient::spawn(args)
 }
 

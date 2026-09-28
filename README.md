@@ -12,6 +12,13 @@ and [tokio](https://tokio.rs).
   (`KeepAlive`) detects a failed peer within seconds instead of hours. A
   server serves one client at a time; `ConnectionPolicy` selects whether a
   new client waits for the current one to leave or replaces it.
+- **Connection events and coupling**: servers and clients report
+  `ConnectionEvent`s (connected, half closed, disconnected, connect failed)
+  to an optional observer. A server and a client can be coupled, directly or
+  through actors in between: when a peer connects to the server, the client
+  connects to its remote address, and when either connection ends, the other
+  one is closed. The events travel with the messages, so none is lost or
+  overtaken.
 - **CCSDS Space Packets** (CCSDS 133.0-B-2): packet types and a codec.
 - **CCSDS Unsegmented Time Code (CUC)**: conversion from and to UTC.
 - **ECSS PUS-C**: telecommand and telemetry packets on top of Space Packets,

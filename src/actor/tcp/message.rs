@@ -58,24 +58,93 @@ pub struct GetLocalAddr;
 #[derive(Debug)]
 pub struct Connect;
 
-/// Closes both halves of the current connection in an orderly way (if
-/// connected), by sending [`Shutdown<M>`] to the reader and the writer.
+/// Closes both halves of the current connection of a
+/// [`TcpServerActor`](crate::actor::tcp::TcpServerActor) or
+/// [`TcpClientActor`](crate::actor::tcp::TcpClientActor) in an orderly way
+/// (if connected), by sending [`Shutdown<M>`] to the reader and the writer.
+///
+/// Sent to a `TcpClientActor` with `ask`, the reply comes once both halves
+/// are closed, so a following [`Connect`] cannot fail because the old
+/// connection still exists.
 #[derive(Debug)]
 pub struct Close;
 
-/// Closes only the read half of the current connection.
+/// Closes only the read half of the current connection of a
+/// [`TcpClientActor`](crate::actor::tcp::TcpClientActor).
 #[derive(Debug)]
 pub struct CloseRead;
 
-/// Closes only the write half of the current connection.
+/// Closes only the write half of the current connection of a
+/// [`TcpClientActor`](crate::actor::tcp::TcpClientActor).
 #[derive(Debug)]
 pub struct CloseWrite;
 
-/// Notification that the other side of a relay coupling (e.g. the server
-/// connection when this actor is the client side) closed one of its
-/// halves.
-#[derive(Debug)]
-pub struct PeerHalfClosed(pub ConnectionHalfClosed);
+/// Which kind of actor reported a [`ConnectionEvent`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EventSource {
+    /// A [`TcpServerActor`](crate::actor::tcp::TcpServerActor), about a
+    /// connection it accepted.
+    Server,
+    /// A [`TcpClientActor`](crate::actor::tcp::TcpClientActor), about a
+    /// connection it opened.
+    Client,
+}
+
+/// What happened to a connection; see [`ConnectionEvent`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum ConnectionEventKind {
+    /// The connection has been set up.
+    Connected,
+    /// One half of the connection was closed.
+    HalfClosed {
+        /// The half that was closed.
+        half: ConnectionHalf,
+        /// Why it was closed.
+        reason: CloseReason,
+    },
+    /// Both halves of the connection are closed.
+    Disconnected,
+    /// A [`TcpClientActor`](crate::actor::tcp::TcpClientActor) could not
+    /// connect; `peer_addr` is the address it tried to connect to.
+    ConnectFailed {
+        /// The `Display` output of the I/O error.
+        reason: String,
+    },
+}
+
+/// Lifecycle event of a connection, sent to the observer of a
+/// [`TcpServerActor`](crate::actor::tcp::TcpServerActor) or
+/// [`TcpClientActor`](crate::actor::tcp::TcpClientActor) (see
+/// [`TcpServerArgs::with_observer`](crate::actor::tcp::TcpServerArgs::with_observer)).
+///
+/// For every connection, the observer receives `Connected`, any
+/// `HalfClosed` events and finally `Disconnected`, in this order; a failed
+/// connection attempt of a client is reported as `ConnectFailed` instead.
+///
+/// Servers and clients also handle the events of the other side, which
+/// couples two connections: a client connects when it receives `Connected`
+/// from a server and closes on `Disconnected`, and a server closes when it
+/// receives `Disconnected` or `ConnectFailed` from the client connection
+/// that belongs to its current connection. See
+/// [`TcpClientActor`](crate::actor::tcp::TcpClientActor) for how to wire
+/// them.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConnectionEvent {
+    /// Which kind of actor reported the event.
+    pub source: EventSource,
+    /// Number of the connection, counting from 1 for each actor. It tells
+    /// apart the events of consecutive connections to the same peer.
+    pub connection_id: u64,
+    /// For a client connection opened because of a server's `Connected`
+    /// event: the `connection_id` of that server connection. `None` for
+    /// server connections and for client connections opened with
+    /// [`Connect`].
+    pub peer_connection_id: Option<u64>,
+    /// Address of the remote peer of the connection.
+    pub peer_addr: SocketAddr,
+    /// What happened.
+    pub kind: ConnectionEventKind,
+}
 
 /// Asks the reader or writer actor for message type `M` to close its half
 /// of the connection in an orderly way and then stop.

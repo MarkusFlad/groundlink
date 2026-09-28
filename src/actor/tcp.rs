@@ -20,6 +20,7 @@
 //! [`ConnectionHalfClosed`] to their server or client. When the read half
 //! ends, the reader also asks the writer to shut down.
 
+use std::collections::VecDeque;
 use std::io;
 use std::marker::PhantomData;
 use std::net::SocketAddr;
@@ -27,9 +28,10 @@ use std::time::Duration;
 
 use bytes::BytesMut;
 use futures::{StreamExt, stream};
-use kameo::actor::{Actor, ActorRef, Recipient, Spawn};
+use kameo::actor::{Actor, ActorRef, Recipient, ReplyRecipient, Spawn};
 use kameo::error::Infallible;
 use kameo::message::{Context, Message, StreamMessage};
+use kameo::reply::{DelegatedReply, ReplySender};
 use tokio::io::AsyncWriteExt;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{TcpListener, TcpStream};
@@ -45,8 +47,8 @@ use crate::protocol::{MessageCodec, WireMessage};
 mod message;
 
 pub use message::{
-    Close, CloseRead, CloseReason, CloseWrite, Connect, ConnectionHalf, ConnectionHalfClosed, GetLocalAddr,
-    PeerHalfClosed, Shutdown,
+    Close, CloseRead, CloseReason, CloseWrite, Connect, ConnectionEvent, ConnectionEventKind, ConnectionHalf,
+    ConnectionHalfClosed, EventSource, GetLocalAddr, Shutdown,
 };
 
 /// TCP keepalive settings that detect a peer that has failed or become
@@ -137,6 +139,11 @@ pub enum ConnectionPolicy {
     ReplaceCurrent,
 }
 
+/// Observer of the connection events of a [`TcpServerActor`] or
+/// [`TcpClientActor`]: any actor that handles [`ConnectionEvent`] with
+/// `Reply = ()`, obtained with `actor_ref.reply_recipient::<ConnectionEvent>()`.
+pub type ConnectionObserver = ReplyRecipient<ConnectionEvent, ()>;
+
 /// Arguments for spawning a [`TcpServerActor<M, C>`].
 pub struct TcpServerArgs<M: Send + 'static, C> {
     /// Address to bind to. Use port 0 to let the operating system choose a
@@ -153,13 +160,16 @@ pub struct TcpServerArgs<M: Send + 'static, C> {
     /// Codec for the connections, e.g. `PusCodec::new(config)`; every
     /// connection uses a clone of it.
     pub codec: C,
+    /// Receives the [`ConnectionEvent`]s of the accepted connections.
+    pub observer: Option<ConnectionObserver>,
 }
 
 impl<M: Send + 'static, C> TcpServerArgs<M, C> {
-    /// Arguments with [`KeepAlive::default`] and
-    /// [`ConnectionPolicy::WaitForClose`]; change them with
-    /// [`with_keepalive`](Self::with_keepalive) and
-    /// [`with_connection_policy`](Self::with_connection_policy).
+    /// Arguments with [`KeepAlive::default`],
+    /// [`ConnectionPolicy::WaitForClose`] and no observer; change them with
+    /// [`with_keepalive`](Self::with_keepalive),
+    /// [`with_connection_policy`](Self::with_connection_policy) and
+    /// [`with_observer`](Self::with_observer).
     pub fn new(bind_addr: SocketAddr, downstream: Recipient<M>, codec: C) -> Self {
         TcpServerArgs {
             bind_addr,
@@ -167,6 +177,7 @@ impl<M: Send + 'static, C> TcpServerArgs<M, C> {
             keepalive: Some(KeepAlive::default()),
             connection_policy: ConnectionPolicy::WaitForClose,
             codec,
+            observer: None,
         }
     }
 
@@ -181,6 +192,13 @@ impl<M: Send + 'static, C> TcpServerArgs<M, C> {
     /// active.
     pub fn with_connection_policy(mut self, policy: ConnectionPolicy) -> Self {
         self.connection_policy = policy;
+        self
+    }
+
+    /// Sends the [`ConnectionEvent`]s of the accepted connections to
+    /// `observer`.
+    pub fn with_observer(mut self, observer: ConnectionObserver) -> Self {
+        self.observer = Some(observer);
         self
     }
 }
@@ -198,7 +216,15 @@ impl<M: Send + 'static, C> TcpServerArgs<M, C> {
 /// An `M` sent to the server is written to the peer of the current
 /// connection, which lets other actors send to whichever client is
 /// connected. Without a connection the message is dropped with a warning.
-/// This requires `M: WireMessage`.
+/// This requires `M: WireMessage`. [`Close`] closes the current connection.
+///
+/// If an observer is set (see [`TcpServerArgs::with_observer`]), it
+/// receives the [`ConnectionEvent`]s of every connection. The server sends
+/// [`ConnectionEventKind::Connected`] with `ask` and starts reading from
+/// the connection only after the observer has handled it, so the observer
+/// can prepare before the first message goes downstream. The server also
+/// handles the [`ConnectionEvent`]s of a coupled client; see
+/// [`TcpClientActor`] for coupling a server and a client.
 ///
 /// Spawning fails with the I/O error of binding the address. Also handles
 /// [`GetLocalAddr`] and [`ConnectionHalfClosed`].
@@ -209,19 +235,37 @@ where
 {
     local_addr: SocketAddr,
     resume_tx: mpsc::Sender<()>,
-    current: Option<(SocketAddr, bool, bool)>,
-    writer: Option<(SocketAddr, ActorRef<TcpWriterActor<M, C>>)>,
+    observer: Option<ConnectionObserver>,
+    connection: Option<ServerConnection<M, C>>,
 }
 
-/// Sent by the accept loop to its server when the writer of a new
-/// connection has been spawned.
-struct WriterSpawned<M, C>
+/// The connection a [`TcpServerActor`] is serving and which halves are
+/// closed.
+struct ServerConnection<M, C>
 where
     M: Send + 'static,
     C: MessageCodec<M>,
 {
+    id: u64,
+    peer_addr: SocketAddr,
+    /// `None` once the write half is closed.
+    writer: Option<ActorRef<TcpWriterActor<M, C>>>,
+    reader_shutdown: Recipient<Shutdown<M>>,
+    read_closed: bool,
+    write_closed: bool,
+}
+
+/// Sent by the accept loop to its server when the reader and writer of a
+/// new connection have been created, before the reader starts.
+struct ConnectionSpawned<M, C>
+where
+    M: Send + 'static,
+    C: MessageCodec<M>,
+{
+    id: u64,
     peer_addr: SocketAddr,
     writer: ActorRef<TcpWriterActor<M, C>>,
+    reader_shutdown: Recipient<Shutdown<M>>,
 }
 
 impl<M, C> Actor for TcpServerActor<M, C>
@@ -244,10 +288,13 @@ where
 
         tokio::spawn(accept_loop::<M, C>(
             listener,
-            args.downstream,
-            args.keepalive,
-            args.connection_policy,
-            args.codec,
+            AcceptConfig {
+                downstream: args.downstream,
+                keepalive: args.keepalive,
+                policy: args.connection_policy,
+                codec: args.codec,
+                observer: args.observer.clone(),
+            },
             actor_ref,
             resume_rx,
         ));
@@ -255,9 +302,29 @@ where
         Ok(TcpServerActor {
             local_addr,
             resume_tx,
-            current: None,
-            writer: None,
+            observer: args.observer,
+            connection: None,
         })
+    }
+}
+
+/// Sends `event` to `observer`, if any, with `tell`.
+async fn notify(observer: &Option<ConnectionObserver>, event: ConnectionEvent) {
+    if let Some(observer) = observer {
+        if let Err(err) = observer.tell(event).await {
+            warn!("could not send connection event: {err}");
+        }
+    }
+}
+
+/// A connection event reported by a server.
+fn server_event(connection_id: u64, peer_addr: SocketAddr, kind: ConnectionEventKind) -> ConnectionEvent {
+    ConnectionEvent {
+        source: EventSource::Server,
+        connection_id,
+        peer_connection_id: None,
+        peer_addr,
+        kind,
     }
 }
 
@@ -270,6 +337,25 @@ where
 
     async fn handle(&mut self, _msg: GetLocalAddr, _ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         Ok(self.local_addr)
+    }
+}
+
+impl<M, C> Message<ConnectionSpawned<M, C>> for TcpServerActor<M, C>
+where
+    M: Send + 'static,
+    C: MessageCodec<M>,
+{
+    type Reply = ();
+
+    async fn handle(&mut self, msg: ConnectionSpawned<M, C>, _ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.connection = Some(ServerConnection {
+            id: msg.id,
+            peer_addr: msg.peer_addr,
+            writer: Some(msg.writer),
+            reader_shutdown: msg.reader_shutdown,
+            read_closed: false,
+            write_closed: false,
+        });
     }
 }
 
@@ -286,38 +372,98 @@ where
             msg.peer_addr, msg.half, msg.reason
         );
 
-        let (peer, mut read_closed, mut write_closed) = self
-            .current
-            .filter(|(peer, _, _)| *peer == msg.peer_addr)
-            .unwrap_or((msg.peer_addr, false, false));
-
+        let Some(conn) = self.connection.as_mut().filter(|conn| conn.peer_addr == msg.peer_addr) else {
+            warn!("TcpServerActor: close event for unknown connection {}", msg.peer_addr);
+            return;
+        };
         match msg.half {
-            ConnectionHalf::Read => read_closed = true,
-            ConnectionHalf::Write => write_closed = true,
+            ConnectionHalf::Read => conn.read_closed = true,
+            ConnectionHalf::Write => {
+                conn.write_closed = true;
+                conn.writer = None;
+            }
         }
+        let (id, disconnected) = (conn.id, conn.read_closed && conn.write_closed);
 
-        if write_closed && self.writer.as_ref().is_some_and(|(peer, _)| *peer == msg.peer_addr) {
-            self.writer = None;
-        }
-
-        if read_closed && write_closed {
-            self.current = None;
+        let kind = ConnectionEventKind::HalfClosed {
+            half: msg.half,
+            reason: msg.reason,
+        };
+        notify(&self.observer, server_event(id, msg.peer_addr, kind)).await;
+        if disconnected {
+            self.connection = None;
+            // Before resuming the accept loop, so that the observer learns
+            // about the end of this connection before the next one starts.
+            notify(
+                &self.observer,
+                server_event(id, msg.peer_addr, ConnectionEventKind::Disconnected),
+            )
+            .await;
             let _ = self.resume_tx.send(()).await;
-        } else {
-            self.current = Some((peer, read_closed, write_closed));
         }
     }
 }
 
-impl<M, C> Message<WriterSpawned<M, C>> for TcpServerActor<M, C>
+/// Closes both halves of the current connection.
+impl<M, C> Message<Close> for TcpServerActor<M, C>
 where
     M: Send + 'static,
     C: MessageCodec<M>,
 {
     type Reply = ();
 
-    async fn handle(&mut self, msg: WriterSpawned<M, C>, _ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        self.writer = Some((msg.peer_addr, msg.writer));
+    async fn handle(&mut self, _msg: Close, _ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.close_current().await;
+    }
+}
+
+/// Closes the current connection when the client connection that belongs
+/// to it ends or cannot be opened; see [`TcpClientActor`] for how to couple
+/// a server and a client. Events of servers and of other client
+/// connections are ignored.
+impl<M, C> Message<ConnectionEvent> for TcpServerActor<M, C>
+where
+    M: Send + 'static,
+    C: MessageCodec<M>,
+{
+    type Reply = ();
+
+    async fn handle(&mut self, event: ConnectionEvent, _ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let current = self.connection.as_ref().map(|conn| conn.id);
+        if event.source != EventSource::Client
+            || event.peer_connection_id.is_none()
+            || event.peer_connection_id != current
+        {
+            return;
+        }
+        match event.kind {
+            ConnectionEventKind::Disconnected | ConnectionEventKind::ConnectFailed { .. } => {
+                info!("TcpServerActor: the coupled connection to {} ended", event.peer_addr);
+                self.close_current().await;
+            }
+            ConnectionEventKind::Connected | ConnectionEventKind::HalfClosed { .. } => {}
+        }
+    }
+}
+
+impl<M, C> TcpServerActor<M, C>
+where
+    M: Send + 'static,
+    C: MessageCodec<M>,
+{
+    /// Asks the reader and writer of the current connection to close.
+    async fn close_current(&self) {
+        let Some(conn) = &self.connection else {
+            debug!("TcpServerActor: Close ignored, no connection");
+            return;
+        };
+        info!("TcpServerActor: closing connection to {}", conn.peer_addr);
+        // Either actor may have stopped already; it has then reported its
+        // half as closed.
+        let _ = conn.reader_shutdown.tell(Shutdown::new()).await;
+        if let Some(writer) = &conn.writer {
+            let _ = writer.tell(Shutdown::<M>::new()).await;
+        }
     }
 }
 
@@ -330,23 +476,27 @@ where
     type Reply = ();
 
     async fn handle(&mut self, item: M, _ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        let Some((peer_addr, writer)) = &self.writer else {
+        let Some((peer_addr, writer)) = self
+            .connection
+            .as_ref()
+            .and_then(|conn| conn.writer.as_ref().map(|writer| (conn.peer_addr, writer)))
+        else {
             warn!("TcpServerActor: message dropped, no connection");
             return;
         };
         if let Err(err) = writer.tell(item).await {
             warn!("TcpServerActor: message to {peer_addr} dropped, connection closed: {err}");
-            self.writer = None;
         }
     }
 }
 
-/// Reader and writer of the connection an [`accept_loop`] is serving, for
-/// closing it when a new client replaces it.
-struct ActiveConnection<M: Send + 'static> {
-    peer_addr: SocketAddr,
-    reader_shutdown: Recipient<Shutdown<M>>,
-    writer_shutdown: Recipient<Shutdown<M>>,
+/// Settings of an [`accept_loop`], taken from the [`TcpServerArgs`].
+struct AcceptConfig<M: Send + 'static, C> {
+    downstream: Recipient<M>,
+    keepalive: Option<KeepAlive>,
+    policy: ConnectionPolicy,
+    codec: C,
+    observer: Option<ConnectionObserver>,
 }
 
 /// Accepts connections and spawns reader and writer actors for each, one
@@ -356,23 +506,21 @@ struct ActiveConnection<M: Send + 'static> {
 /// connection first.
 async fn accept_loop<M, C>(
     listener: TcpListener,
-    downstream: Recipient<M>,
-    keepalive: Option<KeepAlive>,
-    policy: ConnectionPolicy,
-    codec: C,
-    listener_ref: ActorRef<TcpServerActor<M, C>>,
+    config: AcceptConfig<M, C>,
+    server_ref: ActorRef<TcpServerActor<M, C>>,
     mut resume_rx: mpsc::Receiver<()>,
 ) where
     M: Send + 'static,
     C: MessageCodec<M>,
 {
-    let listener_recipient = listener_ref.clone().recipient::<ConnectionHalfClosed>();
-    let mut active: Option<ActiveConnection<M>> = None;
+    let listener_recipient = server_ref.clone().recipient::<ConnectionHalfClosed>();
+    let mut active = false;
+    let mut last_id = 0;
     loop {
-        let accept_now = active.is_none() || policy == ConnectionPolicy::ReplaceCurrent;
+        let accept_now = !active || config.policy == ConnectionPolicy::ReplaceCurrent;
         let accepted = tokio::select! {
-            _ = resume_rx.recv(), if active.is_some() => {
-                active = None;
+            _ = resume_rx.recv(), if active => {
+                active = false;
                 continue;
             }
             accepted = listener.accept(), if accept_now => accepted,
@@ -380,15 +528,12 @@ async fn accept_loop<M, C>(
         match accepted {
             Ok((stream, peer_addr)) => {
                 info!("new connection from {peer_addr}");
-                if let Some(old) = active.take() {
-                    info!("closing connection to {} for new client {peer_addr}", old.peer_addr);
-                    // Either actor may have stopped already; it has then
-                    // reported its half as closed.
-                    let _ = old.reader_shutdown.tell(Shutdown::new()).await;
-                    let _ = old.writer_shutdown.tell(Shutdown::new()).await;
+                if active {
+                    info!("closing the current connection for new client {peer_addr}");
+                    let _ = server_ref.tell(Close).await;
                     resume_rx.recv().await;
                 }
-                if let Err(err) = configure_keepalive(&stream, keepalive) {
+                if let Err(err) = configure_keepalive(&stream, config.keepalive) {
                     warn!("cannot set keepalive for {peer_addr}: {err}");
                 }
 
@@ -398,36 +543,42 @@ async fn accept_loop<M, C>(
                     write_half,
                     peer_addr,
                     listener: listener_recipient.clone(),
-                    codec: codec.clone(),
+                    codec: config.codec.clone(),
                 });
                 let writer_shutdown = writer_ref.clone().recipient::<Shutdown<M>>();
+                // The reader gets its reference now but starts only below.
+                let reader = TcpReaderActor::<M, C>::prepare();
 
-                // Register the writer before the reader starts, so the
+                // Register the connection before the reader starts, so the
                 // server knows it before any close event of the connection.
-                if let Err(err) = listener_ref
-                    .tell(WriterSpawned {
-                        peer_addr,
-                        writer: writer_ref,
-                    })
-                    .await
-                {
-                    warn!("could not register writer with listener: {err}");
+                last_id += 1;
+                let spawned = ConnectionSpawned {
+                    id: last_id,
+                    peer_addr,
+                    writer: writer_ref,
+                    reader_shutdown: reader.actor_ref().clone().recipient::<Shutdown<M>>(),
+                };
+                if let Err(err) = server_ref.tell(spawned).await {
+                    warn!("could not register connection with server: {err}");
                 }
 
-                let reader_ref = TcpReaderActor::<M, C>::spawn(TcpReaderArgs {
+                // Let the observer prepare before the first message is read.
+                if let Some(observer) = &config.observer {
+                    let event = server_event(last_id, peer_addr, ConnectionEventKind::Connected);
+                    if let Err(err) = observer.ask(event).await {
+                        warn!("could not send connection event: {err}");
+                    }
+                }
+
+                reader.spawn(TcpReaderArgs {
                     read_half,
                     peer_addr,
-                    downstream: downstream.clone(),
+                    downstream: config.downstream.clone(),
                     listener: listener_recipient.clone(),
-                    writer_shutdown: writer_shutdown.clone(),
-                    codec: codec.clone(),
-                });
-
-                active = Some(ActiveConnection {
-                    peer_addr,
-                    reader_shutdown: reader_ref.recipient::<Shutdown<M>>(),
                     writer_shutdown,
+                    codec: config.codec.clone(),
                 });
+                active = true;
             }
             Err(err) => {
                 error!("accept() failed: {err}");
@@ -706,31 +857,31 @@ where
 
 /// Arguments for spawning a [`TcpClientActor<M, C>`].
 pub struct TcpClientArgs<M: Send + 'static, C> {
-    /// Address to connect to on [`Connect`].
+    /// Address to connect to.
     pub remote_addr: SocketAddr,
     /// Actor that receives every message read from the connection.
     pub downstream: Recipient<M>,
-    /// Optional observer that is notified of every [`ConnectionHalfClosed`].
-    pub on_half_closed: Option<Recipient<ConnectionHalfClosed>>,
     /// Keepalive settings for the connection; `None` keeps the system
     /// defaults (usually no keepalive).
     pub keepalive: Option<KeepAlive>,
     /// Codec for the connection, e.g. `PusCodec::new(config)`; every
     /// connection uses a clone of it.
     pub codec: C,
+    /// Receives the [`ConnectionEvent`]s of the connections.
+    pub observer: Option<ConnectionObserver>,
 }
 
 impl<M: Send + 'static, C> TcpClientArgs<M, C> {
-    /// Arguments with [`KeepAlive::default`] and without an observer for
-    /// half-closes; change them with [`with_keepalive`](Self::with_keepalive)
-    /// and [`with_on_half_closed`](Self::with_on_half_closed).
+    /// Arguments with [`KeepAlive::default`] and no observer; change them
+    /// with [`with_keepalive`](Self::with_keepalive) and
+    /// [`with_observer`](Self::with_observer).
     pub fn new(remote_addr: SocketAddr, downstream: Recipient<M>, codec: C) -> Self {
         TcpClientArgs {
             remote_addr,
             downstream,
-            on_half_closed: None,
             keepalive: Some(KeepAlive::default()),
             codec,
+            observer: None,
         }
     }
 
@@ -741,17 +892,17 @@ impl<M: Send + 'static, C> TcpClientArgs<M, C> {
         self
     }
 
-    /// Notifies `observer` of every [`ConnectionHalfClosed`].
-    pub fn with_on_half_closed(mut self, observer: Recipient<ConnectionHalfClosed>) -> Self {
-        self.on_half_closed = Some(observer);
+    /// Sends the [`ConnectionEvent`]s of the connections to `observer`.
+    pub fn with_observer(mut self, observer: ConnectionObserver) -> Self {
+        self.observer = Some(observer);
         self
     }
 }
 
-/// Actor that opens an outgoing TCP connection to `remote_addr` on
-/// [`Connect`] and, just like [`TcpServerActor`] after an `accept()`,
-/// spawns a [`TcpReaderActor<M, C>`] (reading) and a
-/// [`TcpWriterActor<M, C>`] (writing) for it.
+/// Actor that opens an outgoing TCP connection to `remote_addr` and, just
+/// like [`TcpServerActor`] after an `accept()`, spawns a
+/// [`TcpReaderActor<M, C>`] (reading) and a [`TcpWriterActor<M, C>`]
+/// (writing) for it.
 ///
 /// Messages:
 /// - [`Connect`]: connects; replies with the peer address, or an error of
@@ -759,9 +910,48 @@ impl<M: Send + 'static, C> TcpClientArgs<M, C> {
 /// - `M`: sends the message over the connection (dropped with a warning
 ///   if not connected; requires `M: WireMessage`).
 /// - [`Close`], [`CloseRead`], [`CloseWrite`]: close both or one half.
-/// - [`PeerHalfClosed`]: mirrors a half-close of a coupled connection.
+/// - [`ConnectionEvent`] from a server (see below).
 /// - [`ConnectionHalfClosed`]: sent by the reader and writer; once both
 ///   halves are closed, the actor can connect again.
+///
+/// If an observer is set (see [`TcpClientArgs::with_observer`]), it
+/// receives the [`ConnectionEvent`]s of every connection, all sent with
+/// `tell`. [`ConnectionEventKind::Connected`] arrives before the first
+/// message of the connection goes downstream.
+///
+/// # Coupling with a server
+///
+/// A client can open and close its connection together with the connection
+/// of a [`TcpServerActor`], e.g. to forward everything a peer sends to the
+/// server on to another peer:
+///
+/// ```text
+/// peer A ──▶ server ──M, events──▶ [actor] ──M, events──▶ client ──▶ peer B
+///        ◀──        ◀──M, events── [actor] ◀──M, events──        ◀──
+/// ```
+///
+/// Each actor sends its messages and its events to the same actor: the
+/// server's downstream and observer is the actor on the way to the client,
+/// and vice versa. Actors in between forward both messages and events. The
+/// events then travel in the same mailboxes as the messages and keep their
+/// order: `Connected` arrives before the first message of a connection and
+/// `Disconnected` after its last one, so no message is lost or overtaken.
+///
+/// The client reacts to the server's events:
+/// - `Connected`: it connects to `remote_addr`. If its previous connection
+///   is still closing, it connects once that is closed and keeps the
+///   messages it receives in the meantime. If connecting fails, it reports
+///   [`ConnectionEventKind::ConnectFailed`].
+/// - `Disconnected`: it closes the connection it opened for that server
+///   connection.
+///
+/// Its events carry the server's connection ID as
+/// [`peer_connection_id`](ConnectionEvent::peer_connection_id), and the
+/// server closes its connection on `Disconnected` or `ConnectFailed` of the
+/// matching client connection. Connections are always closed completely.
+///
+/// Without actors in between, the server's downstream and observer is the
+/// client and vice versa.
 pub struct TcpClientActor<M, C>
 where
     M: Send + 'static,
@@ -769,10 +959,13 @@ where
 {
     remote_addr: SocketAddr,
     downstream: Recipient<M>,
-    on_half_closed: Option<Recipient<ConnectionHalfClosed>>,
+    observer: Option<ConnectionObserver>,
     keepalive: Option<KeepAlive>,
     codec: C,
+    last_id: u64,
     connection: Option<ClientConnection<M, C>>,
+    /// A connection to open once the current one is closed.
+    pending: Option<PendingConnect<M>>,
 }
 
 /// The reader and writer of the current connection and which halves are
@@ -782,11 +975,24 @@ where
     M: Send + 'static,
     C: MessageCodec<M>,
 {
+    id: u64,
+    peer_connection_id: Option<u64>,
     peer_addr: SocketAddr,
     reader_ref: ActorRef<TcpReaderActor<M, C>>,
     writer_ref: ActorRef<TcpWriterActor<M, C>>,
     read_closed: bool,
     write_closed: bool,
+    /// Whether [`Close`] was requested; messages are no longer written.
+    closing: bool,
+    /// Callers of [`Close`] with `ask`, answered once both halves are closed.
+    close_replies: Vec<ReplySender<()>>,
+}
+
+/// A connection requested by a server's `Connected` event while the
+/// previous connection was still closing, and the messages for it.
+struct PendingConnect<M> {
+    peer_connection_id: u64,
+    messages: VecDeque<M>,
 }
 
 impl<M, C> Actor for TcpClientActor<M, C>
@@ -801,11 +1007,142 @@ where
         Ok(TcpClientActor {
             remote_addr: args.remote_addr,
             downstream: args.downstream,
-            on_half_closed: args.on_half_closed,
+            observer: args.observer,
             keepalive: args.keepalive,
             codec: args.codec,
+            last_id: 0,
             connection: None,
+            pending: None,
         })
+    }
+}
+
+impl<M, C> TcpClientActor<M, C>
+where
+    M: Send + 'static,
+    C: MessageCodec<M>,
+{
+    fn event(
+        &self,
+        id: u64,
+        peer_connection_id: Option<u64>,
+        peer_addr: SocketAddr,
+        kind: ConnectionEventKind,
+    ) -> ConnectionEvent {
+        ConnectionEvent {
+            source: EventSource::Client,
+            connection_id: id,
+            peer_connection_id,
+            peer_addr,
+            kind,
+        }
+    }
+
+    /// Connects to `remote_addr` and spawns the reader and writer; reports
+    /// `Connected` or `ConnectFailed`.
+    async fn open(&mut self, actor_ref: ActorRef<Self>, peer_connection_id: Option<u64>) -> io::Result<SocketAddr> {
+        self.last_id += 1;
+        let id = self.last_id;
+        let stream = match TcpStream::connect(self.remote_addr).await {
+            Ok(stream) => stream,
+            Err(err) => {
+                warn!("TcpClientActor: cannot connect to {}: {err}", self.remote_addr);
+                let kind = ConnectionEventKind::ConnectFailed {
+                    reason: err.to_string(),
+                };
+                notify(
+                    &self.observer,
+                    self.event(id, peer_connection_id, self.remote_addr, kind),
+                )
+                .await;
+                return Err(err);
+            }
+        };
+        let peer_addr = stream.peer_addr()?;
+        if let Err(err) = configure_keepalive(&stream, self.keepalive) {
+            warn!("cannot set keepalive for {peer_addr}: {err}");
+        }
+        let (read_half, write_half) = stream.into_split();
+
+        info!(
+            "TcpClientActor<{}>: connected to {peer_addr}",
+            std::any::type_name::<M>()
+        );
+
+        let listener_recipient = actor_ref.recipient::<ConnectionHalfClosed>();
+
+        let writer_ref = TcpWriterActor::<M, C>::spawn(TcpWriterArgs {
+            write_half,
+            peer_addr,
+            listener: listener_recipient.clone(),
+            codec: self.codec.clone(),
+        });
+        let writer_shutdown = writer_ref.clone().recipient::<Shutdown<M>>();
+
+        let connected = self.event(id, peer_connection_id, peer_addr, ConnectionEventKind::Connected);
+        notify(&self.observer, connected).await;
+
+        let reader_ref = TcpReaderActor::<M, C>::spawn(TcpReaderArgs {
+            read_half,
+            peer_addr,
+            downstream: self.downstream.clone(),
+            listener: listener_recipient,
+            writer_shutdown,
+            codec: self.codec.clone(),
+        });
+
+        self.connection = Some(ClientConnection {
+            id,
+            peer_connection_id,
+            peer_addr,
+            reader_ref,
+            writer_ref,
+            read_closed: false,
+            write_closed: false,
+            closing: false,
+            close_replies: Vec::new(),
+        });
+        Ok(peer_addr)
+    }
+
+    /// Opens the pending connection, if any, and writes the messages kept
+    /// for it.
+    async fn open_pending(&mut self, actor_ref: ActorRef<Self>) {
+        let Some(pending) = self.pending.take() else {
+            return;
+        };
+        if self.open(actor_ref, Some(pending.peer_connection_id)).await.is_err() {
+            if !pending.messages.is_empty() {
+                warn!(
+                    "TcpClientActor: {} message(s) dropped, cannot connect",
+                    pending.messages.len()
+                );
+            }
+            return;
+        }
+        if let Some(conn) = &self.connection {
+            for item in pending.messages {
+                if let Err(err) = conn.writer_ref.tell(item).await {
+                    warn!("TcpClientActor: could not send message to writer: {err}");
+                }
+            }
+        }
+    }
+
+    /// Asks the reader and writer of the current connection to close.
+    async fn close_current(&mut self) {
+        let Some(conn) = &mut self.connection else {
+            return;
+        };
+        conn.closing = true;
+        // Either actor may have stopped already; it has then reported its
+        // half as closed.
+        if !conn.read_closed {
+            let _ = conn.reader_ref.tell(Shutdown::<M>::new()).await;
+        }
+        if !conn.write_closed {
+            let _ = conn.writer_ref.tell(Shutdown::<M>::new()).await;
+        }
     }
 }
 
@@ -823,47 +1160,7 @@ where
                 "TcpClientActor is already connected",
             ));
         }
-
-        let stream = TcpStream::connect(self.remote_addr).await?;
-        let peer_addr = stream.peer_addr()?;
-        if let Err(err) = configure_keepalive(&stream, self.keepalive) {
-            warn!("cannot set keepalive for {peer_addr}: {err}");
-        }
-        let (read_half, write_half) = stream.into_split();
-
-        info!(
-            "TcpClientActor<{}>: connected to {peer_addr}",
-            std::any::type_name::<M>()
-        );
-
-        let listener_recipient = ctx.actor_ref().clone().recipient::<ConnectionHalfClosed>();
-
-        let writer_ref = TcpWriterActor::<M, C>::spawn(TcpWriterArgs {
-            write_half,
-            peer_addr,
-            listener: listener_recipient.clone(),
-            codec: self.codec.clone(),
-        });
-        let writer_shutdown = writer_ref.clone().recipient::<Shutdown<M>>();
-
-        let reader_ref = TcpReaderActor::<M, C>::spawn(TcpReaderArgs {
-            read_half,
-            peer_addr,
-            downstream: self.downstream.clone(),
-            listener: listener_recipient,
-            writer_shutdown,
-            codec: self.codec.clone(),
-        });
-
-        self.connection = Some(ClientConnection {
-            peer_addr,
-            reader_ref,
-            writer_ref,
-            read_closed: false,
-            write_closed: false,
-        });
-
-        Ok(peer_addr)
+        self.open(ctx.actor_ref().clone(), None).await
     }
 }
 
@@ -872,20 +1169,20 @@ where
     M: Send + 'static,
     C: MessageCodec<M>,
 {
-    type Reply = ();
+    type Reply = DelegatedReply<()>;
 
-    async fn handle(&mut self, _msg: Close, _ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        let Some(conn) = &self.connection else {
+    async fn handle(&mut self, _msg: Close, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.pending = None;
+        if self.connection.is_none() {
             debug!("TcpClientActor: Close ignored, not connected");
-            return;
-        };
-
-        if let Err(err) = conn.reader_ref.tell(Shutdown::<M>::new()).await {
-            warn!("TcpClientActor: could not send shutdown to reader: {err}");
+            return ctx.reply(());
         }
-        if let Err(err) = conn.writer_ref.tell(Shutdown::<M>::new()).await {
-            warn!("TcpClientActor: could not send shutdown to writer: {err}");
+        self.close_current().await;
+        let (delegated, reply_sender) = ctx.reply_sender();
+        if let Some(conn) = &mut self.connection {
+            conn.close_replies.extend(reply_sender);
         }
+        delegated
     }
 }
 
@@ -921,6 +1218,60 @@ where
     }
 }
 
+/// Reacts to the events of a server's connection; see "Coupling with a
+/// server" above. Events of clients are ignored.
+impl<M, C> Message<ConnectionEvent> for TcpClientActor<M, C>
+where
+    M: Send + 'static,
+    C: MessageCodec<M>,
+{
+    type Reply = ();
+
+    async fn handle(&mut self, event: ConnectionEvent, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        if event.source != EventSource::Server {
+            return;
+        }
+        match event.kind {
+            ConnectionEventKind::Connected => {
+                let pending = PendingConnect {
+                    peer_connection_id: event.connection_id,
+                    messages: VecDeque::new(),
+                };
+                match &self.connection {
+                    None => {
+                        self.pending = Some(pending);
+                        self.open_pending(ctx.actor_ref().clone()).await;
+                    }
+                    Some(conn) => {
+                        debug!(
+                            "TcpClientActor: connecting once the connection to {} is closed",
+                            conn.peer_addr
+                        );
+                        self.pending = Some(pending);
+                        self.close_current().await;
+                    }
+                }
+            }
+            ConnectionEventKind::Disconnected => {
+                if self
+                    .pending
+                    .as_ref()
+                    .is_some_and(|p| p.peer_connection_id == event.connection_id)
+                {
+                    self.pending = None;
+                } else if self
+                    .connection
+                    .as_ref()
+                    .is_some_and(|c| c.peer_connection_id == Some(event.connection_id))
+                {
+                    self.close_current().await;
+                }
+            }
+            ConnectionEventKind::HalfClosed { .. } | ConnectionEventKind::ConnectFailed { .. } => {}
+        }
+    }
+}
+
 impl<M, C> Message<ConnectionHalfClosed> for TcpClientActor<M, C>
 where
     M: Send + 'static,
@@ -928,58 +1279,43 @@ where
 {
     type Reply = ();
 
-    async fn handle(&mut self, msg: ConnectionHalfClosed, _ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    async fn handle(&mut self, msg: ConnectionHalfClosed, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         info!(
             "TcpClientActor: half {:?} of the connection to {} closed ({:?})",
             msg.half, msg.peer_addr, msg.reason
         );
 
-        if let Some(conn) = &mut self.connection {
-            match msg.half {
-                ConnectionHalf::Read => conn.read_closed = true,
-                ConnectionHalf::Write => conn.write_closed = true,
-            }
-            if conn.read_closed && conn.write_closed {
-                info!("TcpClientActor: connection to {} fully closed", conn.peer_addr);
-                self.connection = None;
-            }
-        }
-
-        if let Some(observer) = &self.on_half_closed {
-            if let Err(err) = observer.tell(msg).await {
-                warn!("TcpClientActor: could not forward ConnectionHalfClosed: {err}");
-            }
-        }
-    }
-}
-
-impl<M, C> Message<PeerHalfClosed> for TcpClientActor<M, C>
-where
-    M: Send + 'static,
-    C: MessageCodec<M>,
-{
-    type Reply = ();
-
-    async fn handle(
-        &mut self,
-        PeerHalfClosed(msg): PeerHalfClosed,
-        _ctx: &mut Context<Self, Self::Reply>,
-    ) -> Self::Reply {
-        let Some(conn) = &self.connection else {
+        let Some(conn) = self.connection.as_mut().filter(|conn| conn.peer_addr == msg.peer_addr) else {
+            warn!("TcpClientActor: close event for unknown connection {}", msg.peer_addr);
             return;
         };
-
         match msg.half {
-            ConnectionHalf::Read => {
-                if let Err(err) = conn.writer_ref.tell(Shutdown::<M>::new()).await {
-                    warn!("TcpClientActor: could not send shutdown (via PeerHalfClosed) to writer: {err}");
-                }
+            ConnectionHalf::Read => conn.read_closed = true,
+            ConnectionHalf::Write => conn.write_closed = true,
+        }
+        let (id, peer_id, disconnected) = (conn.id, conn.peer_connection_id, conn.read_closed && conn.write_closed);
+
+        let kind = ConnectionEventKind::HalfClosed {
+            half: msg.half,
+            reason: msg.reason,
+        };
+        notify(&self.observer, self.event(id, peer_id, msg.peer_addr, kind)).await;
+        if disconnected {
+            info!("TcpClientActor: connection to {} fully closed", msg.peer_addr);
+            let close_replies = self
+                .connection
+                .take()
+                .map(|conn| conn.close_replies)
+                .unwrap_or_default();
+            notify(
+                &self.observer,
+                self.event(id, peer_id, msg.peer_addr, ConnectionEventKind::Disconnected),
+            )
+            .await;
+            for reply in close_replies {
+                reply.send(());
             }
-            ConnectionHalf::Write => {
-                if let Err(err) = conn.reader_ref.tell(Shutdown::<M>::new()).await {
-                    warn!("TcpClientActor: could not send shutdown (via PeerHalfClosed) to reader: {err}");
-                }
-            }
+            self.open_pending(ctx.actor_ref().clone()).await;
         }
     }
 }
@@ -992,15 +1328,17 @@ where
     type Reply = ();
 
     async fn handle(&mut self, item: M, _ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        if let Some(pending) = &mut self.pending {
+            pending.messages.push_back(item);
+            return;
+        }
         match &self.connection {
-            Some(conn) => {
+            Some(conn) if !conn.closing => {
                 if let Err(err) = conn.writer_ref.tell(item).await {
                     warn!("TcpClientActor: could not send message to writer: {err}");
                 }
             }
-            None => {
-                warn!("TcpClientActor: message dropped, not connected (yet)");
-            }
+            _ => warn!("TcpClientActor: message dropped, not connected"),
         }
     }
 }

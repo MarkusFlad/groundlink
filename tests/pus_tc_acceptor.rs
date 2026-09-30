@@ -131,12 +131,12 @@ async fn tm_1_1_is_sent_back_over_tcp_via_stamper_and_pus_writer() {
     let (_server_read, server_write) = server_stream.into_split();
 
     let closed = TestActor::<ConnectionHalfClosed>::spawn(TestActor::new());
-    let writer = PusWriter::spawn(TcpWriterArgs {
-        write_half: server_write,
+    let writer = PusWriter::spawn(TcpWriterArgs::new(
+        server_write,
         peer_addr,
-        listener: closed.recipient(),
-        codec: PusCodec::default(),
-    });
+        closed.recipient(),
+        PusCodec::default(),
+    ));
     let stamper = PusTmStamper::spawn(PusTmStamper::new(APID, writer.recipient::<PusPacket>()));
     let (acceptor, _handler) = acceptor(stamper.recipient());
     let acceptor = PusTcAcceptor::spawn(acceptor);

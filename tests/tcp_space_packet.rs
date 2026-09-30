@@ -58,12 +58,12 @@ async fn space_packet_writer_writes_packet_readable_with_framed() {
     let listener_ref = TestActor::<ConnectionHalfClosed>::spawn(TestActor::new());
     let listener_recipient = listener_ref.clone().recipient::<ConnectionHalfClosed>();
 
-    let writer_ref = SpacePacketWriter::spawn(TcpWriterArgs {
-        write_half: server_write,
+    let writer_ref = SpacePacketWriter::spawn(TcpWriterArgs::new(
+        server_write,
         peer_addr,
-        listener: listener_recipient,
-        codec: SpacePacketCodec::default(),
-    });
+        listener_recipient,
+        SpacePacketCodec::default(),
+    ));
 
     let packet = SpacePacket::new(PacketType::Telemetry, 7, 99, &b"status ok"[..]);
     writer_ref.tell(packet.clone()).await.unwrap();

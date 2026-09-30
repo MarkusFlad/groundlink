@@ -37,12 +37,12 @@ async fn writer_actor_writes_length_prefixed_frame() {
     let listener_ref = TestActor::<ConnectionHalfClosed>::spawn(TestActor::new());
     let listener_recipient = listener_ref.clone().recipient::<ConnectionHalfClosed>();
 
-    let writer_ref = SimpleStringWriter::spawn(TcpWriterArgs {
-        write_half: server_write,
+    let writer_ref = SimpleStringWriter::spawn(TcpWriterArgs::new(
+        server_write,
         peer_addr,
-        listener: listener_recipient,
-        codec: SimpleStringCodec::default(),
-    });
+        listener_recipient,
+        SimpleStringCodec::default(),
+    ));
 
     writer_ref.tell(SimpleString("hello world".to_string())).await.unwrap();
 
@@ -76,12 +76,12 @@ async fn writer_actor_reports_write_half_closed_on_write_error() {
     let listener_ref = TestActor::<ConnectionHalfClosed>::spawn(TestActor::new());
     let listener_recipient = listener_ref.clone().recipient::<ConnectionHalfClosed>();
 
-    let writer_ref = SimpleStringWriter::spawn(TcpWriterArgs {
-        write_half: server_write,
+    let writer_ref = SimpleStringWriter::spawn(TcpWriterArgs::new(
+        server_write,
         peer_addr,
-        listener: listener_recipient,
-        codec: SimpleStringCodec::default(),
-    });
+        listener_recipient,
+        SimpleStringCodec::default(),
+    ));
 
     // A single write does not always fail right after the connection is
     // gone (the first frame may still land in the TCP send buffer before
@@ -113,12 +113,12 @@ async fn writer_actor_closes_gracefully_on_shutdown() {
     let listener_ref = TestActor::<ConnectionHalfClosed>::spawn(TestActor::new());
     let listener_recipient = listener_ref.clone().recipient::<ConnectionHalfClosed>();
 
-    let writer_ref = SimpleStringWriter::spawn(TcpWriterArgs {
-        write_half: server_write,
+    let writer_ref = SimpleStringWriter::spawn(TcpWriterArgs::new(
+        server_write,
         peer_addr,
-        listener: listener_recipient,
-        codec: SimpleStringCodec::default(),
-    });
+        listener_recipient,
+        SimpleStringCodec::default(),
+    ));
 
     writer_ref.tell(Shutdown::<SimpleString>::new()).await.unwrap();
 
@@ -148,12 +148,12 @@ async fn message_that_cannot_be_encoded_is_dropped_and_connection_stays_open() {
     let (mut client_read, _client_write) = client_stream.into_split();
 
     let listener_ref = TestActor::<ConnectionHalfClosed>::spawn(TestActor::new());
-    let writer_ref = SimpleStringWriter::spawn(TcpWriterArgs {
-        write_half: server_write,
+    let writer_ref = SimpleStringWriter::spawn(TcpWriterArgs::new(
+        server_write,
         peer_addr,
-        listener: listener_ref.clone().recipient(),
-        codec: SimpleStringCodec::default(),
-    });
+        listener_ref.clone().recipient(),
+        SimpleStringCodec::default(),
+    ));
 
     // Too long for the 16-bit length field.
     writer_ref.tell(SimpleString("x".repeat(70_000))).await.unwrap();

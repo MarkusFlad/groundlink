@@ -37,6 +37,7 @@ use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tokio_util::codec::FramedRead;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 use crate::protocol::ccsds::{SpacePacket, SpacePacketCodec};
@@ -162,14 +163,19 @@ pub struct TcpServerArgs<M: Send + 'static, C> {
     pub codec: C,
     /// Receives the [`ConnectionEvent`]s of the accepted connections.
     pub observer: Option<ConnectionObserver>,
+    /// How long a write to a client may make no progress before the
+    /// connection counts as failed; see [`TcpWriterArgs::write_timeout`].
+    pub write_timeout: Option<Duration>,
 }
 
 impl<M: Send + 'static, C> TcpServerArgs<M, C> {
     /// Arguments with [`KeepAlive::default`],
-    /// [`ConnectionPolicy::WaitForClose`] and no observer; change them with
+    /// [`ConnectionPolicy::WaitForClose`], no observer and
+    /// [`DEFAULT_WRITE_TIMEOUT`]; change them with
     /// [`with_keepalive`](Self::with_keepalive),
-    /// [`with_connection_policy`](Self::with_connection_policy) and
-    /// [`with_observer`](Self::with_observer).
+    /// [`with_connection_policy`](Self::with_connection_policy),
+    /// [`with_observer`](Self::with_observer) and
+    /// [`with_write_timeout`](Self::with_write_timeout).
     pub fn new(bind_addr: SocketAddr, downstream: Recipient<M>, codec: C) -> Self {
         TcpServerArgs {
             bind_addr,
@@ -178,6 +184,7 @@ impl<M: Send + 'static, C> TcpServerArgs<M, C> {
             connection_policy: ConnectionPolicy::WaitForClose,
             codec,
             observer: None,
+            write_timeout: Some(DEFAULT_WRITE_TIMEOUT),
         }
     }
 
@@ -199,6 +206,13 @@ impl<M: Send + 'static, C> TcpServerArgs<M, C> {
     /// `observer`.
     pub fn with_observer(mut self, observer: ConnectionObserver) -> Self {
         self.observer = Some(observer);
+        self
+    }
+
+    /// Uses `write_timeout` for the accepted connections; `None` waits
+    /// forever.
+    pub fn with_write_timeout(mut self, write_timeout: Option<Duration>) -> Self {
+        self.write_timeout = write_timeout;
         self
     }
 }
@@ -249,7 +263,7 @@ where
     id: u64,
     peer_addr: SocketAddr,
     /// `None` once the write half is closed.
-    writer: Option<ActorRef<TcpWriterActor<M, C>>>,
+    writer: Option<WriterHandle<M, C>>,
     reader_shutdown: Recipient<Shutdown<M>>,
     read_closed: bool,
     write_closed: bool,
@@ -264,7 +278,7 @@ where
 {
     id: u64,
     peer_addr: SocketAddr,
-    writer: ActorRef<TcpWriterActor<M, C>>,
+    writer: WriterHandle<M, C>,
     reader_shutdown: Recipient<Shutdown<M>>,
 }
 
@@ -294,6 +308,7 @@ where
                 policy: args.connection_policy,
                 codec: args.codec,
                 observer: args.observer.clone(),
+                write_timeout: args.write_timeout,
             },
             actor_ref,
             resume_rx,
@@ -462,7 +477,7 @@ where
         // half as closed.
         let _ = conn.reader_shutdown.tell(Shutdown::new()).await;
         if let Some(writer) = &conn.writer {
-            let _ = writer.tell(Shutdown::<M>::new()).await;
+            writer.shut_down();
         }
     }
 }
@@ -484,7 +499,9 @@ where
             warn!("TcpServerActor: message dropped, no connection");
             return;
         };
-        if let Err(err) = writer.tell(item).await {
+        // Waits while the writer's mailbox is full; the write timeout
+        // bounds that wait if the client stops reading.
+        if let Err(err) = writer.actor_ref.tell(item).await {
             warn!("TcpServerActor: message to {peer_addr} dropped, connection closed: {err}");
         }
     }
@@ -497,6 +514,7 @@ struct AcceptConfig<M: Send + 'static, C> {
     policy: ConnectionPolicy,
     codec: C,
     observer: Option<ConnectionObserver>,
+    write_timeout: Option<Duration>,
 }
 
 /// Accepts connections and spawns reader and writer actors for each, one
@@ -539,13 +557,11 @@ async fn accept_loop<M, C>(
 
                 let (read_half, write_half) = stream.into_split();
 
-                let writer_ref = TcpWriterActor::<M, C>::spawn(TcpWriterArgs {
-                    write_half,
-                    peer_addr,
-                    listener: listener_recipient.clone(),
-                    codec: config.codec.clone(),
-                });
-                let writer_shutdown = writer_ref.clone().recipient::<Shutdown<M>>();
+                let writer = WriterHandle::spawn(
+                    TcpWriterArgs::new(write_half, peer_addr, listener_recipient.clone(), config.codec.clone())
+                        .with_write_timeout(config.write_timeout),
+                );
+                let writer_shutdown = writer.actor_ref.clone().recipient::<Shutdown<M>>();
                 // The reader gets its reference now but starts only below.
                 let reader = TcpReaderActor::<M, C>::prepare();
 
@@ -555,7 +571,7 @@ async fn accept_loop<M, C>(
                 let spawned = ConnectionSpawned {
                     id: last_id,
                     peer_addr,
-                    writer: writer_ref,
+                    writer,
                     reader_shutdown: reader.actor_ref().clone().recipient::<Shutdown<M>>(),
                 };
                 if let Err(err) = server_ref.tell(spawned).await {
@@ -739,6 +755,10 @@ where
     }
 }
 
+/// Default for how long a write to the peer may make no progress before
+/// it counts as failed; see [`TcpWriterArgs::write_timeout`].
+pub const DEFAULT_WRITE_TIMEOUT: Duration = Duration::from_secs(25);
+
 /// Arguments for spawning a [`TcpWriterActor<M, C>`].
 pub struct TcpWriterArgs<C> {
     /// Write half of the connection.
@@ -749,6 +769,40 @@ pub struct TcpWriterArgs<C> {
     pub listener: Recipient<ConnectionHalfClosed>,
     /// Codec that encodes the messages.
     pub codec: C,
+    /// How long a write may make no progress before it fails, e.g.
+    /// because the peer is alive but no longer reads. `None` waits
+    /// forever.
+    pub write_timeout: Option<Duration>,
+    /// Cancelling this token shuts the write half down like
+    /// [`Shutdown<M>`], but also while a write is blocked and without
+    /// waiting for the actor's mailbox.
+    pub shutdown: CancellationToken,
+}
+
+impl<C> TcpWriterArgs<C> {
+    /// Arguments with [`DEFAULT_WRITE_TIMEOUT`] and a new shutdown token;
+    /// change the timeout with [`with_write_timeout`](Self::with_write_timeout).
+    pub fn new(
+        write_half: OwnedWriteHalf,
+        peer_addr: SocketAddr,
+        listener: Recipient<ConnectionHalfClosed>,
+        codec: C,
+    ) -> Self {
+        TcpWriterArgs {
+            write_half,
+            peer_addr,
+            listener,
+            codec,
+            write_timeout: Some(DEFAULT_WRITE_TIMEOUT),
+            shutdown: CancellationToken::new(),
+        }
+    }
+
+    /// Uses `write_timeout`; `None` waits forever.
+    pub fn with_write_timeout(mut self, write_timeout: Option<Duration>) -> Self {
+        self.write_timeout = write_timeout;
+        self
+    }
 }
 
 /// Actor that owns the write half ([`OwnedWriteHalf`]) of a TCP connection
@@ -756,10 +810,13 @@ pub struct TcpWriterArgs<C> {
 ///
 /// Every `M` sent to this actor is encoded and written. A message that the
 /// codec cannot encode is dropped with a warning; the connection stays
-/// open, and no partially encoded bytes reach the peer. If writing fails,
-/// the actor reports [`ConnectionHalfClosed`] with [`CloseReason::Error`]
-/// and stops. [`Shutdown<M>`] shuts the write half down in an orderly way,
-/// reports it as [`CloseReason::Graceful`] and stops the actor.
+/// open, and no partially encoded bytes reach the peer. If writing fails
+/// or makes no progress for the write timeout, the actor reports
+/// [`ConnectionHalfClosed`] with [`CloseReason::Error`] and stops.
+/// [`Shutdown<M>`] or cancelling the shutdown token shuts the write half
+/// down in an orderly way, reports it as [`CloseReason::Graceful`] and
+/// stops the actor. The token also interrupts a blocked write; the peer
+/// then receives a partial frame.
 pub struct TcpWriterActor<M, C> {
     write_half: OwnedWriteHalf,
     codec: C,
@@ -767,6 +824,8 @@ pub struct TcpWriterActor<M, C> {
     buf: BytesMut,
     peer_addr: SocketAddr,
     listener: Recipient<ConnectionHalfClosed>,
+    write_timeout: Option<Duration>,
+    shutdown: CancellationToken,
     _msg: PhantomData<fn() -> M>,
 }
 
@@ -785,8 +844,62 @@ where
             buf: BytesMut::new(),
             peer_addr: args.peer_addr,
             listener: args.listener,
+            write_timeout: args.write_timeout,
+            shutdown: args.shutdown,
             _msg: PhantomData,
         })
+    }
+}
+
+impl<M, C> TcpWriterActor<M, C>
+where
+    M: Send + 'static,
+    C: MessageCodec<M>,
+{
+    /// Writes `buf`; fails if a single write makes no progress for the
+    /// write timeout.
+    async fn write_buf(&mut self) -> io::Result<()> {
+        let mut written = 0;
+        while written < self.buf.len() {
+            let write = self.write_half.write(&self.buf[written..]);
+            let n = match self.write_timeout {
+                Some(limit) => tokio::time::timeout(limit, write).await.map_err(|_| {
+                    io::Error::new(io::ErrorKind::TimedOut, format!("peer accepted no data for {limit:?}"))
+                })??,
+                None => write.await?,
+            };
+            if n == 0 {
+                return Err(io::ErrorKind::WriteZero.into());
+            }
+            written += n;
+        }
+        Ok(())
+    }
+
+    /// Shuts the write half down if `reason` is graceful, reports the
+    /// closed half and stops the actor.
+    async fn close(&mut self, reason: CloseReason, ctx: &mut Context<Self, ()>) {
+        if reason == CloseReason::Graceful
+            && let Err(err) = self.write_half.shutdown().await
+        {
+            warn!("error while shutting down the write half to {}: {err}", self.peer_addr);
+        }
+
+        // Not awaited here: the listener may itself be waiting for room in
+        // this actor's mailbox, which is released only once it stops.
+        let listener = self.listener.clone();
+        let closed = ConnectionHalfClosed {
+            peer_addr: self.peer_addr,
+            half: ConnectionHalf::Write,
+            reason,
+        };
+        tokio::spawn(async move {
+            if let Err(send_err) = listener.tell(closed).await {
+                warn!("could not send write-half-closed to listener: {send_err}");
+            }
+        });
+
+        ctx.stop();
     }
 }
 
@@ -798,23 +911,7 @@ where
     type Reply = ();
 
     async fn handle(&mut self, _msg: Shutdown<M>, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        if let Err(err) = self.write_half.shutdown().await {
-            warn!("error while shutting down the write half to {}: {err}", self.peer_addr);
-        }
-
-        if let Err(send_err) = self
-            .listener
-            .tell(ConnectionHalfClosed {
-                peer_addr: self.peer_addr,
-                half: ConnectionHalf::Write,
-                reason: CloseReason::Graceful,
-            })
-            .await
-        {
-            warn!("could not send write-half-closed to listener: {send_err}");
-        }
-
-        ctx.stop();
+        self.close(CloseReason::Graceful, ctx).await;
     }
 }
 
@@ -826,6 +923,12 @@ where
     type Reply = ();
 
     async fn handle(&mut self, item: M, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        // A [`Shutdown<M>`] may not have fit into the full mailbox.
+        if self.shutdown.is_cancelled() {
+            self.close(CloseReason::Graceful, ctx).await;
+            return;
+        }
+
         // Encode separately from writing, so that a message the codec
         // rejects neither closes the connection nor leaves a partial frame.
         self.buf.clear();
@@ -835,23 +938,75 @@ where
             return;
         }
 
-        if let Err(err) = self.write_half.write_all(&self.buf).await {
+        let shutdown = self.shutdown.clone();
+        let result = tokio::select! {
+            result = self.write_buf() => Some(result),
+            () = shutdown.cancelled() => None,
+        };
+        let Some(result) = result else {
+            info!("write to {} interrupted by shutdown", self.peer_addr);
+            self.close(CloseReason::Graceful, ctx).await;
+            return;
+        };
+        if let Err(err) = result {
             warn!("error while writing to {}: {err}", self.peer_addr);
-
-            if let Err(send_err) = self
-                .listener
-                .tell(ConnectionHalfClosed {
-                    peer_addr: self.peer_addr,
-                    half: ConnectionHalf::Write,
-                    reason: CloseReason::Error(err.to_string()),
-                })
-                .await
-            {
-                warn!("could not send write-half-closed to listener: {send_err}");
-            }
-
-            ctx.stop();
+            self.close(CloseReason::Error(err.to_string()), ctx).await;
         }
+    }
+}
+
+/// The writer of a connection, as seen by its server or client.
+struct WriterHandle<M, C>
+where
+    M: Send + 'static,
+    C: MessageCodec<M>,
+{
+    actor_ref: ActorRef<TcpWriterActor<M, C>>,
+    shutdown: CancellationToken,
+    /// How long [`shut_down`](Self::shut_down) lets the writer finish the
+    /// queued messages; `None` waits forever.
+    grace_period: Option<Duration>,
+}
+
+impl<M, C> WriterHandle<M, C>
+where
+    M: Send + 'static,
+    C: MessageCodec<M>,
+{
+    /// Spawns a writer for `args`; the write timeout is also the grace
+    /// period.
+    fn spawn(args: TcpWriterArgs<C>) -> Self {
+        let shutdown = args.shutdown.clone();
+        let grace_period = args.write_timeout;
+        WriterHandle {
+            actor_ref: TcpWriterActor::<M, C>::spawn(args),
+            shutdown,
+            grace_period,
+        }
+    }
+
+    /// Asks the writer to shut down without waiting for it. The
+    /// [`Shutdown<M>`] is queued behind the pending messages, so they are
+    /// still written. If the writer has not stopped after the grace period,
+    /// e.g. because the peer reads only a trickle, the token closes it at
+    /// once and the remaining messages are dropped.
+    fn shut_down(&self) {
+        let actor_ref = self.actor_ref.clone();
+        let shutdown = self.shutdown.clone();
+        let grace_period = self.grace_period;
+        tokio::spawn(async move {
+            let stopped = async {
+                let _ = actor_ref.tell(Shutdown::<M>::new()).await;
+                actor_ref.wait_for_shutdown().await;
+            };
+            let Some(grace_period) = grace_period else {
+                return stopped.await;
+            };
+            if tokio::time::timeout(grace_period, stopped).await.is_err() {
+                warn!("writer did not stop within {grace_period:?}, closing it now");
+                shutdown.cancel();
+            }
+        });
     }
 }
 
@@ -869,12 +1024,17 @@ pub struct TcpClientArgs<M: Send + 'static, C> {
     pub codec: C,
     /// Receives the [`ConnectionEvent`]s of the connections.
     pub observer: Option<ConnectionObserver>,
+    /// How long a write to the peer may make no progress before the
+    /// connection counts as failed; see [`TcpWriterArgs::write_timeout`].
+    pub write_timeout: Option<Duration>,
 }
 
 impl<M: Send + 'static, C> TcpClientArgs<M, C> {
-    /// Arguments with [`KeepAlive::default`] and no observer; change them
-    /// with [`with_keepalive`](Self::with_keepalive) and
-    /// [`with_observer`](Self::with_observer).
+    /// Arguments with [`KeepAlive::default`], no observer and
+    /// [`DEFAULT_WRITE_TIMEOUT`]; change them with
+    /// [`with_keepalive`](Self::with_keepalive),
+    /// [`with_observer`](Self::with_observer) and
+    /// [`with_write_timeout`](Self::with_write_timeout).
     pub fn new(remote_addr: SocketAddr, downstream: Recipient<M>, codec: C) -> Self {
         TcpClientArgs {
             remote_addr,
@@ -882,6 +1042,7 @@ impl<M: Send + 'static, C> TcpClientArgs<M, C> {
             keepalive: Some(KeepAlive::default()),
             codec,
             observer: None,
+            write_timeout: Some(DEFAULT_WRITE_TIMEOUT),
         }
     }
 
@@ -895,6 +1056,12 @@ impl<M: Send + 'static, C> TcpClientArgs<M, C> {
     /// Sends the [`ConnectionEvent`]s of the connections to `observer`.
     pub fn with_observer(mut self, observer: ConnectionObserver) -> Self {
         self.observer = Some(observer);
+        self
+    }
+
+    /// Uses `write_timeout` for the connection; `None` waits forever.
+    pub fn with_write_timeout(mut self, write_timeout: Option<Duration>) -> Self {
+        self.write_timeout = write_timeout;
         self
     }
 }
@@ -961,6 +1128,7 @@ where
     downstream: Recipient<M>,
     observer: Option<ConnectionObserver>,
     keepalive: Option<KeepAlive>,
+    write_timeout: Option<Duration>,
     codec: C,
     last_id: u64,
     connection: Option<ClientConnection<M, C>>,
@@ -979,7 +1147,7 @@ where
     peer_connection_id: Option<u64>,
     peer_addr: SocketAddr,
     reader_ref: ActorRef<TcpReaderActor<M, C>>,
-    writer_ref: ActorRef<TcpWriterActor<M, C>>,
+    writer: WriterHandle<M, C>,
     read_closed: bool,
     write_closed: bool,
     /// Whether [`Close`] was requested; messages are no longer written.
@@ -1009,6 +1177,7 @@ where
             downstream: args.downstream,
             observer: args.observer,
             keepalive: args.keepalive,
+            write_timeout: args.write_timeout,
             codec: args.codec,
             last_id: 0,
             connection: None,
@@ -1071,13 +1240,11 @@ where
 
         let listener_recipient = actor_ref.recipient::<ConnectionHalfClosed>();
 
-        let writer_ref = TcpWriterActor::<M, C>::spawn(TcpWriterArgs {
-            write_half,
-            peer_addr,
-            listener: listener_recipient.clone(),
-            codec: self.codec.clone(),
-        });
-        let writer_shutdown = writer_ref.clone().recipient::<Shutdown<M>>();
+        let writer = WriterHandle::spawn(
+            TcpWriterArgs::new(write_half, peer_addr, listener_recipient.clone(), self.codec.clone())
+                .with_write_timeout(self.write_timeout),
+        );
+        let writer_shutdown = writer.actor_ref.clone().recipient::<Shutdown<M>>();
 
         let connected = self.event(id, peer_connection_id, peer_addr, ConnectionEventKind::Connected);
         notify(&self.observer, connected).await;
@@ -1096,7 +1263,7 @@ where
             peer_connection_id,
             peer_addr,
             reader_ref,
-            writer_ref,
+            writer,
             read_closed: false,
             write_closed: false,
             closing: false,
@@ -1122,7 +1289,7 @@ where
         }
         if let Some(conn) = &self.connection {
             for item in pending.messages {
-                if let Err(err) = conn.writer_ref.tell(item).await {
+                if let Err(err) = conn.writer.actor_ref.tell(item).await {
                     warn!("TcpClientActor: could not send message to writer: {err}");
                 }
             }
@@ -1141,7 +1308,7 @@ where
             let _ = conn.reader_ref.tell(Shutdown::<M>::new()).await;
         }
         if !conn.write_closed {
-            let _ = conn.writer_ref.tell(Shutdown::<M>::new()).await;
+            conn.writer.shut_down();
         }
     }
 }
@@ -1211,9 +1378,7 @@ where
 
     async fn handle(&mut self, _msg: CloseWrite, _ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         if let Some(conn) = &self.connection {
-            if let Err(err) = conn.writer_ref.tell(Shutdown::<M>::new()).await {
-                warn!("TcpClientActor: could not send shutdown to writer: {err}");
-            }
+            conn.writer.shut_down();
         }
     }
 }
@@ -1334,7 +1499,9 @@ where
         }
         match &self.connection {
             Some(conn) if !conn.closing => {
-                if let Err(err) = conn.writer_ref.tell(item).await {
+                // Waits while the writer's mailbox is full; the write
+                // timeout bounds that wait if the peer stops reading.
+                if let Err(err) = conn.writer.actor_ref.tell(item).await {
                     warn!("TcpClientActor: could not send message to writer: {err}");
                 }
             }

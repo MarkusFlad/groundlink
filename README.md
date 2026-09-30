@@ -164,6 +164,34 @@ cargo test
 cargo doc --open
 ```
 
+### Performance test
+
+`tests/tcp_throughput.rs` measures how fast Space Packets pass through a
+server coupled with a client:
+
+```text
+sender ──▶ SpacePacketServer ──▶ SpacePacketClient ──▶ receiver
+```
+
+For each size of the packet data field (16 bytes to 64 KiB), the sender
+writes up to 256 MiB (at most 2 million packets) of pre-encoded packets,
+and the receiver counts the bytes until all have arrived. Encoding and
+decoding at the two ends are therefore not measured. The same data is
+also sent over a plain loopback connection without actors in between,
+as a baseline.
+
+The test is ignored by default and only meaningful in release mode:
+
+```sh
+cargo test --release --test tcp_throughput -- --ignored --nocapture
+```
+
+It prints one line per packet size: the throughput through the actors,
+the throughput of the direct connection, and the packets per second
+through the actors. Small packets are limited by the packet rate, since
+each one passes three mailboxes (reader, client, writer) and is written
+with its own system call; large packets by copying the data.
+
 ## License
 
 Licensed under the [Apache License, Version 2.0](LICENSE).

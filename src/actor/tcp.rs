@@ -805,23 +805,40 @@ impl<C> TcpWriterArgs<C> {
     }
 }
 
+/// Encoded bytes from which a [`TcpWriterActor`] writes at once instead of
+/// waiting for more messages.
+const WRITE_BATCH_LEN: usize = 64 * 1024;
+
+/// Sent by a [`TcpWriterActor`] to itself: everything queued before it
+/// has been encoded, so the buffer can be written. Generic over the message
+/// type like [`Shutdown<M>`], so that it cannot be `M` itself.
+struct Flush<M>(PhantomData<fn() -> M>);
+
 /// Actor that owns the write half ([`OwnedWriteHalf`]) of a TCP connection
 /// and writes messages of type `M` with the codec `C`.
 ///
-/// Every `M` sent to this actor is encoded and written. A message that the
-/// codec cannot encode is dropped with a warning; the connection stays
-/// open, and no partially encoded bytes reach the peer. If writing fails
-/// or makes no progress for the write timeout, the actor reports
-/// [`ConnectionHalfClosed`] with [`CloseReason::Error`] and stops.
-/// [`Shutdown<M>`] or cancelling the shutdown token shuts the write half
+/// Every `M` sent to this actor is encoded and written. Messages that are
+/// queued together are written together, with one system call where
+/// possible: the actor encodes into a buffer and writes it once no more
+/// messages are waiting or the buffer holds [`WRITE_BATCH_LEN`] bytes. A
+/// single message is thus written right after it has been handled.
+///
+/// A message that the codec cannot encode is dropped with a warning; the
+/// connection stays open, and no partially encoded bytes reach the peer.
+/// If writing fails or makes no progress for the write timeout, the actor
+/// reports [`ConnectionHalfClosed`] with [`CloseReason::Error`] and stops.
+/// [`Shutdown<M>`] writes what is still buffered, shuts the write half
 /// down in an orderly way, reports it as [`CloseReason::Graceful`] and
-/// stops the actor. The token also interrupts a blocked write; the peer
-/// then receives a partial frame.
+/// stops the actor. Cancelling the shutdown token does the same without
+/// writing the buffer and also interrupts a blocked write; the peer then
+/// receives a partial frame.
 pub struct TcpWriterActor<M, C> {
     write_half: OwnedWriteHalf,
     codec: C,
-    /// Encoded bytes of the message being written; reused between messages.
+    /// Encoded messages not yet written; reused between writes.
     buf: BytesMut,
+    /// Whether a [`Flush`] is queued in the mailbox.
+    flush_queued: bool,
     peer_addr: SocketAddr,
     listener: Recipient<ConnectionHalfClosed>,
     write_timeout: Option<Duration>,
@@ -842,6 +859,7 @@ where
             write_half: args.write_half,
             codec: args.codec,
             buf: BytesMut::new(),
+            flush_queued: false,
             peer_addr: args.peer_addr,
             listener: args.listener,
             write_timeout: args.write_timeout,
@@ -873,7 +891,34 @@ where
             }
             written += n;
         }
+        self.buf.clear();
         Ok(())
+    }
+
+    /// Writes the buffered messages, unless the shutdown token interrupts
+    /// it. Returns `false` if the actor has been closed instead.
+    async fn flush(&mut self, ctx: &mut Context<Self, ()>) -> bool {
+        if self.buf.is_empty() {
+            return true;
+        }
+        let shutdown = self.shutdown.clone();
+        let result = tokio::select! {
+            result = self.write_buf() => Some(result),
+            () = shutdown.cancelled() => None,
+        };
+        match result {
+            Some(Ok(())) => true,
+            Some(Err(err)) => {
+                warn!("error while writing to {}: {err}", self.peer_addr);
+                self.close(CloseReason::Error(err.to_string()), ctx).await;
+                false
+            }
+            None => {
+                info!("write to {} interrupted by shutdown", self.peer_addr);
+                self.close(CloseReason::Graceful, ctx).await;
+                false
+            }
+        }
     }
 
     /// Shuts the write half down if `reason` is graceful, reports the
@@ -911,7 +956,22 @@ where
     type Reply = ();
 
     async fn handle(&mut self, _msg: Shutdown<M>, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        self.close(CloseReason::Graceful, ctx).await;
+        if self.flush(ctx).await {
+            self.close(CloseReason::Graceful, ctx).await;
+        }
+    }
+}
+
+impl<M, C> Message<Flush<M>> for TcpWriterActor<M, C>
+where
+    M: Send + 'static,
+    C: MessageCodec<M>,
+{
+    type Reply = ();
+
+    async fn handle(&mut self, _msg: Flush<M>, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.flush_queued = false;
+        self.flush(ctx).await;
     }
 }
 
@@ -923,34 +983,28 @@ where
     type Reply = ();
 
     async fn handle(&mut self, item: M, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        // A [`Shutdown<M>`] may not have fit into the full mailbox.
+        // After the grace period of a shutdown, queued messages are dropped.
         if self.shutdown.is_cancelled() {
             self.close(CloseReason::Graceful, ctx).await;
             return;
         }
 
-        // Encode separately from writing, so that a message the codec
-        // rejects neither closes the connection nor leaves a partial frame.
-        self.buf.clear();
+        // A message the codec rejects neither closes the connection nor
+        // leaves a partial frame in the buffer.
+        let len = self.buf.len();
         if let Err(err) = self.codec.encode(item, &mut self.buf) {
-            self.buf.clear();
+            self.buf.truncate(len);
             warn!("message to {} dropped, cannot be encoded: {err}", self.peer_addr);
             return;
         }
 
-        let shutdown = self.shutdown.clone();
-        let result = tokio::select! {
-            result = self.write_buf() => Some(result),
-            () = shutdown.cancelled() => None,
-        };
-        let Some(result) = result else {
-            info!("write to {} interrupted by shutdown", self.peer_addr);
-            self.close(CloseReason::Graceful, ctx).await;
-            return;
-        };
-        if let Err(err) = result {
-            warn!("error while writing to {}: {err}", self.peer_addr);
-            self.close(CloseReason::Error(err.to_string()), ctx).await;
+        if self.buf.len() >= WRITE_BATCH_LEN {
+            self.flush(ctx).await;
+        } else if !self.flush_queued {
+            // Queued behind the messages already waiting, which are thus
+            // written together. If the mailbox is full, a later message
+            // tries again.
+            self.flush_queued = ctx.actor_ref().tell(Flush(PhantomData)).try_send().is_ok();
         }
     }
 }

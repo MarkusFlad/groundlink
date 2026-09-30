@@ -10,9 +10,13 @@
 //!    actor.
 //! 4. A message the codec cannot encode is dropped; the connection stays
 //!    open and the next message arrives intact.
+//! 5. Many messages queued at once, which the actor writes together,
+//!    arrive complete and in order, also those still buffered at a
+//!    `Shutdown<M>`.
 
 use std::time::Duration;
 
+use futures::StreamExt;
 use groundlink::{
     CloseReason, ConnectionHalf, ConnectionHalfClosed, Shutdown, SimpleString, SimpleStringCodec, SimpleStringWriter,
     TcpWriterArgs, TestActor,
@@ -174,4 +178,43 @@ async fn message_that_cannot_be_encoded_is_dropped_and_connection_stays_open() {
             .unwrap()
             .is_empty()
     );
+}
+
+#[tokio::test]
+async fn messages_queued_together_arrive_complete_and_in_order() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (client_stream, accepted) = tokio::join!(TcpStream::connect(addr), listener.accept());
+    let (server_stream, peer_addr) = accepted.unwrap();
+    let (_server_read, server_write) = server_stream.into_split();
+
+    let listener_ref = TestActor::<ConnectionHalfClosed>::spawn(TestActor::new());
+    let writer_ref = SimpleStringWriter::spawn(TcpWriterArgs::new(
+        server_write,
+        peer_addr,
+        listener_ref.clone().recipient(),
+        SimpleStringCodec::default(),
+    ));
+
+    // Messages of different sizes, so that batches exceed the batch
+    // length at varying points; then a shutdown behind them.
+    let sent: Vec<String> = (0..2000)
+        .map(|i| format!("{i}:{}", "x".repeat(i * 37 % 3000)))
+        .collect();
+    // Read concurrently: the messages do not fit into the TCP buffers.
+    let reading = tokio::spawn(
+        tokio_util::codec::FramedRead::new(client_stream.unwrap(), SimpleStringCodec::default())
+            .map(|item| item.unwrap().0)
+            .collect::<Vec<String>>(),
+    );
+    for text in &sent {
+        writer_ref.tell(SimpleString(text.clone())).await.unwrap();
+    }
+    writer_ref.tell(Shutdown::<SimpleString>::new()).await.unwrap();
+
+    let received = tokio::time::timeout(Duration::from_secs(5), reading)
+        .await
+        .expect("the writer should shut down after the last message")
+        .unwrap();
+    assert_eq!(received, sent);
 }

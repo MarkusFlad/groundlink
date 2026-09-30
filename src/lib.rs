@@ -107,11 +107,11 @@ pub mod protocol;
 pub use actor::pus::{PusPacketAdapter, PusTcAcceptor, PusTestServiceActor, PusTmStamper};
 pub use actor::tcp::{
     Close, CloseRead, CloseReason, CloseWrite, Connect, ConnectionEvent, ConnectionEventKind, ConnectionHalf,
-    ConnectionHalfClosed, ConnectionObserver, ConnectionPolicy, DEFAULT_WRITE_TIMEOUT, EventSource, GetLocalAddr,
-    KeepAlive, PusClient, PusReader, PusServer, PusWriter, Shutdown, SimpleStringClient, SimpleStringReader,
-    SimpleStringServer, SimpleStringWriter, SpacePacketClient, SpacePacketReader, SpacePacketServer, SpacePacketWriter,
-    TcpClientActor, TcpClientArgs, TcpReaderActor, TcpReaderArgs, TcpServerActor, TcpServerArgs, TcpWriterActor,
-    TcpWriterArgs,
+    ConnectionHalfClosed, ConnectionObserver, ConnectionPolicy, DEFAULT_MAILBOX_CAPACITY, DEFAULT_WRITE_TIMEOUT,
+    EventSource, GetLocalAddr, KeepAlive, PusClient, PusReader, PusServer, PusWriter, Shutdown, SimpleStringClient,
+    SimpleStringReader, SimpleStringServer, SimpleStringWriter, SpacePacketClient, SpacePacketReader,
+    SpacePacketServer, SpacePacketWriter, TcpClientActor, TcpClientArgs, TcpReaderActor, TcpReaderArgs, TcpServerActor,
+    TcpServerArgs, TcpWriterActor, TcpWriterArgs,
 };
 pub use actor::test::{GetMessages, TestActor};
 pub use protocol::ccsds::{PacketType, SequenceFlags, SpacePacket, SpacePacketCodec, SpacePacketHeader};

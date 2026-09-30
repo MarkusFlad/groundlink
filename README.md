@@ -156,9 +156,9 @@ RUST_LOG=debug cargo run --example pus_server -- 9000 9001
   messages, and why message types implement the `WireMessage` marker
   trait.
 - [Performance](docs/performance.md): what limits the throughput of
-  the TCP actors, the optimizations made so far (write batching, a larger
-  read buffer), one that was tried and not adopted, and throughput
-  measurements for each.
+  the TCP actors, the optimizations made so far, the settings an
+  application can tune (mailbox capacity, worker threads), what was tried
+  and not adopted, and throughput measurements for each.
 
 ## Development
 
@@ -180,9 +180,10 @@ sender ──▶ SpacePacketServer ──▶ SpacePacketClient ──▶ receive
 For each size of the packet data field (16 bytes to 64 KiB), the sender
 writes up to 256 MiB (at most 2 million packets) of pre-encoded packets,
 and the receiver counts the bytes until all have arrived. Encoding and
-decoding at the two ends are therefore not measured. The same data is
-also sent over a plain loopback connection without actors in between,
-as a baseline.
+decoding at the two ends are therefore not measured. The actors are
+measured with the default mailbox capacity and with a capacity of 256.
+The same data is also sent over a plain loopback connection without
+actors in between, as a baseline.
 
 The test is ignored by default and only meaningful in release mode:
 
@@ -190,9 +191,9 @@ The test is ignored by default and only meaningful in release mode:
 cargo test --release --test tcp_throughput -- --ignored --nocapture
 ```
 
-It prints one line per packet size: the throughput through the actors,
-the throughput of the direct connection, and the packets per second
-through the actors. Small packets are limited by the packet rate, since
+It prints one line per packet size: the throughput through the actors
+with both mailbox capacities, the throughput of the direct connection,
+and the packets per second through the actors with the default capacity. Small packets are limited by the packet rate, since
 each one passes three mailboxes (reader, client, writer); reader and
 writer read and write many packets per system call. Large packets are
 limited by copying the data. See [Performance](docs/performance.md) for

@@ -166,16 +166,23 @@ pub struct TcpServerArgs<M: Send + 'static, C> {
     /// How long a write to a client may make no progress before the
     /// connection counts as failed; see [`TcpWriterArgs::write_timeout`].
     pub write_timeout: Option<Duration>,
+    /// How many messages the mailbox of each reader and writer actor
+    /// spawned for a connection holds before senders have to wait. Larger
+    /// mailboxes let the actors work in longer stretches, which raises the
+    /// throughput of small messages, but more messages queue up before
+    /// backpressure reaches the sender.
+    pub mailbox_capacity: usize,
 }
 
 impl<M: Send + 'static, C> TcpServerArgs<M, C> {
     /// Arguments with [`KeepAlive::default`],
-    /// [`ConnectionPolicy::WaitForClose`], no observer and
-    /// [`DEFAULT_WRITE_TIMEOUT`]; change them with
-    /// [`with_keepalive`](Self::with_keepalive),
+    /// [`ConnectionPolicy::WaitForClose`], no observer,
+    /// [`DEFAULT_WRITE_TIMEOUT`] and [`DEFAULT_MAILBOX_CAPACITY`]; change
+    /// them with [`with_keepalive`](Self::with_keepalive),
     /// [`with_connection_policy`](Self::with_connection_policy),
-    /// [`with_observer`](Self::with_observer) and
-    /// [`with_write_timeout`](Self::with_write_timeout).
+    /// [`with_observer`](Self::with_observer),
+    /// [`with_write_timeout`](Self::with_write_timeout) and
+    /// [`with_mailbox_capacity`](Self::with_mailbox_capacity).
     pub fn new(bind_addr: SocketAddr, downstream: Recipient<M>, codec: C) -> Self {
         TcpServerArgs {
             bind_addr,
@@ -185,6 +192,7 @@ impl<M: Send + 'static, C> TcpServerArgs<M, C> {
             codec,
             observer: None,
             write_timeout: Some(DEFAULT_WRITE_TIMEOUT),
+            mailbox_capacity: DEFAULT_MAILBOX_CAPACITY,
         }
     }
 
@@ -213,6 +221,20 @@ impl<M: Send + 'static, C> TcpServerArgs<M, C> {
     /// forever.
     pub fn with_write_timeout(mut self, write_timeout: Option<Duration>) -> Self {
         self.write_timeout = write_timeout;
+        self
+    }
+
+    /// Uses `capacity` for the mailboxes of the reader and writer actors of
+    /// each connection. The mailbox of the server actor itself is set
+    /// when spawning it, e.g. with
+    /// `spawn_with_mailbox(args, kameo::mailbox::bounded(capacity))`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `capacity` is 0.
+    pub fn with_mailbox_capacity(mut self, capacity: usize) -> Self {
+        assert!(capacity > 0, "mailbox capacity must be at least 1");
+        self.mailbox_capacity = capacity;
         self
     }
 }
@@ -309,6 +331,7 @@ where
                 codec: args.codec,
                 observer: args.observer.clone(),
                 write_timeout: args.write_timeout,
+                mailbox_capacity: args.mailbox_capacity,
             },
             actor_ref,
             resume_rx,
@@ -515,6 +538,7 @@ struct AcceptConfig<M: Send + 'static, C> {
     codec: C,
     observer: Option<ConnectionObserver>,
     write_timeout: Option<Duration>,
+    mailbox_capacity: usize,
 }
 
 /// Accepts connections and spawns reader and writer actors for each, one
@@ -560,10 +584,12 @@ async fn accept_loop<M, C>(
                 let writer = WriterHandle::spawn(
                     TcpWriterArgs::new(write_half, peer_addr, listener_recipient.clone(), config.codec.clone())
                         .with_write_timeout(config.write_timeout),
+                    config.mailbox_capacity,
                 );
                 let writer_shutdown = writer.actor_ref.clone().recipient::<Shutdown<M>>();
                 // The reader gets its reference now but starts only below.
-                let reader = TcpReaderActor::<M, C>::prepare();
+                let reader =
+                    TcpReaderActor::<M, C>::prepare_with_mailbox(kameo::mailbox::bounded(config.mailbox_capacity));
 
                 // Register the connection before the reader starts, so the
                 // server knows it before any close event of the connection.
@@ -760,6 +786,11 @@ where
     }
 }
 
+/// Default capacity of the mailboxes of the reader and writer actors
+/// spawned for a connection; see [`TcpServerArgs::mailbox_capacity`].
+/// kameo's default.
+pub const DEFAULT_MAILBOX_CAPACITY: usize = 64;
+
 /// Default for how long a write to the peer may make no progress before
 /// it counts as failed; see [`TcpWriterArgs::write_timeout`].
 pub const DEFAULT_WRITE_TIMEOUT: Duration = Duration::from_secs(25);
@@ -825,8 +856,8 @@ struct Flush<M>(PhantomData<fn() -> M>);
 /// Every `M` sent to this actor is encoded and written. Messages that are
 /// queued together are written together, with one system call where
 /// possible: the actor encodes into a buffer and writes it once no more
-/// messages are waiting or the buffer holds [`WRITE_BATCH_LEN`] bytes. A
-/// single message is thus written right after it has been handled.
+/// messages are waiting or the buffer holds 64 KiB. A single message is
+/// thus written right after it has been handled.
 ///
 /// A message that the codec cannot encode is dropped with a warning; the
 /// connection stays open, and no partially encoded bytes reach the peer.
@@ -1032,13 +1063,13 @@ where
     M: Send + 'static,
     C: MessageCodec<M>,
 {
-    /// Spawns a writer for `args`; the write timeout is also the grace
-    /// period.
-    fn spawn(args: TcpWriterArgs<C>) -> Self {
+    /// Spawns a writer for `args` with a mailbox of `mailbox_capacity`;
+    /// the write timeout is also the grace period.
+    fn spawn(args: TcpWriterArgs<C>, mailbox_capacity: usize) -> Self {
         let shutdown = args.shutdown.clone();
         let grace_period = args.write_timeout;
         WriterHandle {
-            actor_ref: TcpWriterActor::<M, C>::spawn(args),
+            actor_ref: TcpWriterActor::<M, C>::spawn_with_mailbox(args, kameo::mailbox::bounded(mailbox_capacity)),
             shutdown,
             grace_period,
         }
@@ -1086,14 +1117,21 @@ pub struct TcpClientArgs<M: Send + 'static, C> {
     /// How long a write to the peer may make no progress before the
     /// connection counts as failed; see [`TcpWriterArgs::write_timeout`].
     pub write_timeout: Option<Duration>,
+    /// How many messages the mailbox of each reader and writer actor
+    /// spawned for a connection holds before senders have to wait. Larger
+    /// mailboxes let the actors work in longer stretches, which raises the
+    /// throughput of small messages, but more messages queue up before
+    /// backpressure reaches the sender.
+    pub mailbox_capacity: usize,
 }
 
 impl<M: Send + 'static, C> TcpClientArgs<M, C> {
-    /// Arguments with [`KeepAlive::default`], no observer and
-    /// [`DEFAULT_WRITE_TIMEOUT`]; change them with
-    /// [`with_keepalive`](Self::with_keepalive),
-    /// [`with_observer`](Self::with_observer) and
-    /// [`with_write_timeout`](Self::with_write_timeout).
+    /// Arguments with [`KeepAlive::default`], no observer,
+    /// [`DEFAULT_WRITE_TIMEOUT`] and [`DEFAULT_MAILBOX_CAPACITY`]; change
+    /// them with [`with_keepalive`](Self::with_keepalive),
+    /// [`with_observer`](Self::with_observer),
+    /// [`with_write_timeout`](Self::with_write_timeout) and
+    /// [`with_mailbox_capacity`](Self::with_mailbox_capacity).
     pub fn new(remote_addr: SocketAddr, downstream: Recipient<M>, codec: C) -> Self {
         TcpClientArgs {
             remote_addr,
@@ -1102,6 +1140,7 @@ impl<M: Send + 'static, C> TcpClientArgs<M, C> {
             codec,
             observer: None,
             write_timeout: Some(DEFAULT_WRITE_TIMEOUT),
+            mailbox_capacity: DEFAULT_MAILBOX_CAPACITY,
         }
     }
 
@@ -1121,6 +1160,20 @@ impl<M: Send + 'static, C> TcpClientArgs<M, C> {
     /// Uses `write_timeout` for the connection; `None` waits forever.
     pub fn with_write_timeout(mut self, write_timeout: Option<Duration>) -> Self {
         self.write_timeout = write_timeout;
+        self
+    }
+
+    /// Uses `capacity` for the mailboxes of the reader and writer actors of
+    /// each connection. The mailbox of the client actor itself is set
+    /// when spawning it, e.g. with
+    /// `spawn_with_mailbox(args, kameo::mailbox::bounded(capacity))`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `capacity` is 0.
+    pub fn with_mailbox_capacity(mut self, capacity: usize) -> Self {
+        assert!(capacity > 0, "mailbox capacity must be at least 1");
+        self.mailbox_capacity = capacity;
         self
     }
 }
@@ -1188,6 +1241,7 @@ where
     observer: Option<ConnectionObserver>,
     keepalive: Option<KeepAlive>,
     write_timeout: Option<Duration>,
+    mailbox_capacity: usize,
     codec: C,
     last_id: u64,
     connection: Option<ClientConnection<M, C>>,
@@ -1237,6 +1291,7 @@ where
             observer: args.observer,
             keepalive: args.keepalive,
             write_timeout: args.write_timeout,
+            mailbox_capacity: args.mailbox_capacity,
             codec: args.codec,
             last_id: 0,
             connection: None,
@@ -1302,20 +1357,24 @@ where
         let writer = WriterHandle::spawn(
             TcpWriterArgs::new(write_half, peer_addr, listener_recipient.clone(), self.codec.clone())
                 .with_write_timeout(self.write_timeout),
+            self.mailbox_capacity,
         );
         let writer_shutdown = writer.actor_ref.clone().recipient::<Shutdown<M>>();
 
         let connected = self.event(id, peer_connection_id, peer_addr, ConnectionEventKind::Connected);
         notify(&self.observer, connected).await;
 
-        let reader_ref = TcpReaderActor::<M, C>::spawn(TcpReaderArgs {
-            read_half,
-            peer_addr,
-            downstream: self.downstream.clone(),
-            listener: listener_recipient,
-            writer_shutdown,
-            codec: self.codec.clone(),
-        });
+        let reader_ref = TcpReaderActor::<M, C>::spawn_with_mailbox(
+            TcpReaderArgs {
+                read_half,
+                peer_addr,
+                downstream: self.downstream.clone(),
+                listener: listener_recipient,
+                writer_shutdown,
+                codec: self.codec.clone(),
+            },
+            kameo::mailbox::bounded(self.mailbox_capacity),
+        );
 
         self.connection = Some(ClientConnection {
             id,

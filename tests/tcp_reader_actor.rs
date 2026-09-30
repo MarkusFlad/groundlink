@@ -4,7 +4,8 @@
 //! `ConnectionHalfClosed { half: Read, reason: Graceful }` to the given
 //! `listener` and also sends a `Shutdown<M>` message to its writer actor
 //! (replaced here by a `TestActor<Shutdown<SimpleString>>`) before it
-//! stops.
+//! stops. A `Shutdown<M>` sent to the reader reports the read half as
+//! closed and stops forwarding.
 
 use std::time::Duration;
 
@@ -61,4 +62,49 @@ async fn reader_actor_reports_read_half_closed_and_shuts_down_writer() {
     // writer actor.
     let received_shutdowns = TestActor::assert_received(&writer_stub_ref, 1, Duration::from_secs(1)).await;
     assert_eq!(received_shutdowns.len(), 1);
+}
+
+#[tokio::test]
+async fn shutdown_reports_read_half_closed_and_stops_forwarding() {
+    use tokio::io::AsyncWriteExt;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (client_stream, accepted) = tokio::join!(TcpStream::connect(addr), listener.accept());
+    let mut client_stream = client_stream.unwrap();
+    let (server_stream, peer_addr) = accepted.unwrap();
+    let (server_read, _server_write) = server_stream.into_split();
+
+    let downstream_ref = TestActor::<SimpleString>::spawn(TestActor::new());
+    let listener_ref = TestActor::<ConnectionHalfClosed>::spawn(TestActor::new());
+    let writer_stub_ref = TestActor::<Shutdown<SimpleString>>::spawn(TestActor::new());
+    let reader_ref = SimpleStringReader::spawn(TcpReaderArgs {
+        read_half: server_read,
+        peer_addr,
+        downstream: downstream_ref.clone().recipient(),
+        listener: listener_ref.clone().recipient(),
+        writer_shutdown: writer_stub_ref.clone().recipient(),
+        codec: SimpleStringCodec::default(),
+    });
+
+    client_stream
+        .write_all(&groundlink::encode_frame("before"))
+        .await
+        .unwrap();
+    TestActor::assert_received(&downstream_ref, 1, Duration::from_secs(1)).await;
+
+    reader_ref.tell(Shutdown::<SimpleString>::new()).await.unwrap();
+    let closed = TestActor::assert_received(&listener_ref, 1, Duration::from_secs(1)).await;
+    assert_eq!(closed[0].half, ConnectionHalf::Read);
+    assert_eq!(closed[0].reason, CloseReason::Graceful);
+    reader_ref.wait_for_shutdown().await;
+
+    // Nothing is read after the shutdown, and the writer is left alone:
+    // the server or client that sent the shutdown closes it itself.
+    let _ = client_stream.write_all(&groundlink::encode_frame("after")).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let forwarded = downstream_ref.ask(groundlink::GetMessages::new()).await.unwrap();
+    assert_eq!(forwarded, vec![SimpleString("before".to_string())]);
+    let shutdowns = writer_stub_ref.ask(groundlink::GetMessages::new()).await.unwrap();
+    assert!(shutdowns.is_empty());
 }

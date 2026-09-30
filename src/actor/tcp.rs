@@ -604,6 +604,11 @@ async fn accept_loop<M, C>(
     }
 }
 
+/// Initial size of a [`TcpReaderActor`]'s read buffer, and thus about how
+/// many bytes one read can fetch. Larger than tokio-util's default of
+/// 8 KiB, so that one system call reads many small messages.
+const READ_BUFFER_LEN: usize = 64 * 1024;
+
 /// Arguments for spawning a [`TcpReaderActor<M, C>`].
 pub struct TcpReaderArgs<M: Send + 'static, C> {
     /// Read half of the connection.
@@ -656,7 +661,7 @@ where
     type Error = io::Error;
 
     async fn on_start(args: Self::Args, actor_ref: ActorRef<Self>) -> Result<Self, Self::Error> {
-        let framed: FramedRead<_, C> = FramedRead::new(args.read_half, args.codec);
+        let framed: FramedRead<_, C> = FramedRead::with_capacity(args.read_half, args.codec, READ_BUFFER_LEN);
 
         let item_stream = stream::unfold(Some(framed), |state| async move {
             let mut framed = state?;

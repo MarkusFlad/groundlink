@@ -155,9 +155,10 @@ RUST_LOG=debug cargo run --example pus_server -- 9000 9001
 - [WireMessage](docs/wire-message.md): how servers and clients send
   messages, and why message types implement the `WireMessage` marker
   trait.
-- [Write batching](docs/write-batching.md): how the writer combines
-  queued messages into larger writes, with throughput measurements
-  before and after.
+- [Performance](docs/performance.md): what limits the throughput of
+  the TCP actors, the optimizations made so far (write batching, a larger
+  read buffer), one that was tried and not adopted, and throughput
+  measurements for each.
 
 ## Development
 
@@ -192,10 +193,10 @@ cargo test --release --test tcp_throughput -- --ignored --nocapture
 It prints one line per packet size: the throughput through the actors,
 the throughput of the direct connection, and the packets per second
 through the actors. Small packets are limited by the packet rate, since
-each one passes three mailboxes (reader, client, writer); the writer
-writes the packets queued together with one system call. Large packets
-are limited by copying the data. See [Write batching](docs/write-batching.md)
-for measured results.
+each one passes three mailboxes (reader, client, writer); reader and
+writer read and write many packets per system call. Large packets are
+limited by copying the data. See [Performance](docs/performance.md) for
+measured results.
 
 ## License
 

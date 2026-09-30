@@ -163,7 +163,7 @@ impl SpacePacketHeader {
     /// The header (6 bytes, big-endian) for a packet data field of length
     /// `data_len`, without validation: fields that exceed their bit width
     /// are truncated.
-    pub(crate) fn to_bytes(&self, data_len: usize) -> [u8; PRIMARY_HEADER_LEN] {
+    pub(crate) fn to_bytes(self, data_len: usize) -> [u8; PRIMARY_HEADER_LEN] {
         // Version number (3 bits, always 0) | type (1 bit) |
         // secondary header flag (1 bit) | APID (11 bits)
         let word0: u16 = ((self.packet_type.to_bit() as u16) << 12)

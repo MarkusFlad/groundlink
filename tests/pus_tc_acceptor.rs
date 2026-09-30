@@ -343,7 +343,7 @@ async fn tc_with_crc_error_over_tcp_is_rejected_and_connection_stays_open() {
     let server = SpacePacketServer::spawn(TcpServerArgs::new(
         "127.0.0.1:0".parse().unwrap(),
         acceptor.recipient::<SpacePacket>(),
-        SpacePacketCodec::default(),
+        SpacePacketCodec,
     ));
     let addr = server.ask(GetLocalAddr).await.unwrap();
     let mut stream = TcpStream::connect(addr).await.unwrap();

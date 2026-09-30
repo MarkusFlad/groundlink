@@ -169,7 +169,7 @@ impl<M> Default for Shutdown<M> {
 
 impl<M> Clone for Shutdown<M> {
     fn clone(&self) -> Self {
-        Shutdown(std::marker::PhantomData)
+        *self
     }
 }
 

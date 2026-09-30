@@ -101,7 +101,7 @@ async fn main() -> anyhow::Result<()> {
     let tc_server = SpacePacketServer::spawn(TcpServerArgs::new(
         SocketAddr::from(([0, 0, 0, 0], tc_port)),
         acceptor.recipient::<SpacePacket>(),
-        SpacePacketCodec::default(),
+        SpacePacketCodec,
     ));
 
     let tc_addr = tc_server

@@ -143,6 +143,10 @@ impl Default for CucFormat {
 
 impl CucFormat {
     /// Total length of the encoded time in bytes, including the P-field.
+    #[allow(
+        clippy::len_without_is_empty,
+        reason = "a CUC time has at least one coarse byte, so it is never empty"
+    )]
     pub fn len(&self) -> usize {
         self.p_field as usize + self.coarse_len as usize + self.fine_len as usize
     }

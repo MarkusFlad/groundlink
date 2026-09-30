@@ -325,10 +325,10 @@ where
 
 /// Sends `event` to `observer`, if any, with `tell`.
 async fn notify(observer: &Option<ConnectionObserver>, event: ConnectionEvent) {
-    if let Some(observer) = observer {
-        if let Err(err) = observer.tell(event).await {
-            warn!("could not send connection event: {err}");
-        }
+    if let Some(observer) = observer
+        && let Err(err) = observer.tell(event).await
+    {
+        warn!("could not send connection event: {err}");
     }
 }
 
@@ -1361,10 +1361,10 @@ where
     type Reply = ();
 
     async fn handle(&mut self, _msg: CloseRead, _ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        if let Some(conn) = &self.connection {
-            if let Err(err) = conn.reader_ref.tell(Shutdown::<M>::new()).await {
-                warn!("TcpClientActor: could not send shutdown to reader: {err}");
-            }
+        if let Some(conn) = &self.connection
+            && let Err(err) = conn.reader_ref.tell(Shutdown::<M>::new()).await
+        {
+            warn!("TcpClientActor: could not send shutdown to reader: {err}");
         }
     }
 }

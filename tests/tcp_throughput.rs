@@ -121,11 +121,11 @@ async fn direct() -> (TcpStream, TcpStream) {
 }
 
 fn rate(bytes: usize, elapsed: Duration) -> String {
-    let per_second = bytes as f64 / elapsed.as_secs_f64();
-    if per_second >= 1e9 {
-        format!("{:7.2} GB/s", per_second / 1e9)
+    let bits_per_second = bytes as f64 * 8.0 / elapsed.as_secs_f64();
+    if bits_per_second >= 1e9 {
+        format!("{:7.2} Gbit/s", bits_per_second / 1e9)
     } else {
-        format!("{:7.1} MB/s", per_second / 1e6)
+        format!("{:7.1} Mbit/s", bits_per_second / 1e6)
     }
 }
 
@@ -137,7 +137,7 @@ async fn space_packet_throughput_through_server_and_client() {
     }
     let tuned = format!("mailbox {TUNED_MAILBOX_CAPACITY}");
     println!(
-        "{:>10} {:>10} {:>10} {:>14} {:>14} {:>14} {:>12}",
+        "{:>10} {:>10} {:>10} {:>16} {:>16} {:>16} {:>12}",
         "data len", "packets", "MB sent", "actors", tuned, "direct", "packets/s"
     );
 
@@ -156,7 +156,7 @@ async fn space_packet_throughput_through_server_and_client() {
         let plain = transfer(sender, receiver, chunk, repeats).await;
 
         println!(
-            "{:>10} {:>10} {:>10.1} {:>14} {:>14} {:>14} {:>12.0}",
+            "{:>10} {:>10} {:>10.1} {:>16} {:>16} {:>16} {:>12.0}",
             data_len,
             packets,
             bytes as f64 / 1e6,

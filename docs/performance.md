@@ -238,7 +238,7 @@ cargo test --release --test tcp_throughput -- --ignored --nocapture
 Setup: Intel Core i5-3210M (2 cores, 4 threads), Linux 6.8, Rust 1.89,
 default release profile, loopback. Ranges show the lowest and highest
 value of several runs. Differences of about 10% can be variation between
-runs: the direct connection alone varied between 0.6 and 3.6 GB/s.
+runs: the direct connection alone varied between 4.8 and 28.8 Gbit/s.
 
 ### The optimizations
 
@@ -249,13 +249,13 @@ Throughput through the actors:
 
 | Data length (bytes) | Original | 1: write batching | 2: + read buffer | 3: + no tracing (current) |
 |---:|---:|---:|---:|---:|
-| 16 | 4.0 MB/s | 10.7–11.0 MB/s | 11.2 MB/s | 12.4–12.5 MB/s |
-| 64 | 14.7 MB/s | 33.8–34.9 MB/s | 35.5–36.1 MB/s | 39.1–39.5 MB/s |
-| 256 | 56.7 MB/s | 122–126 MB/s | 125–128 MB/s | 132–145 MB/s |
-| 1024 | 180 MB/s | 373–393 MB/s | 413–418 MB/s | 422–452 MB/s |
-| 4096 | 417 MB/s | 516–566 MB/s | 842–857 MB/s | 829–884 MB/s |
-| 16384 | 827 MB/s | 920–992 MB/s | 894–1020 MB/s | 0.98–1.06 GB/s |
-| 65536 | 1.12 GB/s | 1.07–1.15 GB/s | 0.98–0.99 GB/s | 0.95–1.03 GB/s |
+| 16 | 32.0 Mbit/s | 85.6–88.0 Mbit/s | 89.6 Mbit/s | 99.2–100.0 Mbit/s |
+| 64 | 117.6 Mbit/s | 270.4–279.2 Mbit/s | 284.0–288.8 Mbit/s | 312.8–316.0 Mbit/s |
+| 256 | 453.6 Mbit/s | 976–1008 Mbit/s | 1000–1024 Mbit/s | 1056–1160 Mbit/s |
+| 1024 | 1.44 Gbit/s | 2.98–3.14 Gbit/s | 3.30–3.34 Gbit/s | 3.38–3.62 Gbit/s |
+| 4096 | 3.34 Gbit/s | 4.13–4.53 Gbit/s | 6.74–6.86 Gbit/s | 6.63–7.07 Gbit/s |
+| 16384 | 6.62 Gbit/s | 7.36–7.94 Gbit/s | 7.15–8.16 Gbit/s | 7.84–8.48 Gbit/s |
+| 65536 | 8.96 Gbit/s | 8.56–9.20 Gbit/s | 7.84–7.92 Gbit/s | 7.60–8.24 Gbit/s |
 
 Packets per second through the actors:
 
@@ -277,30 +277,30 @@ the reader, the client and the writer.
 
 | Configuration | 64 B | 256 B | 1024 B | 4096 B |
 |---|---:|---:|---:|---:|
-| Default: 4 workers, mailbox 64 | 35 MB/s | 126–129 MB/s | 414–416 MB/s | 793–846 MB/s |
-| `current_thread` runtime | 28 MB/s | 98–102 MB/s | 298–314 MB/s | 577–637 MB/s |
-| 1 worker | 28–29 MB/s | 98–99 MB/s | 300–304 MB/s | 593–637 MB/s |
-| 2 workers | 44–45 MB/s | 147–153 MB/s | 463–476 MB/s | 692–917 MB/s |
-| Mailbox 256 | 41 MB/s | 141–146 MB/s | 455–460 MB/s | 783–865 MB/s |
-| Mailbox 1024 | 40–44 MB/s | 144–148 MB/s | 472–479 MB/s | 760–857 MB/s |
-| No tracing | 39–40 MB/s | 136–142 MB/s | 428–446 MB/s | 846–903 MB/s |
-| No tracing, 2 workers | 46–48 MB/s | 165–167 MB/s | 476–504 MB/s | 794–1020 MB/s |
-| No tracing, mailbox 256 | 45 MB/s | 155–160 MB/s | 489–499 MB/s | 862–915 MB/s |
-| No tracing, 2 workers, mailbox 256 | 52–53 MB/s | 174–181 MB/s | 487–538 MB/s | 968–992 MB/s |
-| No tracing, 2 workers, mailbox 1024 | 50–54 MB/s | 168–185 MB/s | 487–511 MB/s | 894–976 MB/s |
+| Default: 4 workers, mailbox 64 | 280 Mbit/s | 1008–1032 Mbit/s | 3.31–3.33 Gbit/s | 6.34–6.77 Gbit/s |
+| `current_thread` runtime | 224 Mbit/s | 784–816 Mbit/s | 2.38–2.51 Gbit/s | 4.62–5.10 Gbit/s |
+| 1 worker | 224–232 Mbit/s | 784–792 Mbit/s | 2.40–2.43 Gbit/s | 4.74–5.10 Gbit/s |
+| 2 workers | 352–360 Mbit/s | 1176–1224 Mbit/s | 3.70–3.81 Gbit/s | 5.54–7.34 Gbit/s |
+| Mailbox 256 | 328 Mbit/s | 1128–1168 Mbit/s | 3.64–3.68 Gbit/s | 6.26–6.92 Gbit/s |
+| Mailbox 1024 | 320–352 Mbit/s | 1152–1184 Mbit/s | 3.78–3.83 Gbit/s | 6.08–6.86 Gbit/s |
+| No tracing | 312–320 Mbit/s | 1088–1136 Mbit/s | 3.42–3.57 Gbit/s | 6.77–7.22 Gbit/s |
+| No tracing, 2 workers | 368–384 Mbit/s | 1320–1336 Mbit/s | 3.81–4.03 Gbit/s | 6.35–8.16 Gbit/s |
+| No tracing, mailbox 256 | 360 Mbit/s | 1240–1280 Mbit/s | 3.91–3.99 Gbit/s | 6.90–7.32 Gbit/s |
+| No tracing, 2 workers, mailbox 256 | 416–424 Mbit/s | 1392–1448 Mbit/s | 3.90–4.30 Gbit/s | 7.74–7.94 Gbit/s |
+| No tracing, 2 workers, mailbox 1024 | 400–432 Mbit/s | 1344–1480 Mbit/s | 3.90–4.09 Gbit/s | 7.15–7.81 Gbit/s |
 
 With the current version, the throughput test's own comparison of the
 mailbox capacities gave, over three runs:
 
 | Data length (bytes) | Mailbox 64 (default) | Mailbox 256 |
 |---:|---:|---:|
-| 16 | 12.4–12.5 MB/s | 14.1–14.4 MB/s |
-| 64 | 39.1–39.5 MB/s | 35.3–45.4 MB/s |
-| 256 | 132–145 MB/s | 144–151 MB/s |
-| 1024 | 422–452 MB/s | 441–491 MB/s |
-| 4096 | 829–884 MB/s | 764–905 MB/s |
-| 16384 | 0.98–1.06 GB/s | 0.87–1.04 GB/s |
-| 65536 | 0.95–1.03 GB/s | 1.14–1.19 GB/s |
+| 16 | 99.2–100.0 Mbit/s | 112.8–115.2 Mbit/s |
+| 64 | 312.8–316.0 Mbit/s | 282.4–363.2 Mbit/s |
+| 256 | 1056–1160 Mbit/s | 1152–1208 Mbit/s |
+| 1024 | 3.38–3.62 Gbit/s | 3.53–3.93 Gbit/s |
+| 4096 | 6.63–7.07 Gbit/s | 6.11–7.24 Gbit/s |
+| 16384 | 7.84–8.48 Gbit/s | 6.96–8.32 Gbit/s |
+| 65536 | 7.60–8.24 Gbit/s | 9.12–9.52 Gbit/s |
 
 ### Reading the results
 
@@ -317,9 +317,9 @@ mailbox capacities gave, over three runs:
 - **A mailbox capacity of 256** adds about 5–15% for small and medium
   packets, and **2 worker threads** instead of 4 about 13% on the test
   machine. Together with the optimizations, 1 KiB packets reach about
-  490–540 MB/s, close to three times the original.
-- **Large packets (16 KiB and more)** varied between about 0.9 and 1.2
-  GB/s over all versions and settings, without a clear trend. One such
+  3.9–4.3 Gbit/s, close to three times the original.
+- **Large packets (16 KiB and more)** varied between about 7 and 10
+  Gbit/s over all versions and settings, without a clear trend. One such
   packet already fills a read and a write, and the cost is copying the
   data.
 

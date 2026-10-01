@@ -302,6 +302,27 @@ mailbox capacities gave, over three runs:
 | 16384 | 7.84–8.48 Gbit/s | 6.96–8.32 Gbit/s |
 | 65536 | 7.60–8.24 Gbit/s | 9.12–9.52 Gbit/s |
 
+### A newer machine
+
+Measured on an Intel Core Ultra 9 275HX (24 cores, 1 thread per core),
+32 GiB RAM, Linux 6.12, Rust 1.98.1, default release profile, loopback,
+in January 2026, three runs each:
+
+| Data length (bytes) | Mailbox 64 (default) | Mailbox 256 | Direct | Packets/s |
+|---:|---:|---:|---:|---:|
+| 16 | 126.4–139.0 Mbit/s | 127.5–143.2 Mbit/s | 33.77–41.78 Gbit/s | 718,000–790,000 |
+| 64 | 388.6–396.1 Mbit/s | 404.7–426.3 Mbit/s | 45.60–83.13 Gbit/s | 694,000–707,000 |
+| 256 | 1.44–1.46 Gbit/s | 1.54–1.92 Gbit/s | 54.89–69.69 Gbit/s | 685,000–697,000 |
+| 1024 | 4.94–5.48 Gbit/s | 5.11–6.16 Gbit/s | 50.85–62.86 Gbit/s | 600,000–665,000 |
+| 4096 | 12.05–13.22 Gbit/s | 13.68–15.10 Gbit/s | 58.06–76.93 Gbit/s | 367,000–403,000 |
+| 16384 | 17.71–19.39 Gbit/s | 17.33–21.71 Gbit/s | 46.29–73.10 Gbit/s | 135,000–148,000 |
+| 65536 | 21.21–31.73 Gbit/s | 22.39–35.14 Gbit/s | 28.66–69.10 Gbit/s | 40,000–61,000 |
+
+Packets per second are through the actors with the default mailbox, as
+in the test's output. The spread of the direct column, and of the
+largest packet sizes, is larger than on the test machine above, which
+had only 4 threads to contend over.
+
 ### Reading the results
 
 - **Write batching** raised the throughput of packets up to 1 KiB by a

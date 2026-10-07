@@ -24,6 +24,8 @@ use tracing::{error, warn};
 
 use bytes::Bytes;
 
+use crate::actor::batch::{Batch, Downstream};
+use crate::impl_batch_message;
 use crate::protocol::ccsds::{PacketType, SEQUENCE_COUNT_MAX, SpacePacket};
 use crate::protocol::cuc::{CucFormat, CucTime};
 use crate::protocol::pus::service1::{FailureCode, RequestId, VerificationKind, VerificationReport};
@@ -114,7 +116,7 @@ async fn send_report(
 /// ```
 pub struct PusTmStamper {
     apid: u16,
-    target: Recipient<PusPacket>,
+    target: Downstream<PusPacket>,
     time_format: CucFormat,
     sequence_count: u16,
     message_type_counters: MessageTypeCounters,
@@ -122,11 +124,12 @@ pub struct PusTmStamper {
 
 impl PusTmStamper {
     /// Creates the stamper for the application `apid`. The stamped packets
-    /// go to `target`.
-    pub fn new(apid: u16, target: Recipient<PusPacket>) -> Self {
+    /// go to `target`, a `Recipient<PusPacket>` or, to pass the packets of
+    /// a [`Batch<PusTm>`] on as one batch, a `Recipient<Batch<PusPacket>>`.
+    pub fn new(apid: u16, target: impl Into<Downstream<PusPacket>>) -> Self {
         PusTmStamper {
             apid,
-            target,
+            target: target.into(),
             time_format: CucFormat::default(),
             sequence_count: 0,
             message_type_counters: MessageTypeCounters::default(),
@@ -173,11 +176,14 @@ impl Message<PusTm> for PusTmStamper {
         tm.header.apid = self.apid;
         tm.header.sequence_count = self.next_sequence_count();
 
-        if let Err(err) = self.target.tell(PusPacket::Tm(tm)).await {
+        if let Err(err) = self.target.send(PusPacket::Tm(tm)).await {
             warn!(apid = self.apid, error = %err, "could not send TM({service_type},{subtype})");
         }
     }
 }
+
+// Stamps the telemetry of a batch in order and passes it on together.
+impl_batch_message!(PusTmStamper, PusTm, outputs = [target]);
 
 /// Actor for an application with a fixed APID: performs the acceptance
 /// check for every PUS telecommand addressed to its APID, reports the
@@ -371,6 +377,14 @@ impl Message<SpacePacket> for PusTcAcceptor {
     }
 }
 
+// Batches, e.g. from a server created with `TcpServerArgs::batched`, are
+// handled packet by packet. The reports and the accepted TCs are sent at
+// once and not held until the end of the batch: otherwise the TM of a
+// service could overtake the acceptance report of its TC.
+impl_batch_message!(PusTcAcceptor, PusTc);
+impl_batch_message!(PusTcAcceptor, PusPacket);
+impl_batch_message!(PusTcAcceptor, SpacePacket);
+
 /// Actor for PUS service 17 "Test": answers every TC(17,1) "Are-You-Alive"
 /// with, in this order,
 /// 1. TM(1,3) "Successful Start of Execution Verification Report", if the
@@ -547,15 +561,17 @@ impl Message<PusTc> for PusTestServiceActor {
 ///
 /// Messages that cannot be converted are dropped and logged as an error.
 pub struct PusPacketAdapter<T> {
-    target: Recipient<PusPacket>,
+    target: Downstream<PusPacket>,
     _marker: PhantomData<fn(T)>,
 }
 
 impl<T> PusPacketAdapter<T> {
-    /// Creates an adapter that forwards to `target`.
-    pub fn new(target: Recipient<PusPacket>) -> Self {
+    /// Creates an adapter that forwards to `target`, a
+    /// `Recipient<PusPacket>` or, to pass the packets of a [`Batch<T>`] on
+    /// as one batch, a `Recipient<Batch<PusPacket>>`.
+    pub fn new(target: impl Into<Downstream<PusPacket>>) -> Self {
         PusPacketAdapter {
-            target,
+            target: target.into(),
             _marker: PhantomData,
         }
     }
@@ -589,8 +605,26 @@ where
                 return;
             }
         };
-        if let Err(err) = self.target.tell(packet).await {
+        if let Err(err) = self.target.send(packet).await {
             warn!(error = %err, "could not forward PUS packet");
         }
+    }
+}
+
+/// Converts the messages of a batch in order and passes them on together.
+impl<T> Message<Batch<T>> for PusPacketAdapter<T>
+where
+    T: Send + 'static,
+    PusPacket: TryFrom<T>,
+    <PusPacket as TryFrom<T>>::Error: Display,
+{
+    type Reply = ();
+
+    async fn handle(&mut self, batch: Batch<T>, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.target.hold();
+        for msg in batch {
+            <Self as Message<T>>::handle(self, msg, ctx).await;
+        }
+        self.target.release().await;
     }
 }

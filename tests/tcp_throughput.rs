@@ -6,10 +6,10 @@
 //! ```
 //!
 //! The sender writes pre-encoded packets, so encoding them is not measured;
-//! the receiver only counts bytes. The actors are measured with the
-//! default mailbox capacity and with `TUNED_MAILBOX_CAPACITY`. For
-//! comparison, the same data is also sent over a plain loopback connection
-//! without actors in between.
+//! the receiver only counts bytes. The actors are measured twice: with the
+//! server forwarding every packet on its own, and forwarding batches
+//! (`TcpServerArgs::batched`). For comparison, the same data is also sent
+//! over a plain loopback connection without actors in between.
 //!
 //! Ignored by default; run in release mode:
 //!
@@ -21,8 +21,8 @@ use std::time::{Duration, Instant};
 
 use bytes::BytesMut;
 use groundlink::{
-    ConnectionEvent, DEFAULT_MAILBOX_CAPACITY, GetLocalAddr, PacketType, SpacePacket, SpacePacketClient,
-    SpacePacketCodec, SpacePacketServer, TcpClientArgs, TcpServerArgs,
+    ConnectionEvent, GetLocalAddr, PacketType, SpacePacket, SpacePacketClient, SpacePacketCodec, SpacePacketServer,
+    TcpClientArgs, TcpServerArgs,
 };
 use kameo::actor::Spawn;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -36,9 +36,6 @@ const MAX_BYTES: usize = 256 << 20;
 /// Packets sent per measurement at most, so small packets do not take
 /// too long.
 const MAX_PACKETS: usize = 2_000_000;
-/// Mailbox capacity of the reader, writer and client in the second
-/// measurement through the actors.
-const TUNED_MAILBOX_CAPACITY: usize = 256;
 /// Packets per pre-encoded chunk that the sender writes repeatedly.
 const CHUNK_PACKETS: usize = 256;
 
@@ -80,20 +77,20 @@ async fn transfer(mut sender: TcpStream, mut receiver: TcpStream, chunk: BytesMu
 }
 
 /// A sender connected to a server that is coupled with a client, and the
-/// receiver the client has connected to. The reader, writer and client
-/// have mailboxes of `mailbox_capacity`.
-async fn through_actors(mailbox_capacity: usize) -> (TcpStream, TcpStream) {
+/// receiver the client has connected to. With `batched`, the server
+/// forwards the packets to the client in batches.
+async fn through_actors(batched: bool) -> (TcpStream, TcpStream) {
     let receiver_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let bind_addr = "127.0.0.1:0".parse().unwrap();
 
-    let client = SpacePacketClient::prepare_with_mailbox(kameo::mailbox::bounded(mailbox_capacity));
+    let client = SpacePacketClient::prepare();
+    let server_args = if batched {
+        TcpServerArgs::batched(bind_addr, client.actor_ref().clone().recipient(), SpacePacketCodec)
+    } else {
+        TcpServerArgs::new(bind_addr, client.actor_ref().clone().recipient(), SpacePacketCodec)
+    };
     let server = SpacePacketServer::spawn(
-        TcpServerArgs::new(
-            "127.0.0.1:0".parse().unwrap(),
-            client.actor_ref().clone().recipient(),
-            SpacePacketCodec,
-        )
-        .with_observer(client.actor_ref().clone().reply_recipient::<ConnectionEvent>())
-        .with_mailbox_capacity(mailbox_capacity),
+        server_args.with_observer(client.actor_ref().clone().reply_recipient::<ConnectionEvent>()),
     );
     client.spawn(
         TcpClientArgs::new(
@@ -101,8 +98,7 @@ async fn through_actors(mailbox_capacity: usize) -> (TcpStream, TcpStream) {
             server.clone().recipient(),
             SpacePacketCodec,
         )
-        .with_observer(server.clone().reply_recipient::<ConnectionEvent>())
-        .with_mailbox_capacity(mailbox_capacity),
+        .with_observer(server.clone().reply_recipient::<ConnectionEvent>()),
     );
 
     let sender = TcpStream::connect(server.ask(GetLocalAddr).await.unwrap())
@@ -135,10 +131,9 @@ async fn space_packet_throughput_through_server_and_client() {
     if cfg!(debug_assertions) {
         println!("note: debug build, the numbers are not representative; use --release");
     }
-    let tuned = format!("mailbox {TUNED_MAILBOX_CAPACITY}");
     println!(
         "{:>10} {:>10} {:>10} {:>16} {:>16} {:>16} {:>12}",
-        "data len", "packets", "MB sent", "actors", tuned, "direct", "packets/s"
+        "data len", "packets", "MB sent", "single", "batched", "direct", "packets/s"
     );
 
     for data_len in DATA_LENS {
@@ -148,10 +143,10 @@ async fn space_packet_throughput_through_server_and_client() {
         let repeats = packets.div_ceil(CHUNK_PACKETS);
         let (packets, bytes) = (repeats * CHUNK_PACKETS, repeats * chunk.len());
 
-        let (sender, receiver) = through_actors(DEFAULT_MAILBOX_CAPACITY).await;
+        let (sender, receiver) = through_actors(false).await;
         let actors = transfer(sender, receiver, chunk.clone(), repeats).await;
-        let (sender, receiver) = through_actors(TUNED_MAILBOX_CAPACITY).await;
-        let actors_tuned = transfer(sender, receiver, chunk.clone(), repeats).await;
+        let (sender, receiver) = through_actors(true).await;
+        let batched = transfer(sender, receiver, chunk.clone(), repeats).await;
         let (sender, receiver) = direct().await;
         let plain = transfer(sender, receiver, chunk, repeats).await;
 
@@ -161,9 +156,9 @@ async fn space_packet_throughput_through_server_and_client() {
             packets,
             bytes as f64 / 1e6,
             rate(bytes, actors),
-            rate(bytes, actors_tuned),
+            rate(bytes, batched),
             rate(bytes, plain),
-            packets as f64 / actors.as_secs_f64(),
+            packets as f64 / batched.as_secs_f64(),
         );
     }
 }

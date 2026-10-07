@@ -4,12 +4,11 @@ This document explains what limits the throughput of the TCP actors, the
 optimizations made so far, the settings an application can tune, what was
 tried and not adopted, and the measured throughput for each.
 
-Every message that goes over a connection is its own kameo message: one
-`SpacePacket`, one `PusPacket`, one `SimpleString`. That keeps the actors
-simple, because any actor can hand a single message to a server, a client
-or a writer. The optimizations below keep it that way; they only change
-how the actors move these messages to and from the socket and between
-each other.
+Actors handle one message at a time: one `SpacePacket`, one `PusPacket`,
+one `SimpleString`. That keeps them simple, because any actor can hand a
+single message to a server, a client or a writer. The optimizations below
+keep it that way; they only change how the messages move to and from the
+socket and, with batches, between the actors.
 
 ## The path of a packet
 
@@ -134,9 +133,91 @@ merges the features of all dependents:
 kameo = { version = "0.22", features = ["tracing"] }
 ```
 
+## Optimization 4: batches between actors
+
+After optimizations 1 to 3, the profile was dominated by the hops between
+actors: every packet passed three mailboxes on its own. A batch carries
+several messages through a mailbox as one kameo message, `Batch<M>`, so
+the cost of a hop is paid once per batch instead of once per packet.
+
+**Where batches form.** Only in the reader, and only from what has
+arrived together anyway: the messages decoded from one read of the
+socket, up to `max_batch_len` (default `DEFAULT_MAX_BATCH_LEN`, 64). The
+reader never waits for more messages. There is no timer and no flush that
+could be forgotten, a batch adds no latency, and under low load a batch
+simply holds a single message. Like write batching, this adapts to the
+load by itself.
+
+**How to use it.** Batching is chosen where the actors are connected. A
+server or client created with `batched` forwards batches to its
+downstream; one created with `new` forwards every message on its own, as
+before:
+
+```rust
+// The client handles `Batch<SpacePacket>` and passes it on to its writer.
+let server = SpacePacketServer::spawn(TcpServerArgs::batched(
+    addr,
+    client.recipient::<Batch<SpacePacket>>(),
+    SpacePacketCodec,
+));
+```
+
+`TcpServerActor`, `TcpClientActor` and `TcpWriterActor` handle `Batch<M>`
+next to `M`. The writer encodes a whole batch into its buffer and writes
+it as described under optimization 1.
+
+**Actors in between** keep their handler for a single message.
+`impl_batch_message!(MyActor, M)` adds the handler for `Batch<M>`, which
+calls the handler for `M` for each message in order. To keep a batch
+together on its way on, the actor sends through a `Downstream<M>` (made
+from a `Recipient<M>` or a `Recipient<Batch<M>>` with `into()`) and names
+that field: `impl_batch_message!(MyActor, M, outputs = [target])`. What
+the handler sends to `self.target` while a batch is handled is collected
+and sent on as one batch when the batch is done. `PusTmStamper` and
+`PusPacketAdapter` work this way.
+
+An output must not be named if its order relative to another output
+matters, because held messages leave later than those sent at once.
+`PusTcAcceptor` therefore handles batches packet by packet and sends its
+reports and the accepted TCs at once: otherwise the TM of a service could
+overtake the acceptance report of its TC.
+
+**Order.** Batches travel through the same mailboxes as single messages
+and connection events, and an actor finishes a batch, including sending
+on its outputs, before it handles the next message. The order of
+messages, and of messages relative to `Connected` and `Disconnected`, is
+therefore the same as without batches.
+
+**Backpressure.** A mailbox counts kameo messages, so with batches it
+holds up to `mailbox_capacity` batches of up to `max_batch_len` messages
+each: with the defaults 64 × 64 messages instead of 64. The defaults aim
+at throughput. Both values can be set; see
+[Batch length and mailbox capacity](#batch-length-and-mailbox-capacity)
+for what smaller values cost.
+
+Even without `batched`, the reader now takes the messages of one read
+together and forwards them one after the other, which saves hops through
+its own mailbox. `with_max_batch_len(1)` restores the previous behavior.
+
 ## Tuning in the application
 
-### Mailbox capacity
+### Batch length and mailbox capacity
+
+How many messages can queue up before backpressure reaches the sender is
+the product of `max_batch_len` and `mailbox_capacity`, per mailbox on the
+path. Smaller values bound that more tightly and cost throughput:
+
+```rust
+let args = TcpServerArgs::batched(addr, downstream, codec)
+    .with_max_batch_len(16)
+    .with_mailbox_capacity(4);
+```
+
+With 16 × 4, a mailbox holds at most 64 messages, as it did before
+batches existed, and 1 KiB packets still pass at about 5.8–6.4 Gbit/s; see
+the [measurements](#batches).
+
+### Mailbox capacity without batches
 
 The mailboxes of the reader and writer of each connection hold
 `DEFAULT_MAILBOX_CAPACITY` (64, kameo's default) messages. With small
@@ -202,8 +283,9 @@ Measured on top of write batching, with the default read buffer, it
 raised the throughput by about 20% for 16-byte packets, by about 5–10%
 for 64 to 1024 bytes, and not measurably above that. For the main use
 case of about 1 KiB packets, the gain did not justify the more complex
-reader, so the change was not adopted. It remains an option if very
-small packets matter.
+reader, so the change was not adopted. Batches (optimization 4) later
+removed most of that cost in a simpler way: the reader's mailbox is
+passed once per read instead of once per packet.
 
 ### Delayed writes
 
@@ -227,9 +309,10 @@ Packets through a `SpacePacketServer` coupled with a `SpacePacketClient`:
 sender ──▶ SpacePacketServer ──▶ SpacePacketClient ──▶ receiver
 ```
 
-It measures the actors with the default mailbox capacity and with a
-capacity of 256, and for comparison sends the same data over a plain
-loopback connection without actors in between ("direct"). Run it with:
+It measures the actors twice, with the server forwarding single packets
+and forwarding batches, and for comparison sends the same data over a
+plain loopback connection without actors in between ("direct"). Run it
+with:
 
 ```sh
 cargo test --release --test tcp_throughput -- --ignored --nocapture
@@ -323,6 +406,38 @@ in the test's output. The spread of the direct column, and of the
 largest packet sizes, is larger than on the test machine above, which
 had only 4 threads to contend over.
 
+### Batches
+
+On the i5 test machine, with the current version and the default
+settings, three runs each. "Single" is a server created with
+`TcpServerArgs::new`, "batched" one created with `TcpServerArgs::batched`.
+
+| Data length (bytes) | Single | Batched | Packets/s, batched |
+|---:|---:|---:|---:|
+| 16 | 118–124 Mbit/s | 632–904 Mbit/s | 3.6–5.2 million |
+| 64 | 354–371 Mbit/s | 2.44–2.60 Gbit/s | 4.4–4.6 million |
+| 256 | 1.25 Gbit/s | 6.37–6.62 Gbit/s | 3.0–3.2 million |
+| 1024 | 3.74–3.78 Gbit/s | 7.79–7.97 Gbit/s | 946,000–967,000 |
+| 4096 | 6.58–6.78 Gbit/s | 8.9–9.6 Gbit/s | 271,000–292,000 |
+| 16384 | 7.5–8.4 Gbit/s | 8.0–9.8 Gbit/s | 61,000–75,000 |
+| 65536 | 8.8–9.3 Gbit/s | 8.8–9.1 Gbit/s | 17,000 |
+
+"Single" is faster than "3: + no tracing" above because the reader now
+takes the messages of one read together.
+
+Batch length and mailbox capacity, measured on the same machine with a
+prototype of the batched path, three runs each, throughput in Gbit/s:
+
+| Max batch length × mailbox capacity | Messages per mailbox | 16 B | 64 B | 256 B | 1024 B | 4096 B |
+|---|---:|---:|---:|---:|---:|---:|
+| 16 × 4 | 64 | 0.39–0.42 | 1.06–1.25 | 3.04–3.16 | 5.85–6.38 | 7.58–8.16 |
+| 16 × 8 | 128 | 0.45–0.50 | 1.42–1.54 | 3.70–4.26 | 6.76–7.03 | 6.74–9.28 |
+| 64 × 1 | 64 | 0.43–0.45 | 1.22–1.27 | 3.44–3.82 | 5.98–6.86 | 7.04–8.08 |
+| 64 × 4 | 256 | 0.62–0.67 | 1.84–2.09 | 4.34–5.18 | 5.98–8.16 | 7.88–9.12 |
+| 16 × 64 | 1024 | 0.61–0.68 | 1.87–2.01 | 4.30–5.30 | 6.12–8.24 | 6.37–8.24 |
+| 64 × 64 (default) | 4096 | 0.83–0.89 | 2.68–2.70 | 6.29–6.70 | 7.69–7.98 | 8.56–9.68 |
+| 256 × 64 | 16384 | 0.71–0.74 | 2.64–2.75 | 6.36–6.52 | 8.08–9.36 | 8.40–10.48 |
+
 ### Reading the results
 
 - **Write batching** raised the throughput of packets up to 1 KiB by a
@@ -339,6 +454,12 @@ had only 4 threads to contend over.
   packets, and **2 worker threads** instead of 4 about 13% on the test
   machine. Together with the optimizations, 1 KiB packets reach about
   3.9–4.3 Gbit/s, close to three times the original.
+- **Batches** remove most of the cost of the hops between actors. 1 KiB
+  packets pass at about 8 Gbit/s, twice as fast as single messages and
+  more than five times the original; the smallest packets gain a factor
+  of 5 to 7 and reach several million packets per second. With the same
+  bound on queued messages as before (16 × 4), 1 KiB packets still gain
+  a factor of about 1.6.
 - **Large packets (16 KiB and more)** varied between about 7 and 10
   Gbit/s over all versions and settings, without a clear trend. One such
   packet already fills a read and a write, and the cost is copying the
@@ -346,8 +467,6 @@ had only 4 threads to contend over.
 
 ## Possible next steps
 
-- **Reading without the reader's mailbox**, as described above, if very
-  small packets become important.
 - **Avoid the copy for large packets.** The encoder copies the packet
   data into the buffer. Writing large packets with vectored writes
   (header and data separately) would skip that copy.

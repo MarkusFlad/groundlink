@@ -66,6 +66,19 @@ where
     }
 }
 
+/// Stores every message of an incoming [`Batch<M>`](crate::Batch) in the
+/// internal vector, like single messages.
+impl<M> Message<crate::Batch<M>> for TestActor<M>
+where
+    M: Send + 'static,
+{
+    type Reply = ();
+
+    async fn handle(&mut self, batch: crate::Batch<M>, _ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.received.extend(batch);
+    }
+}
+
 /// Query message: replies (via `ask`) with a copy of all messages received
 /// so far.
 ///

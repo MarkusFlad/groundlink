@@ -13,6 +13,12 @@
 //! accepted or to an opened connection. This requires `M` to implement
 //! [`WireMessage`].
 //!
+//! All four actors also handle [`Batch<M>`], several messages as one kameo
+//! message. A server or client created with `batched` forwards the
+//! messages that arrive together as one batch, which raises the throughput
+//! of small messages several times; see the [`batch`](crate::actor::batch)
+//! module.
+//!
 //! The protocols of this crate get type aliases, e.g. [`PusServer`] for
 //! `TcpServerActor<PusPacket, PusCodec>`.
 //!
@@ -40,6 +46,7 @@ use tokio_util::codec::FramedRead;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
+use crate::actor::batch::{Batch, DEFAULT_MAX_BATCH_LEN, Downstream};
 use crate::protocol::ccsds::{SpacePacket, SpacePacketCodec};
 use crate::protocol::pus::{PusCodec, PusPacket};
 use crate::protocol::simple_string::{SimpleString, SimpleStringCodec};
@@ -150,8 +157,9 @@ pub struct TcpServerArgs<M: Send + 'static, C> {
     /// Address to bind to. Use port 0 to let the operating system choose a
     /// port and query it with [`GetLocalAddr`].
     pub bind_addr: SocketAddr,
-    /// Actor that receives every message read from any connection.
-    pub downstream: Recipient<M>,
+    /// Receives every message read from any connection, single or in
+    /// batches.
+    pub downstream: Downstream<M>,
     /// Keepalive settings for accepted connections; `None` keeps the
     /// system defaults (usually no keepalive).
     pub keepalive: Option<KeepAlive>,
@@ -172,18 +180,41 @@ pub struct TcpServerArgs<M: Send + 'static, C> {
     /// throughput of small messages, but more messages queue up before
     /// backpressure reaches the sender.
     pub mailbox_capacity: usize,
+    /// How many messages that one read from the socket has delivered are
+    /// forwarded to `downstream` at once at most. Larger batches raise the
+    /// throughput of small messages; smaller ones limit how many messages
+    /// queue up before backpressure reaches the peer, since a mailbox
+    /// holds [`mailbox_capacity`](Self::mailbox_capacity) batches. 1
+    /// forwards every message on its own.
+    pub max_batch_len: usize,
 }
 
 impl<M: Send + 'static, C> TcpServerArgs<M, C> {
     /// Arguments with [`KeepAlive::default`],
     /// [`ConnectionPolicy::WaitForClose`], no observer,
-    /// [`DEFAULT_WRITE_TIMEOUT`] and [`DEFAULT_MAILBOX_CAPACITY`]; change
-    /// them with [`with_keepalive`](Self::with_keepalive),
+    /// [`DEFAULT_WRITE_TIMEOUT`], [`DEFAULT_MAILBOX_CAPACITY`] and
+    /// [`DEFAULT_MAX_BATCH_LEN`]; change them with
+    /// [`with_keepalive`](Self::with_keepalive),
     /// [`with_connection_policy`](Self::with_connection_policy),
     /// [`with_observer`](Self::with_observer),
-    /// [`with_write_timeout`](Self::with_write_timeout) and
-    /// [`with_mailbox_capacity`](Self::with_mailbox_capacity).
+    /// [`with_write_timeout`](Self::with_write_timeout),
+    /// [`with_mailbox_capacity`](Self::with_mailbox_capacity) and
+    /// [`with_max_batch_len`](Self::with_max_batch_len). `downstream`
+    /// receives every message on its own; see [`batched`](Self::batched).
     pub fn new(bind_addr: SocketAddr, downstream: Recipient<M>, codec: C) -> Self {
+        Self::with_downstream(bind_addr, downstream.into(), codec)
+    }
+
+    /// Like [`new`](Self::new), but `downstream` receives the messages in
+    /// batches: what one read from the socket has delivered arrives as one
+    /// [`Batch<M>`], which costs far less per message than sending each
+    /// one on its own. See [`impl_batch_message!`](crate::impl_batch_message)
+    /// for how an actor handles batches.
+    pub fn batched(bind_addr: SocketAddr, downstream: Recipient<Batch<M>>, codec: C) -> Self {
+        Self::with_downstream(bind_addr, downstream.into(), codec)
+    }
+
+    fn with_downstream(bind_addr: SocketAddr, downstream: Downstream<M>, codec: C) -> Self {
         TcpServerArgs {
             bind_addr,
             downstream,
@@ -193,6 +224,7 @@ impl<M: Send + 'static, C> TcpServerArgs<M, C> {
             observer: None,
             write_timeout: Some(DEFAULT_WRITE_TIMEOUT),
             mailbox_capacity: DEFAULT_MAILBOX_CAPACITY,
+            max_batch_len: DEFAULT_MAX_BATCH_LEN,
         }
     }
 
@@ -235,6 +267,17 @@ impl<M: Send + 'static, C> TcpServerArgs<M, C> {
     pub fn with_mailbox_capacity(mut self, capacity: usize) -> Self {
         assert!(capacity > 0, "mailbox capacity must be at least 1");
         self.mailbox_capacity = capacity;
+        self
+    }
+
+    /// Forwards at most `max_batch_len` messages to `downstream` at once.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `max_batch_len` is 0.
+    pub fn with_max_batch_len(mut self, max_batch_len: usize) -> Self {
+        assert!(max_batch_len > 0, "max batch length must be at least 1");
+        self.max_batch_len = max_batch_len;
         self
     }
 }
@@ -326,6 +369,7 @@ where
             listener,
             AcceptConfig {
                 downstream: args.downstream,
+                max_batch_len: args.max_batch_len,
                 keepalive: args.keepalive,
                 policy: args.connection_policy,
                 codec: args.codec,
@@ -530,9 +574,32 @@ where
     }
 }
 
+impl<M, C> Message<Batch<M>> for TcpServerActor<M, C>
+where
+    M: WireMessage + Send + 'static,
+    C: MessageCodec<M>,
+{
+    type Reply = ();
+
+    async fn handle(&mut self, batch: Batch<M>, _ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let Some((peer_addr, writer)) = self
+            .connection
+            .as_ref()
+            .and_then(|conn| conn.writer.as_ref().map(|writer| (conn.peer_addr, writer)))
+        else {
+            warn!("TcpServerActor: messages dropped, no connection");
+            return;
+        };
+        if let Err(err) = writer.actor_ref.tell(batch).await {
+            warn!("TcpServerActor: messages to {peer_addr} dropped, connection closed: {err}");
+        }
+    }
+}
+
 /// Settings of an [`accept_loop`], taken from the [`TcpServerArgs`].
 struct AcceptConfig<M: Send + 'static, C> {
-    downstream: Recipient<M>,
+    downstream: Downstream<M>,
+    max_batch_len: usize,
     keepalive: Option<KeepAlive>,
     policy: ConnectionPolicy,
     codec: C,
@@ -616,6 +683,7 @@ async fn accept_loop<M, C>(
                     read_half,
                     peer_addr,
                     downstream: config.downstream.clone(),
+                    max_batch_len: config.max_batch_len,
                     listener: listener_recipient.clone(),
                     writer_shutdown,
                     codec: config.codec.clone(),
@@ -641,8 +709,8 @@ pub struct TcpReaderArgs<M: Send + 'static, C> {
     pub read_half: OwnedReadHalf,
     /// Address of the remote peer.
     pub peer_addr: SocketAddr,
-    /// Actor that receives every decoded message.
-    pub downstream: Recipient<M>,
+    /// Receives every decoded message, single or in batches.
+    pub downstream: Downstream<M>,
     /// Receives [`ConnectionHalfClosed`] when the read half ends.
     pub listener: Recipient<ConnectionHalfClosed>,
     /// Writer of the same connection; asked to shut down when the read half
@@ -650,12 +718,56 @@ pub struct TcpReaderArgs<M: Send + 'static, C> {
     pub writer_shutdown: Recipient<Shutdown<M>>,
     /// Codec that decodes the messages.
     pub codec: C,
+    /// How many messages that have arrived together are forwarded at once
+    /// at most; see [`TcpServerArgs::max_batch_len`].
+    pub max_batch_len: usize,
+}
+
+impl<M: Send + 'static, C> TcpReaderArgs<M, C> {
+    /// Arguments with [`DEFAULT_MAX_BATCH_LEN`]; change it with
+    /// [`with_max_batch_len`](Self::with_max_batch_len). `downstream` is a
+    /// `Recipient<M>` or, to forward batches, a `Recipient<Batch<M>>`.
+    pub fn new(
+        read_half: OwnedReadHalf,
+        peer_addr: SocketAddr,
+        downstream: impl Into<Downstream<M>>,
+        listener: Recipient<ConnectionHalfClosed>,
+        writer_shutdown: Recipient<Shutdown<M>>,
+        codec: C,
+    ) -> Self {
+        TcpReaderArgs {
+            read_half,
+            peer_addr,
+            downstream: downstream.into(),
+            listener,
+            writer_shutdown,
+            codec,
+            max_batch_len: DEFAULT_MAX_BATCH_LEN,
+        }
+    }
+
+    /// Forwards at most `max_batch_len` messages at once.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `max_batch_len` is 0.
+    pub fn with_max_batch_len(mut self, max_batch_len: usize) -> Self {
+        assert!(max_batch_len > 0, "max batch length must be at least 1");
+        self.max_batch_len = max_batch_len;
+        self
+    }
 }
 
 /// Actor that owns the read half ([`OwnedReadHalf`]) of a TCP connection and
 /// reads messages of type `M` with the codec `C`.
 ///
-/// Every decoded message is forwarded to `downstream`. When the peer closes
+/// Every decoded message is forwarded to `downstream`. Messages that one
+/// read from the socket has delivered together are forwarded together, up
+/// to `max_batch_len` at once: as one [`Batch<M>`] if `downstream` takes
+/// batches, otherwise one after the other. The actor never waits for more
+/// messages to fill a batch.
+///
+/// When the peer closes
 /// the connection or a read or decode error occurs, the actor reports
 /// [`ConnectionHalfClosed`] with [`ConnectionHalf::Read`] to its `listener`,
 /// sends [`Shutdown<M>`] to the writer and stops. [`Shutdown<M>`] sent to
@@ -666,7 +778,7 @@ where
     C: MessageCodec<M>,
 {
     peer_addr: SocketAddr,
-    downstream: Recipient<M>,
+    downstream: Downstream<M>,
     listener: Recipient<ConnectionHalfClosed>,
     writer_shutdown: Recipient<Shutdown<M>>,
     _codec: PhantomData<fn() -> C>,
@@ -698,6 +810,8 @@ where
             };
             Some((outcome, None))
         })
+        // Whatever is decoded already, without waiting for more.
+        .ready_chunks(args.max_batch_len)
         .boxed();
 
         actor_ref.attach_stream(item_stream, (), ());
@@ -712,7 +826,7 @@ where
     }
 }
 
-impl<M, C> Message<StreamMessage<ReadOutcome<M>, (), ()>> for TcpReaderActor<M, C>
+impl<M, C> Message<StreamMessage<Vec<ReadOutcome<M>>, (), ()>> for TcpReaderActor<M, C>
 where
     M: Send + 'static,
     C: MessageCodec<M>,
@@ -721,19 +835,34 @@ where
 
     async fn handle(
         &mut self,
-        msg: StreamMessage<ReadOutcome<M>, (), ()>,
+        msg: StreamMessage<Vec<ReadOutcome<M>>, (), ()>,
         ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        match msg {
+        let outcomes = match msg {
             StreamMessage::Started(()) => {
                 debug!("stream attached for {}", self.peer_addr);
+                return;
             }
-            StreamMessage::Next(ReadOutcome::Item(item)) => {
-                if let Err(err) = self.downstream.tell(item).await {
-                    warn!("could not send message to downstream actor: {err}");
-                }
+            StreamMessage::Next(outcomes) => outcomes,
+            StreamMessage::Finished(()) => {
+                ctx.stop();
+                return;
             }
-            StreamMessage::Next(ReadOutcome::Closed(reason)) => {
+        };
+        let mut closed = None;
+        let mut items = Vec::with_capacity(outcomes.len());
+        for outcome in outcomes {
+            match outcome {
+                ReadOutcome::Item(item) => items.push(item),
+                ReadOutcome::Closed(reason) => closed = Some(reason),
+            }
+        }
+        if let Err(err) = self.downstream.send_all(items).await {
+            warn!("could not send message to downstream actor: {err}");
+        }
+        match closed {
+            None => {}
+            Some(reason) => {
                 info!("read half of {} closed: {reason:?}", self.peer_addr);
                 if let Err(err) = self
                     .listener
@@ -751,9 +880,6 @@ where
                     warn!("could not send shutdown to writer actor: {err}");
                 }
 
-                ctx.stop();
-            }
-            StreamMessage::Finished(()) => {
                 ctx.stop();
             }
         }
@@ -1045,6 +1171,35 @@ where
     }
 }
 
+impl<M, C> Message<Batch<M>> for TcpWriterActor<M, C>
+where
+    M: Send + 'static,
+    C: MessageCodec<M>,
+{
+    type Reply = ();
+
+    async fn handle(&mut self, batch: Batch<M>, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        if self.shutdown.is_cancelled() {
+            self.close(CloseReason::Graceful, ctx).await;
+            return;
+        }
+        for item in batch {
+            let len = self.buf.len();
+            if let Err(err) = self.codec.encode(item, &mut self.buf) {
+                self.buf.truncate(len);
+                warn!("message to {} dropped, cannot be encoded: {err}", self.peer_addr);
+                continue;
+            }
+            if self.buf.len() >= WRITE_BATCH_LEN && !self.flush(ctx).await {
+                return;
+            }
+        }
+        if !self.buf.is_empty() && !self.flush_queued {
+            self.flush_queued = ctx.actor_ref().tell(Flush(PhantomData)).try_send().is_ok();
+        }
+    }
+}
+
 /// The writer of a connection, as seen by its server or client.
 struct WriterHandle<M, C>
 where
@@ -1104,8 +1259,9 @@ where
 pub struct TcpClientArgs<M: Send + 'static, C> {
     /// Address to connect to.
     pub remote_addr: SocketAddr,
-    /// Actor that receives every message read from the connection.
-    pub downstream: Recipient<M>,
+    /// Receives every message read from the connection, single or in
+    /// batches.
+    pub downstream: Downstream<M>,
     /// Keepalive settings for the connection; `None` keeps the system
     /// defaults (usually no keepalive).
     pub keepalive: Option<KeepAlive>,
@@ -1123,16 +1279,36 @@ pub struct TcpClientArgs<M: Send + 'static, C> {
     /// throughput of small messages, but more messages queue up before
     /// backpressure reaches the sender.
     pub mailbox_capacity: usize,
+    /// How many messages that one read from the socket has delivered are
+    /// forwarded to `downstream` at once at most. Larger batches raise the
+    /// throughput of small messages; smaller ones limit how many messages
+    /// queue up before backpressure reaches the peer, since a mailbox
+    /// holds [`mailbox_capacity`](Self::mailbox_capacity) batches. 1
+    /// forwards every message on its own.
+    pub max_batch_len: usize,
 }
 
 impl<M: Send + 'static, C> TcpClientArgs<M, C> {
     /// Arguments with [`KeepAlive::default`], no observer,
-    /// [`DEFAULT_WRITE_TIMEOUT`] and [`DEFAULT_MAILBOX_CAPACITY`]; change
-    /// them with [`with_keepalive`](Self::with_keepalive),
+    /// [`DEFAULT_WRITE_TIMEOUT`], [`DEFAULT_MAILBOX_CAPACITY`] and
+    /// [`DEFAULT_MAX_BATCH_LEN`]; change them with
+    /// [`with_keepalive`](Self::with_keepalive),
     /// [`with_observer`](Self::with_observer),
-    /// [`with_write_timeout`](Self::with_write_timeout) and
-    /// [`with_mailbox_capacity`](Self::with_mailbox_capacity).
+    /// [`with_write_timeout`](Self::with_write_timeout),
+    /// [`with_mailbox_capacity`](Self::with_mailbox_capacity) and
+    /// [`with_max_batch_len`](Self::with_max_batch_len). `downstream`
+    /// receives every message on its own; see [`batched`](Self::batched).
     pub fn new(remote_addr: SocketAddr, downstream: Recipient<M>, codec: C) -> Self {
+        Self::with_downstream(remote_addr, downstream.into(), codec)
+    }
+
+    /// Like [`new`](Self::new), but `downstream` receives the messages in
+    /// batches; see [`TcpServerArgs::batched`].
+    pub fn batched(remote_addr: SocketAddr, downstream: Recipient<Batch<M>>, codec: C) -> Self {
+        Self::with_downstream(remote_addr, downstream.into(), codec)
+    }
+
+    fn with_downstream(remote_addr: SocketAddr, downstream: Downstream<M>, codec: C) -> Self {
         TcpClientArgs {
             remote_addr,
             downstream,
@@ -1141,6 +1317,7 @@ impl<M: Send + 'static, C> TcpClientArgs<M, C> {
             observer: None,
             write_timeout: Some(DEFAULT_WRITE_TIMEOUT),
             mailbox_capacity: DEFAULT_MAILBOX_CAPACITY,
+            max_batch_len: DEFAULT_MAX_BATCH_LEN,
         }
     }
 
@@ -1174,6 +1351,17 @@ impl<M: Send + 'static, C> TcpClientArgs<M, C> {
     pub fn with_mailbox_capacity(mut self, capacity: usize) -> Self {
         assert!(capacity > 0, "mailbox capacity must be at least 1");
         self.mailbox_capacity = capacity;
+        self
+    }
+
+    /// Forwards at most `max_batch_len` messages to `downstream` at once.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `max_batch_len` is 0.
+    pub fn with_max_batch_len(mut self, max_batch_len: usize) -> Self {
+        assert!(max_batch_len > 0, "max batch length must be at least 1");
+        self.max_batch_len = max_batch_len;
         self
     }
 }
@@ -1237,7 +1425,8 @@ where
     C: MessageCodec<M>,
 {
     remote_addr: SocketAddr,
-    downstream: Recipient<M>,
+    downstream: Downstream<M>,
+    max_batch_len: usize,
     observer: Option<ConnectionObserver>,
     keepalive: Option<KeepAlive>,
     write_timeout: Option<Duration>,
@@ -1288,6 +1477,7 @@ where
         Ok(TcpClientActor {
             remote_addr: args.remote_addr,
             downstream: args.downstream,
+            max_batch_len: args.max_batch_len,
             observer: args.observer,
             keepalive: args.keepalive,
             write_timeout: args.write_timeout,
@@ -1369,6 +1559,7 @@ where
                 read_half,
                 peer_addr,
                 downstream: self.downstream.clone(),
+                max_batch_len: self.max_batch_len,
                 listener: listener_recipient,
                 writer_shutdown,
                 codec: self.codec.clone(),
@@ -1624,6 +1815,29 @@ where
                 }
             }
             _ => warn!("TcpClientActor: message dropped, not connected"),
+        }
+    }
+}
+
+impl<M, C> Message<Batch<M>> for TcpClientActor<M, C>
+where
+    M: WireMessage + Send + 'static,
+    C: MessageCodec<M>,
+{
+    type Reply = ();
+
+    async fn handle(&mut self, batch: Batch<M>, _ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        if let Some(pending) = &mut self.pending {
+            pending.messages.extend(batch);
+            return;
+        }
+        match &self.connection {
+            Some(conn) if !conn.closing => {
+                if let Err(err) = conn.writer.actor_ref.tell(batch).await {
+                    warn!("TcpClientActor: could not send messages to writer: {err}");
+                }
+            }
+            _ => warn!("TcpClientActor: messages dropped, not connected"),
         }
     }
 }

@@ -19,6 +19,11 @@ and [tokio](https://tokio.rs).
   connects to its remote address, and when either connection ends, the other
   one is closed. The events travel with the messages, so none is lost or
   overtaken.
+- **Batches**: a server or client created with `batched` forwards the
+  messages that arrive together as one `Batch<M>`, which raises the
+  throughput of small messages several times without adding latency.
+  Actors still handle one message at a time; `impl_batch_message!` adds
+  the handling of batches.
 - **CCSDS Space Packets** (CCSDS 133.0-B-2): packet types and a codec.
 - **CCSDS Unsegmented Time Code (CUC)**: conversion from and to UTC.
 - **ECSS PUS-C**: telecommand and telemetry packets on top of Space Packets,
@@ -133,6 +138,33 @@ receives plain Space Packets, so that the `PusTcAcceptor` can answer an
 invalid PUS packet (for example one with a CRC error) with TM(1,2) instead
 of dropping it.
 
+### Space Packet relay with batches
+
+A relay that forwards Space Packets between a peer that connects to it
+and a target it connects to, and passes them between its actors in
+batches:
+
+```text
+peer A ──▶ SpacePacketServer ──Batch──▶ PacketCounter ──Batch──▶ SpacePacketClient ──▶ peer B
+       ◀──                   ◀──Batch── PacketCounter ◀──Batch──                   ◀──
+```
+
+```sh
+cargo run --release --example space_packet_relay -- 9000 127.0.0.1 9001
+```
+
+This listens on port 9000 and, when a peer connects, connects to
+`127.0.0.1:9001`. It prints the forwarded packets and bytes every five
+seconds.
+
+The example shows the three parts of the batched path: a server and a
+client created with `batched`, which forward what arrives together as one
+`Batch<SpacePacket>`; an actor in between, `PacketCounter`, whose handler
+takes one packet at a time and gets the handling of batches from
+`impl_batch_message!`; and its `Downstream`, through which the packets of
+a batch leave it as one batch again. See
+[Performance](docs/performance.md) for what batches gain.
+
 ### Simple string server
 
 ```sh
@@ -156,9 +188,10 @@ RUST_LOG=debug cargo run --example pus_server -- 9000 9001
   messages, and why message types implement the `WireMessage` marker
   trait.
 - [Performance](docs/performance.md): what limits the throughput of
-  the TCP actors, the optimizations made so far, the settings an
-  application can tune (mailbox capacity, worker threads), what was tried
-  and not adopted, and throughput measurements for each.
+  the TCP actors, the optimizations made so far (among them batches
+  between actors), the settings an application can tune (batch length,
+  mailbox capacity, worker threads), what was tried and not adopted, and
+  throughput measurements for each.
 
 ## Development
 
@@ -181,9 +214,10 @@ For each size of the packet data field (16 bytes to 64 KiB), the sender
 writes up to 256 MiB (at most 2 million packets) of pre-encoded packets,
 and the receiver counts the bytes until all have arrived. Encoding and
 decoding at the two ends are therefore not measured. The actors are
-measured with the default mailbox capacity and with a capacity of 256.
-The same data is also sent over a plain loopback connection without
-actors in between, as a baseline.
+measured twice: with the server forwarding every packet on its own, and
+forwarding batches (`TcpServerArgs::batched`). The same data is also sent
+over a plain loopback connection without actors in between, as a
+baseline.
 
 The test is ignored by default and only meaningful in release mode:
 
@@ -192,12 +226,12 @@ cargo test --release --test tcp_throughput -- --ignored --nocapture
 ```
 
 It prints one line per packet size: the throughput through the actors
-with both mailbox capacities, the throughput of the direct connection,
-and the packets per second through the actors with the default capacity. Small packets are limited by the packet rate, since
-each one passes three mailboxes (reader, client, writer); reader and
-writer read and write many packets per system call. Large packets are
-limited by copying the data. See [Performance](docs/performance.md) for
-measured results.
+with single packets and with batches, the throughput of the direct
+connection, and the packets per second with batches. Single small
+packets are limited by the packet rate, since each one passes three
+mailboxes (reader, client, writer); batches pass them together. Large
+packets are limited by copying the data. See
+[Performance](docs/performance.md) for measured results.
 
 ## License
 

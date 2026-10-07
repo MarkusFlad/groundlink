@@ -39,14 +39,14 @@ async fn reader_actor_reports_read_half_closed_and_shuts_down_writer() {
     let writer_stub_ref = TestActor::<Shutdown<SimpleString>>::spawn(TestActor::new());
     let writer_shutdown = writer_stub_ref.clone().recipient::<Shutdown<SimpleString>>();
 
-    let _reader_ref = SimpleStringReader::spawn(TcpReaderArgs {
-        read_half: server_read,
+    let _reader_ref = SimpleStringReader::spawn(TcpReaderArgs::new(
+        server_read,
         peer_addr,
         downstream,
-        listener: listener_recipient,
+        listener_recipient,
         writer_shutdown,
-        codec: SimpleStringCodec::default(),
-    });
+        SimpleStringCodec::default(),
+    ));
 
     // The client closes the connection -> the server reads EOF on the read half.
     drop(client_stream);
@@ -78,14 +78,14 @@ async fn shutdown_reports_read_half_closed_and_stops_forwarding() {
     let downstream_ref = TestActor::<SimpleString>::spawn(TestActor::new());
     let listener_ref = TestActor::<ConnectionHalfClosed>::spawn(TestActor::new());
     let writer_stub_ref = TestActor::<Shutdown<SimpleString>>::spawn(TestActor::new());
-    let reader_ref = SimpleStringReader::spawn(TcpReaderArgs {
-        read_half: server_read,
+    let reader_ref = SimpleStringReader::spawn(TcpReaderArgs::new(
+        server_read,
         peer_addr,
-        downstream: downstream_ref.clone().recipient(),
-        listener: listener_ref.clone().recipient(),
-        writer_shutdown: writer_stub_ref.clone().recipient(),
-        codec: SimpleStringCodec::default(),
-    });
+        downstream_ref.clone().recipient::<SimpleString>(),
+        listener_ref.clone().recipient(),
+        writer_stub_ref.clone().recipient(),
+        SimpleStringCodec::default(),
+    ));
 
     client_stream
         .write_all(&groundlink::encode_frame("before"))

@@ -151,8 +151,10 @@ impl CucFormat {
         self.p_field as usize + self.coarse_len as usize + self.fine_len as usize
     }
 
-    /// The P-field byte for this format.
-    pub fn p_field_byte(&self) -> u8 {
+    /// The P-field byte for this format, which must be valid (see
+    /// [`validate`](Self::validate)): other field lengths would overflow
+    /// or spill into the neighbouring bits.
+    fn p_field_byte(&self) -> u8 {
         let time_code_id: u8 = match self.epoch {
             CucEpoch::Ccsds => 0b001,
             CucEpoch::Agency(_) => 0b010,
@@ -617,5 +619,28 @@ mod tests {
     fn now_returns_current_time() {
         let t = CucTime::now(CucFormat::default()).unwrap();
         assert!((t.to_utc().unwrap() - Utc::now()).abs() < Duration::seconds(1));
+    }
+
+    /// `p_field_byte` relies on a valid format; encoding and decoding must
+    /// reject an invalid one before they reach it.
+    #[test]
+    fn invalid_field_lengths_are_rejected_instead_of_encoded() {
+        for (coarse_len, fine_len) in [(0, 2), (5, 2), (4, 4)] {
+            let format = CucFormat {
+                coarse_len,
+                fine_len,
+                ..CucFormat::default()
+            };
+            let time = CucTime {
+                format,
+                coarse: 0,
+                fine: 0,
+            };
+
+            let err = time.to_bytes().unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::InvalidInput, "{coarse_len}/{fine_len}");
+            let err = CucTime::from_bytes(&[0x1E, 0, 0, 0, 0, 0, 0], format).unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::InvalidInput, "{coarse_len}/{fine_len}");
+        }
     }
 }

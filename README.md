@@ -184,6 +184,9 @@ RUST_LOG=debug cargo run --example pus_server -- 9000 9001
 
 ## Documentation
 
+- [API documentation](https://markusflad.github.io/groundlink/) of the
+  `main` branch; `cargo doc --open` builds it locally for the checked-out
+  version.
 - [WireMessage](docs/wire-message.md): how servers and clients send
   messages, and why message types implement the `WireMessage` marker
   trait.

@@ -7,11 +7,14 @@
 //! - [`pus`]: actors that process PUS packets for an application process.
 //! - [`tml`]: the SLE Transport Mapping Layer actor, which exchanges SLE
 //!   PDUs with the SLE layer as kameo messages.
+//! - [`sle`]: SLE provider actors for RAF and FCLTU on top of the TML
+//!   actor.
 //! - [`test`](mod@test): a generic actor that records messages, for
 //!   assertions in tests.
 
 pub mod batch;
 pub mod pus;
+pub mod sle;
 pub mod tcp;
 pub mod test;
 pub mod tml;

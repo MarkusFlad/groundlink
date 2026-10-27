@@ -7,8 +7,11 @@
 //!              TmlMessage                  SlePdu
 //! TmlServer ───────────────▶ TmlLinkActor ────────▶ SLE layer (e.g. a provider actor)
 //!     ▲     ConnectionEvent       │   ▲   TmlLinkEvent ─▶
-//!     └───── TmlMessage, Close ───┘   └──── SlePdu, SlePeerAbort
+//!     └───── TmlMessage, Close ───┘   └──── SlePdu, SlePeerAbort, SleDisconnect
 //! ```
+//!
+//! The SLE provider actors in [`actor::sle`](crate::actor::sle) are such an
+//! SLE layer.
 //!
 //! The server and the link actor each need a reference to the other, so
 //! the link actor is prepared first:
@@ -181,9 +184,19 @@ pub struct SlePeerAbort {
     pub diagnostic: u8,
 }
 
-/// Sent to the actor by its ticker task to check the timers.
+/// SLE layer: asks the [`TmlLinkActor`] to close the current connection
+/// in an orderly way, e.g. after a negative BIND return. The SLE PDUs sent
+/// before are still written.
+///
+/// Unlike [`SlePeerAbort`], this is not an abort. Like it, the end of the
+/// connection is not reported as [`TmlLinkEvent::Released`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SleDisconnect;
+
+/// Sent to an actor by its ticker task (see [`start_ticker`]) to check its
+/// timers.
 #[derive(Debug, Clone, Copy)]
-struct Tick;
+pub(crate) struct Tick;
 
 enum LinkState {
     /// No connection, or the connection is being closed.
@@ -219,7 +232,7 @@ enum LinkState {
 ///   `heartbeat interval × dead factor` (both off with interval 0);
 /// - closes the connection on a TML message that is not allowed (an SLE
 ///   PDU before the context message, a second context message), and on
-///   [`SlePeerAbort`];
+///   [`SlePeerAbort`] and [`SleDisconnect`];
 /// - reports [`TmlLinkEvent`]s to the events recipient, if set.
 ///
 /// Malformed TML messages are rejected by the [`TmlCodec`](crate::TmlCodec)
@@ -367,8 +380,11 @@ impl TmlLinkActor {
 }
 
 /// Starts a task that sends [`Tick`] to `actor_ref` every `period`, until
-/// the returned guard is dropped.
-fn start_ticker(actor_ref: ActorRef<TmlLinkActor>, period: Duration) -> DropGuard {
+/// the returned guard is dropped or the actor has stopped.
+pub(crate) fn start_ticker<A>(actor_ref: ActorRef<A>, period: Duration) -> DropGuard
+where
+    A: Actor + Message<Tick>,
+{
     let token = CancellationToken::new();
     let cancelled = token.clone();
     tokio::spawn(async move {
@@ -505,6 +521,22 @@ impl Message<SlePeerAbort> for TmlLinkActor {
             "TmlLinkActor: PEER-ABORT with diagnostic {}, closing the connection",
             abort.diagnostic
         );
+        self.state = LinkState::Idle;
+        if let Err(err) = self.close.tell(Close).await {
+            warn!("TmlLinkActor: could not close the connection: {err}");
+        }
+    }
+}
+
+/// Closes the current connection after the pending SLE PDUs.
+impl Message<SleDisconnect> for TmlLinkActor {
+    type Reply = ();
+
+    async fn handle(&mut self, _msg: SleDisconnect, _ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        if matches!(self.state, LinkState::Idle) {
+            return;
+        }
+        info!("TmlLinkActor: SLE layer releases the connection, closing it");
         self.state = LinkState::Idle;
         if let Err(err) = self.close.tell(Close).await {
             warn!("TmlLinkActor: could not close the connection: {err}");

@@ -28,7 +28,9 @@
 //! top of a [`TmlServer`] or [`TmlClient`] and exchanges the BER-encoded SLE
 //! PDUs with the SLE layer as [`SlePdu`] messages. [`protocol::sle`]
 //! encodes and decodes these PDUs, e.g. as [`RafUserPdu`] or
-//! [`FcltuProviderPdu`].
+//! [`FcltuProviderPdu`]. The provider actors in [`actor::sle`] run the RAF
+//! and FCLTU services on top: a [`SleAssociationActor`] per port and a
+//! [`RafServiceInstance`] or [`FcltuServiceInstance`] per service instance.
 //!
 //! # Modules
 //!
@@ -50,6 +52,7 @@
 //!     their control messages and the per-protocol type aliases.
 //!   - [`actor::pus`]: actors that process PUS packets.
 //!   - [`actor::tml`]: the SLE Transport Mapping Layer actor.
+//!   - [`actor::sle`]: SLE provider actors for RAF and FCLTU.
 //!   - [`actor::test`]: a generic actor that records messages, for
 //!     assertions in tests.
 //!
@@ -119,6 +122,10 @@ pub mod protocol;
 
 pub use actor::batch::{Batch, DEFAULT_MAX_BATCH_LEN, Downstream, DownstreamError};
 pub use actor::pus::{PusPacketAdapter, PusTcAcceptor, PusTestServiceActor, PusTmStamper};
+pub use actor::sle::{
+    Cltu, DEFAULT_SLE_TICK, FcltuConfig, FcltuServiceInstance, RafConfig, RafServiceInstance, ServiceInstanceRef,
+    SleAssociationActor, SleAssociationConfig, SleProviderEvent, SleServiceRegistry,
+};
 pub use actor::tcp::{
     Close, CloseRead, CloseReason, CloseWrite, Connect, ConnectionEvent, ConnectionEventKind, ConnectionHalf,
     ConnectionHalfClosed, ConnectionObserver, ConnectionPolicy, DEFAULT_MAILBOX_CAPACITY, DEFAULT_WRITE_TIMEOUT,
@@ -129,7 +136,8 @@ pub use actor::tcp::{
 };
 pub use actor::test::{GetMessages, TestActor};
 pub use actor::tml::{
-    DEFAULT_TML_TICK, SlePeerAbort, TmlLinkActor, TmlLinkEvent, TmlReleaseReason, TmlResponderConfig, TmlRole,
+    DEFAULT_TML_TICK, SleDisconnect, SlePeerAbort, TmlLinkActor, TmlLinkEvent, TmlReleaseReason, TmlResponderConfig,
+    TmlRole,
 };
 pub use protocol::ccsds::{PacketType, SequenceFlags, SpacePacket, SpacePacketCodec, SpacePacketHeader};
 pub use protocol::cuc::{CucEpoch, CucFormat, CucTime};

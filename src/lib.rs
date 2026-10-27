@@ -26,7 +26,9 @@
 //! For SLE, the [`TmlLinkActor`] in [`actor::tml`] runs the rules of the
 //! SLE Transport Mapping Layer (context message, heartbeats, dead timer) on
 //! top of a [`TmlServer`] or [`TmlClient`] and exchanges the BER-encoded SLE
-//! PDUs with the SLE layer as [`SlePdu`] messages.
+//! PDUs with the SLE layer as [`SlePdu`] messages. [`protocol::sle`]
+//! encodes and decodes these PDUs, e.g. as [`RafUserPdu`] or
+//! [`FcltuProviderPdu`].
 //!
 //! # Modules
 //!
@@ -39,6 +41,8 @@
 //!   - [`protocol::pus`]: ECSS PUS-C telecommand and telemetry packets on
 //!     top of Space Packets, their codec and typed service messages.
 //!   - [`protocol::simple_string`]: the simple string protocol.
+//!   - [`protocol::sle`]: BER encoding and the SLE PDUs of RAF (CCSDS
+//!     911.1-B-4) and FCLTU (CCSDS 912.1-B-4).
 //!   - [`protocol::tml`]: SLE Transport Mapping Layer messages (CCSDS
 //!     913.1-B-2) and their codec.
 //! - [`actor`]: the actors.
@@ -135,5 +139,17 @@ pub use protocol::pus::{
     AckFlags, PusCodec, PusConfig, PusDecodeError, PusPacket, PusTc, PusTcSecondaryHeader, PusTm, PusTmSecondaryHeader,
 };
 pub use protocol::simple_string::{SimpleString, SimpleStringCodec, encode_frame};
+pub use protocol::sle::ber::BerError;
+pub use protocol::sle::common::{
+    Acknowledgement, BindInvocation, BindReturn, PduError, ServiceInstanceId, StopInvocation, UnbindInvocation,
+    UnbindReturn,
+};
+pub use protocol::sle::fcltu::{
+    CltuId, CltuStartInvocation, CltuStartReturn, CltuTransferDataInvocation, CltuTransferDataReturn, FcltuProviderPdu,
+    FcltuUserPdu,
+};
+pub use protocol::sle::raf::{
+    RafFrame, RafProviderPdu, RafStartInvocation, RafStartReturn, RafUserPdu, RequestedFrameQuality,
+};
 pub use protocol::tml::{SlePdu, TmlCodec, TmlContext, TmlMessage};
 pub use protocol::{MessageCodec, WireMessage};

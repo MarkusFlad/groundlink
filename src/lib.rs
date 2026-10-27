@@ -31,6 +31,7 @@
 //! [`FcltuProviderPdu`]. The provider actors in [`actor::sle`] run the RAF
 //! and FCLTU services on top: a [`SleAssociationActor`] per port and a
 //! [`RafServiceInstance`] or [`FcltuServiceInstance`] per service instance.
+//! The [`SleUserActor`] is the user side, on top of a [`TmlClient`].
 //!
 //! # Modules
 //!
@@ -74,6 +75,8 @@
 //!   [`RafServiceInstance`] fed with generated frames and an
 //!   [`FcltuServiceInstance`] that prints the accepted CLTUs, each on its
 //!   own port.
+//! - `sle_user <address> <raf_port> <fcltu_port>`: two [`SleUserActor`]s
+//!   that receive RAF frames from `sle_provider` and send it CLTUs.
 //!
 //! Run them with e.g. `cargo run --example pus_server -- 9000 9001` and
 //! `cargo run --example pus_client -- 127.0.0.1 9000 9001`.
@@ -127,8 +130,9 @@ pub mod protocol;
 pub use actor::batch::{Batch, DEFAULT_MAX_BATCH_LEN, Downstream, DownstreamError};
 pub use actor::pus::{PusPacketAdapter, PusTcAcceptor, PusTestServiceActor, PusTmStamper};
 pub use actor::sle::{
-    Cltu, DEFAULT_SLE_TICK, FcltuConfig, FcltuServiceInstance, RafConfig, RafServiceInstance, ServiceInstanceRef,
-    SleAssociationActor, SleAssociationConfig, SleProviderEvent, SleServiceRegistry,
+    Cltu, CltuStart, DEFAULT_SLE_TICK, FcltuConfig, FcltuServiceInstance, RafConfig, RafServiceInstance, RafStart,
+    ServiceInstanceRef, SleAssociationActor, SleAssociationConfig, SleBind, SleProviderEvent, SleServiceRegistry,
+    SleStop, SleUnbind, SleUserActor, SleUserConfig, SleUserError, SleUserEvent,
 };
 pub use actor::tcp::{
     Close, CloseRead, CloseReason, CloseWrite, Connect, ConnectionEvent, ConnectionEventKind, ConnectionHalf,

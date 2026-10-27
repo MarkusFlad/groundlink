@@ -22,6 +22,9 @@
 //! - A [`SleServiceRegistry`] maps the service instance identifiers to the
 //!   instance actors, so the association actor finds the instance at BIND.
 //!
+//! The other side of the association is the [`SleUserActor`], on top of a
+//! [`TmlClient`](crate::TmlClient) and an initiating link actor.
+//!
 //! Covered are BIND, UNBIND, START, STOP, TRANSFER-DATA and PEER-ABORT.
 //! Credentials are accepted but not checked. A user invoking
 //! GET-PARAMETER, SCHEDULE-STATUS-REPORT or THROW-EVENT is peer-aborted
@@ -81,12 +84,16 @@ use crate::protocol::sle::common::{BindInvocation, bind_diagnostic};
 pub mod association;
 pub mod fcltu;
 pub mod raf;
+pub mod user;
 
 pub use association::{
     ServiceInstanceRef, SleAssociationActor, SleAssociationConfig, SleProviderEvent, SleServiceRegistry,
 };
 pub use fcltu::{Cltu, FcltuConfig, FcltuServiceInstance};
 pub use raf::{RafConfig, RafServiceInstance};
+pub use user::{
+    CltuStart, RafStart, SleBind, SleStop, SleUnbind, SleUserActor, SleUserConfig, SleUserError, SleUserEvent,
+};
 
 /// Default for how often a [`RafServiceInstance`] checks the latency limit
 /// of its transfer buffer; see [`RafServiceInstance::with_tick`].

@@ -338,7 +338,7 @@ impl std::error::Error for SiIdError {}
 ///
 /// Parsed from and displayed as this text form. Known attributes are
 /// `sagr`, `spack`, `rsl-fg`, `fsl-fg`, `raf`, `rcf`, `rocf` and `cltu`.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct ServiceInstanceId {
     attributes: Vec<(&'static str, String)>,
 }
@@ -416,6 +416,13 @@ impl FromStr for ServiceInstanceId {
             attributes.push((name, value.to_string()));
         }
         Ok(ServiceInstanceId { attributes })
+    }
+}
+
+/// The text form, e.g. `ServiceInstanceId("sagr=1.spack=VST-PASS0001")`.
+impl fmt::Debug for ServiceInstanceId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("ServiceInstanceId").field(&self.to_string()).finish()
     }
 }
 
@@ -692,6 +699,10 @@ mod tests {
     #[test]
     fn service_instance_id_text_roundtrip() {
         assert_eq!(si().to_string(), "sagr=1.spack=VST-PASS0001.rsl-fg=1.raf=onlt1");
+        assert_eq!(
+            format!("{:?}", si()),
+            r#"ServiceInstanceId("sagr=1.spack=VST-PASS0001.rsl-fg=1.raf=onlt1")"#
+        );
         assert!("sagr=1.foo=2".parse::<ServiceInstanceId>().is_err());
         assert!("sagr".parse::<ServiceInstanceId>().is_err());
     }

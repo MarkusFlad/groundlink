@@ -44,6 +44,9 @@ and [tokio](https://tokio.rs).
   START, STOP and TRANSFER-DATA; provider actors on top of the
   `TmlLinkActor`: a `SleAssociationActor` per port and a
   `RafServiceInstance` or `FcltuServiceInstance` per service instance.
+  On the user side, `SleUserActor` binds, starts and stops RAF and FCLTU
+  on top of a `TmlClient`; each operation is a message answered when the
+  provider's return has arrived.
 - **Simple string protocol**: a length-prefixed string protocol, useful for
   getting started and for tests.
 - **Test helpers**: `TestActor` records messages for assertions in tests.
@@ -164,6 +167,13 @@ bound and started it. The FCLTU service instance
 CLTUs it accepts. Both ports speak ISP1, so any SLE user (for example one
 built on ESA's SLE API) can connect. The provider events (bound, started,
 aborted, ...) are printed as well.
+
+In a second terminal, the matching SLE user receives RAF frames for five
+seconds and then sends five CLTUs:
+
+```sh
+cargo run --example sle_user -- 127.0.0.1 5100 5101
+```
 
 ### Space Packet relay with batches
 

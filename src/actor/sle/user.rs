@@ -634,6 +634,14 @@ impl SleUserActor {
                         format!("TRANSFER-DATA return with unknown invoke ID {}", ret.invoke_id),
                     ));
                 };
+                if transfer.reply.is_none()
+                    && let Err(diagnostic) = ret.result
+                {
+                    warn!(
+                        "SleUserActor: CLTU rejected with {diagnostic:?}, next expected {}",
+                        ret.cltu_id
+                    );
+                }
                 reply(transfer.reply, Ok(ret));
                 Ok(())
             }

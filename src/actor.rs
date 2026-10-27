@@ -5,6 +5,8 @@
 //! - [`batch`]: several messages passed between actors as one kameo
 //!   message, for a high throughput of small messages.
 //! - [`pus`]: actors that process PUS packets for an application process.
+//! - [`datalink`]: actors that put Space Packets into CLTUs and TM
+//!   Transfer Frames and take them out again.
 //! - [`tml`]: the SLE Transport Mapping Layer actor, which exchanges SLE
 //!   PDUs with the SLE layer as kameo messages.
 //! - [`sle`]: SLE provider actors for RAF and FCLTU on top of the TML
@@ -13,6 +15,7 @@
 //!   assertions in tests.
 
 pub mod batch;
+pub mod datalink;
 pub mod pus;
 pub mod sle;
 pub mod tcp;

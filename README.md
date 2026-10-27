@@ -47,6 +47,13 @@ and [tokio](https://tokio.rs).
   On the user side, `SleUserActor` binds, starts and stops RAF and FCLTU
   on top of a `TmlClient`; each operation is a message answered when the
   provider's return has arrived.
+- **Space data link**: CLTUs with the BCH code (CCSDS 231.0-B-4), TC
+  Transfer Frames (CCSDS 232.0-B-4) and TM Transfer Frames (CCSDS
+  132.0-B-3), and the actors `TcFrameEncoder`/`TcFrameDecoder` and
+  `TmFrameEncoder`/`TmFrameDecoder` between Space Packets and the SLE
+  services. A PUS TC(17,1) can thus go from the ground over FCLTU to a
+  simulated spacecraft, and its TM(1,1), TM(1,3), TM(17,2) and TM(1,7)
+  come back over RAF (see `tests/sle_pus_loop.rs`).
 - **Simple string protocol**: a length-prefixed string protocol, useful for
   getting started and for tests.
 - **Test helpers**: `TestActor` records messages for assertions in tests.

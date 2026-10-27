@@ -41,6 +41,8 @@
 //!     133.0-B-2).
 //!   - [`protocol::cuc`]: CCSDS Unsegmented Time Code with conversion from
 //!     and to UTC.
+//!   - [`protocol::datalink`]: CLTUs, TC and TM Transfer Frames (CCSDS
+//!     231.0, 232.0, 132.0).
 //!   - [`protocol::pus`]: ECSS PUS-C telecommand and telemetry packets on
 //!     top of Space Packets, their codec and typed service messages.
 //!   - [`protocol::simple_string`]: the simple string protocol.
@@ -52,6 +54,8 @@
 //!   - [`actor::tcp`]: generic TCP server, client, reader and writer actors,
 //!     their control messages and the per-protocol type aliases.
 //!   - [`actor::pus`]: actors that process PUS packets.
+//!   - [`actor::datalink`]: actors between Space Packets and CLTUs or TM
+//!     Transfer Frames.
 //!   - [`actor::tml`]: the SLE Transport Mapping Layer actor.
 //!   - [`actor::sle`]: SLE provider actors for RAF and FCLTU.
 //!   - [`actor::test`]: a generic actor that records messages, for
@@ -128,6 +132,7 @@ pub mod actor;
 pub mod protocol;
 
 pub use actor::batch::{Batch, DEFAULT_MAX_BATCH_LEN, Downstream, DownstreamError};
+pub use actor::datalink::{TcFrameDecoder, TcFrameEncoder, TmFrameDecoder, TmFrameEncoder};
 pub use actor::pus::{PusPacketAdapter, PusTcAcceptor, PusTestServiceActor, PusTmStamper};
 pub use actor::sle::{
     Cltu, CltuStart, DEFAULT_SLE_TICK, FcltuConfig, FcltuServiceInstance, RafConfig, RafServiceInstance, RafStart,
@@ -149,6 +154,9 @@ pub use actor::tml::{
 };
 pub use protocol::ccsds::{PacketType, SequenceFlags, SpacePacket, SpacePacketCodec, SpacePacketHeader};
 pub use protocol::cuc::{CucEpoch, CucFormat, CucTime};
+pub use protocol::datalink::FrameError;
+pub use protocol::datalink::tc::{TcFrameConfig, TcTransferFrame};
+pub use protocol::datalink::tm::{TmFrameConfig, TmTransferFrame};
 pub use protocol::pus::service1::{FailureCode, FailureNotice, RequestId, VerificationKind, VerificationReport};
 pub use protocol::pus::service17::{AreYouAliveReport, AreYouAliveRequest};
 pub use protocol::pus::{

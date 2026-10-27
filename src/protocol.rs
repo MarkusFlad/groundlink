@@ -3,6 +3,8 @@
 //!
 //! - [`ccsds`]: CCSDS Space Packet types and codec (CCSDS 133.0-B-2).
 //! - [`cuc`]: CCSDS Unsegmented Time Code with conversion from and to UTC.
+//! - [`datalink`]: CLTUs, TC and TM Transfer Frames, which carry Space
+//!   Packets over the space link (CCSDS 231.0, 232.0, 132.0).
 //! - [`pus`]: ECSS PUS-C telecommand and telemetry packets on top of Space
 //!   Packets, their codec and typed service messages.
 //! - [`simple_string`]: a simple length-prefixed string protocol.
@@ -20,6 +22,7 @@ use tokio_util::codec::{Decoder, Encoder};
 
 pub mod ccsds;
 pub mod cuc;
+pub mod datalink;
 pub mod pus;
 pub mod simple_string;
 pub mod sle;

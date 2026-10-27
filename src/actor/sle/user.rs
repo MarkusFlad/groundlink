@@ -13,7 +13,7 @@ use kameo::message::{Context, Message};
 use kameo::reply::{DelegatedReply, ReplySender};
 use tokio::time::Instant;
 use tokio_util::sync::DropGuard;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use super::DEFAULT_SLE_TICK;
 use super::fcltu::Cltu;
@@ -594,6 +594,13 @@ impl SleUserActor {
                 self.on_start_stop_return(false, ret.invoke_id, result).await
             }
             RafProviderPdu::UnbindReturn(_) => self.on_unbind_return().await,
+            RafProviderPdu::StatusReport(report) => {
+                debug!("SleUserActor: RAF status report {report:?}");
+                Ok(())
+            }
+            RafProviderPdu::ScheduleStatusReportReturn(_) => {
+                Err(unexpected("SCHEDULE-STATUS-REPORT return", &self.state))
+            }
             RafProviderPdu::TransferBuffer(frames) => {
                 // Frames may still arrive until the STOP return.
                 if !matches!(self.state, UserState::Active | UserState::Stopping { .. }) {
@@ -627,6 +634,18 @@ impl SleUserActor {
                 self.on_start_stop_return(false, ret.invoke_id, result).await
             }
             FcltuProviderPdu::UnbindReturn(_) => self.on_unbind_return().await,
+            FcltuProviderPdu::StatusReport(report) => {
+                debug!("SleUserActor: CLTU status report {report:?}");
+                Ok(())
+            }
+            FcltuProviderPdu::AsyncNotify(notify) => {
+                debug!("SleUserActor: CLTU notification {notify:?}");
+                Ok(())
+            }
+            FcltuProviderPdu::ScheduleStatusReportReturn(_) => {
+                Err(unexpected("SCHEDULE-STATUS-REPORT return", &self.state))
+            }
+            FcltuProviderPdu::GetParameterReturn(_) => Err(unexpected("GET-PARAMETER return", &self.state)),
             FcltuProviderPdu::TransferDataReturn(ret) => {
                 let Some(transfer) = self.transfers.remove(&ret.invoke_id) else {
                     return Err(abort(

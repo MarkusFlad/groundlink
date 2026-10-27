@@ -41,7 +41,9 @@ and [tokio](https://tokio.rs).
   messages.
 - **SLE PDUs and provider**: BER encoding and the PDUs of Return All Frames
   (CCSDS 911.1-B-4) and Forward CLTU (CCSDS 912.1-B-4), with BIND, UNBIND,
-  START, STOP and TRANSFER-DATA; provider actors on top of the
+  START, STOP, TRANSFER-DATA and SCHEDULE-STATUS-REPORT, for FCLTU also
+  ASYNC-NOTIFY and GET-PARAMETER (as needed by users such as ReatMetric);
+  provider actors on top of the
   `TmlLinkActor`: a `SleAssociationActor` per port and a
   `RafServiceInstance` or `FcltuServiceInstance` per service instance.
   On the user side, `SleUserActor` binds, starts and stops RAF and FCLTU

@@ -10,8 +10,15 @@ use futures::{SinkExt, StreamExt};
 use groundlink::protocol::sle::common::{
     ConditionalTime, Credentials, Diagnostic, Time, bind_diagnostic, service_type, unbind_reason,
 };
-use groundlink::protocol::sle::fcltu::transfer_diagnostic;
+use groundlink::protocol::sle::common::{
+    ReportRequestType, ScheduleStatusReportInvocation, ScheduleStatusReportReturn, schedule_status_report_diagnostic,
+};
+use groundlink::protocol::sle::fcltu::{
+    CltuGetParameterInvocation, CltuLastOk, CltuNotification, CltuParameter, CltuProductionStatus, UplinkStatus,
+    parameter_name, transfer_diagnostic,
+};
 use groundlink::protocol::sle::raf::{AntennaId, FrameQuality};
+use groundlink::protocol::sle::raf::{LockStatus, RafProductionStatus};
 use groundlink::{
     Acknowledgement, Batch, BindInvocation, BindReturn, Cltu, CltuStartInvocation, CltuStartReturn,
     CltuTransferDataInvocation, CltuTransferDataReturn, ConnectionEvent, FcltuConfig, FcltuProviderPdu,
@@ -676,4 +683,163 @@ async fn fcltu_rejects_invalid_cltus() {
     let (service_instance, reason) = aborted(&provider).await;
     assert_eq!(service_instance.as_deref(), Some(CLTU_SI));
     assert!(reason.contains("TRANSFER-DATA"), "{reason}");
+}
+
+/// The next FCLTU PDU that is not a periodic status report.
+async fn recv_fcltu_reply(user: &mut User) -> FcltuProviderPdu {
+    loop {
+        match recv_fcltu(user).await {
+            FcltuProviderPdu::StatusReport(_) => continue,
+            pdu => return pdu,
+        }
+    }
+}
+
+fn schedule_status_report(invoke_id: u16, request: ReportRequestType) -> ScheduleStatusReportInvocation {
+    ScheduleStatusReportInvocation {
+        credentials: Credentials::Unused,
+        invoke_id,
+        request,
+    }
+}
+
+/// The user side of the FCLTU service as ReatMetric drives it: periodic
+/// status reports for the buffer size, radiation notifications to free it,
+/// GET-PARAMETER for the expected CLTU.
+#[tokio::test]
+async fn fcltu_reports_status_notifies_radiation_and_answers_get_parameter() {
+    let provider = spawn_instances();
+    let port = spawn_port(&provider);
+    let mut user = bind_and_start_fcltu(&port, 20).await;
+
+    let ssr = FcltuUserPdu::ScheduleStatusReport(schedule_status_report(2, ReportRequestType::Periodically(2)));
+    send(&mut user, ssr.encode()).await;
+    assert_eq!(
+        recv_fcltu(&mut user).await,
+        FcltuProviderPdu::ScheduleStatusReportReturn(ScheduleStatusReportReturn {
+            credentials: Credentials::Unused,
+            invoke_id: 2,
+            result: Ok(()),
+        })
+    );
+    // The first report comes at once and tells the buffer size.
+    let FcltuProviderPdu::StatusReport(report) = recv_fcltu(&mut user).await else {
+        panic!("expected a CLTU-STATUS-REPORT")
+    };
+    assert_eq!(report.buffer_available, 2 * 4096);
+    assert_eq!(report.production_status, CltuProductionStatus::Operational);
+    assert_eq!(report.uplink_status, UplinkStatus::Nominal);
+    assert_eq!(report.last_ok, CltuLastOk::None);
+
+    // With notification: the return, then CLTU-ASYNC-NOTIFY once the
+    // radiator has taken the CLTU.
+    let with_notification = CltuTransferDataInvocation {
+        produce_notification: true,
+        ..cltu(3, 20)
+    };
+    send(&mut user, FcltuUserPdu::TransferData(with_notification).encode()).await;
+    let FcltuProviderPdu::TransferDataReturn(ret) = recv_fcltu_reply(&mut user).await else {
+        panic!("expected the TRANSFER-DATA return before the notification")
+    };
+    assert_eq!((ret.invoke_id, ret.result, ret.cltu_id), (3, Ok(()), 21));
+    let FcltuProviderPdu::AsyncNotify(notify) = recv_fcltu_reply(&mut user).await else {
+        panic!("expected CLTU-ASYNC-NOTIFY")
+    };
+    assert_eq!(notify.notification, CltuNotification::CltuRadiated);
+    assert!(matches!(notify.last_ok, CltuLastOk::Ok { cltu_id: 20, .. }));
+
+    // Without notification: only the return.
+    send(&mut user, FcltuUserPdu::TransferData(cltu(4, 21)).encode()).await;
+    assert!(matches!(
+        recv_fcltu_reply(&mut user).await,
+        FcltuProviderPdu::TransferDataReturn(CltuTransferDataReturn { invoke_id: 4, .. })
+    ));
+
+    let get = |invoke_id, parameter| {
+        FcltuUserPdu::GetParameter(CltuGetParameterInvocation {
+            credentials: Credentials::Unused,
+            invoke_id,
+            parameter,
+        })
+        .encode()
+    };
+    send(&mut user, get(5, parameter_name::EXPECTED_SLDU_IDENTIFICATION)).await;
+    let FcltuProviderPdu::GetParameterReturn(ret) = recv_fcltu_reply(&mut user).await else {
+        panic!("expected the GET-PARAMETER return")
+    };
+    assert_eq!(ret.result, Ok(CltuParameter::ExpectedSlduIdentification(22)));
+    send(&mut user, get(6, 999)).await;
+    let FcltuProviderPdu::GetParameterReturn(ret) = recv_fcltu_reply(&mut user).await else {
+        panic!("expected the GET-PARAMETER return")
+    };
+    assert_eq!(ret.result, Err(Diagnostic::Specific(0)), "unknownParameter");
+
+    // The next periodic report counts the CLTUs. Notifications and
+    // reports may come in any order, so skip to the report.
+    let report = loop {
+        match recv_fcltu(&mut user).await {
+            FcltuProviderPdu::StatusReport(report) => break report,
+            FcltuProviderPdu::AsyncNotify(_) => continue,
+            other => panic!("unexpected {other:?}"),
+        }
+    };
+    assert_eq!(report.cltus_received, 2);
+    assert!(report.cltus_radiated >= 1, "{report:?}");
+
+    let stop_reports = FcltuUserPdu::ScheduleStatusReport(schedule_status_report(7, ReportRequestType::Stop));
+    send(&mut user, stop_reports.encode()).await;
+    let result = loop {
+        match recv_fcltu(&mut user).await {
+            FcltuProviderPdu::ScheduleStatusReportReturn(ret) => break ret.result,
+            FcltuProviderPdu::StatusReport(_) | FcltuProviderPdu::AsyncNotify(_) => continue,
+            other => panic!("unexpected {other:?}"),
+        }
+    };
+    assert_eq!(result, Ok(()));
+    send(&mut user, stop_reports.encode()).await;
+    let FcltuProviderPdu::ScheduleStatusReportReturn(ret) = recv_fcltu(&mut user).await else {
+        panic!("expected the SCHEDULE-STATUS-REPORT return")
+    };
+    assert_eq!(
+        ret.result,
+        Err(Diagnostic::Specific(schedule_status_report_diagnostic::ALREADY_STOPPED))
+    );
+
+    let too_fast = FcltuUserPdu::ScheduleStatusReport(schedule_status_report(8, ReportRequestType::Periodically(1)));
+    send(&mut user, too_fast.encode()).await;
+    let FcltuProviderPdu::ScheduleStatusReportReturn(ret) = recv_fcltu(&mut user).await else {
+        panic!("expected the SCHEDULE-STATUS-REPORT return")
+    };
+    assert_eq!(
+        ret.result,
+        Err(Diagnostic::Specific(
+            schedule_status_report_diagnostic::INVALID_REPORTING_CYCLE
+        ))
+    );
+    drop(provider);
+}
+
+#[tokio::test]
+async fn raf_reports_its_status_immediately() {
+    let provider = spawn_instances();
+    let port = spawn_port(&provider);
+    let mut user = bind_raf(&port).await;
+    start_raf(&mut user, 1, RequestedFrameQuality::GoodFramesOnly).await;
+    provider.raf.tell(frame(1, FrameQuality::Good)).await.unwrap();
+    provider.raf.tell(frame(2, FrameQuality::Erred)).await.unwrap();
+    // The frame goes out after the latency limit.
+    assert!(matches!(recv_raf(&mut user).await, RafProviderPdu::TransferBuffer(_)));
+
+    let ssr = RafUserPdu::ScheduleStatusReport(schedule_status_report(2, ReportRequestType::Immediately));
+    send(&mut user, ssr.encode()).await;
+    assert!(matches!(
+        recv_raf(&mut user).await,
+        RafProviderPdu::ScheduleStatusReportReturn(ScheduleStatusReportReturn { result: Ok(()), .. })
+    ));
+    let RafProviderPdu::StatusReport(report) = recv_raf(&mut user).await else {
+        panic!("expected a RAF-STATUS-REPORT")
+    };
+    assert_eq!((report.error_free_frame_number, report.delivered_frame_number), (1, 1));
+    assert_eq!(report.frame_sync_lock_status, LockStatus::InLock);
+    assert_eq!(report.production_status, RafProductionStatus::Running);
 }

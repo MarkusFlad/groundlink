@@ -14,10 +14,12 @@
 //! and one for the PDUs the provider sends
 //! ([`RafProviderPdu`](raf::RafProviderPdu),
 //! [`FcltuProviderPdu`](fcltu::FcltuProviderPdu)), each with `encode` and
-//! `decode`. The subset covered is BIND, UNBIND, START, STOP and
-//! TRANSFER-DATA. The other operations of the services (GET-PARAMETER,
-//! SCHEDULE-STATUS-REPORT, THROW-EVENT, SYNC-NOTIFY) are recognised and
-//! decoded as [`PduError::Unsupported`](common::PduError::Unsupported).
+//! `decode`. The subset covered is BIND, UNBIND, START, STOP,
+//! TRANSFER-DATA, SCHEDULE-STATUS-REPORT and the status reports; for
+//! FCLTU also ASYNC-NOTIFY and GET-PARAMETER (for the expected CLTU and
+//! event identifications). The other operations (RAF-GET-PARAMETER,
+//! CLTU-THROW-EVENT, RAF-SYNC-NOTIFY) are recognised and decoded as
+//! [`PduError::Unsupported`](common::PduError::Unsupported).
 //!
 //! Every association starts with a BIND invocation, which is the same for
 //! all services, so a provider can decode it with

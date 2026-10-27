@@ -111,6 +111,9 @@ pub(crate) const TAG_BIND_INVOCATION: Tag = Tag::ctx_cons(100);
 pub(crate) const TAG_BIND_RETURN: Tag = Tag::ctx_cons(101);
 pub(crate) const TAG_UNBIND_INVOCATION: Tag = Tag::ctx_cons(102);
 pub(crate) const TAG_UNBIND_RETURN: Tag = Tag::ctx_cons(103);
+/// SCHEDULE-STATUS-REPORT invocation and return; the same for RAF and FCLTU.
+pub(crate) const TAG_SCHEDULE_STATUS_REPORT_INVOCATION: Tag = Tag::ctx_cons(4);
+pub(crate) const TAG_SCHEDULE_STATUS_REPORT_RETURN: Tag = Tag::ctx_cons(5);
 
 // ---------------------------------------------------------------------------
 // PDU errors
@@ -442,8 +445,8 @@ impl fmt::Display for ServiceInstanceId {
 // Diagnostics, BIND, UNBIND, STOP, acknowledgement
 // ---------------------------------------------------------------------------
 
-/// Negative result of a confirmed operation: `CHOICE { common [100]
-/// Diagnostics, specific [101] INTEGER }`.
+/// Negative result of a confirmed operation: `CHOICE { common [0]
+/// Diagnostics, specific [1] INTEGER }`, e.g. `DiagnosticCltuTransferData`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Diagnostic {
     /// A common diagnostic, see [`diagnostics`].
@@ -456,17 +459,115 @@ pub enum Diagnostic {
 impl Diagnostic {
     pub(crate) fn write(&self, w: &mut BerWriter) {
         match self {
-            Diagnostic::Common(v) => w.integer(Tag::ctx(100), *v),
-            Diagnostic::Specific(v) => w.integer(Tag::ctx(101), *v),
+            Diagnostic::Common(v) => w.integer(Tag::ctx(0), *v),
+            Diagnostic::Specific(v) => w.integer(Tag::ctx(1), *v),
         }
     }
 
     pub(crate) fn read(r: &mut BerReader) -> BerResult<Self> {
         match r.peek_tag()? {
-            t if t == Tag::ctx(100) => r.integer(t).map(Diagnostic::Common),
-            t if t == Tag::ctx(101) => r.integer(t).map(Diagnostic::Specific),
+            t if t == Tag::ctx(0) => r.integer(t).map(Diagnostic::Common),
+            t if t == Tag::ctx(1) => r.integer(t).map(Diagnostic::Specific),
             t => Err(BerError::UnknownChoice(t)),
         }
+    }
+}
+
+/// SCHEDULE-STATUS-REPORT specific diagnostics.
+pub mod schedule_status_report_diagnostic {
+    /// Not supported in the delivery mode of the service instance.
+    pub const NOT_SUPPORTED_IN_THIS_DELIVERY_MODE: i64 = 0;
+    /// `stop` while no periodic reporting is running.
+    pub const ALREADY_STOPPED: i64 = 1;
+    /// The reporting cycle is outside the range the provider supports.
+    pub const INVALID_REPORTING_CYCLE: i64 = 2;
+}
+
+/// What a SCHEDULE-STATUS-REPORT asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReportRequestType {
+    /// One status report now.
+    Immediately,
+    /// A status report every given number of seconds (2 to 600).
+    Periodically(u16),
+    /// No more periodic status reports.
+    Stop,
+}
+
+/// SCHEDULE-STATUS-REPORT invocation, the same for all services.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScheduleStatusReportInvocation {
+    /// The credentials of the user.
+    pub credentials: Credentials,
+    /// The invoke identifier.
+    pub invoke_id: InvokeId,
+    /// What the user asks for.
+    pub request: ReportRequestType,
+}
+
+impl ScheduleStatusReportInvocation {
+    pub(crate) fn write(&self, w: &mut BerWriter) {
+        self.credentials.write(w);
+        w.integer(Tag::INTEGER, i64::from(self.invoke_id));
+        match self.request {
+            ReportRequestType::Immediately => w.null(Tag::ctx(0)),
+            ReportRequestType::Periodically(cycle) => w.integer(Tag::ctx(1), i64::from(cycle)),
+            ReportRequestType::Stop => w.null(Tag::ctx(2)),
+        }
+    }
+
+    pub(crate) fn read(r: &mut BerReader) -> BerResult<Self> {
+        let credentials = Credentials::read(r)?;
+        let invoke_id = r.integer_as(Tag::INTEGER)?;
+        let request = match r.peek_tag()? {
+            t if t == Tag::ctx(0) => r.null(t).map(|_| ReportRequestType::Immediately)?,
+            t if t == Tag::ctx(1) => ReportRequestType::Periodically(r.integer_as(t)?),
+            t if t == Tag::ctx(2) => r.null(t).map(|_| ReportRequestType::Stop)?,
+            t => return Err(BerError::UnknownChoice(t)),
+        };
+        Ok(Self {
+            credentials,
+            invoke_id,
+            request,
+        })
+    }
+}
+
+/// SCHEDULE-STATUS-REPORT return, the same for all services.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScheduleStatusReportReturn {
+    /// The credentials of the provider.
+    pub credentials: Credentials,
+    /// The invoke identifier of the invocation.
+    pub invoke_id: InvokeId,
+    /// `Err` carries a common diagnostic or one of
+    /// [`schedule_status_report_diagnostic`].
+    pub result: Result<(), Diagnostic>,
+}
+
+impl ScheduleStatusReportReturn {
+    pub(crate) fn write(&self, w: &mut BerWriter) {
+        self.credentials.write(w);
+        w.integer(Tag::INTEGER, i64::from(self.invoke_id));
+        match &self.result {
+            Ok(()) => w.null(Tag::ctx(0)),
+            Err(d) => w.constructed(Tag::ctx_cons(1), |w| d.write(w)),
+        }
+    }
+
+    pub(crate) fn read(r: &mut BerReader) -> BerResult<Self> {
+        let credentials = Credentials::read(r)?;
+        let invoke_id = r.integer_as(Tag::INTEGER)?;
+        let result = match r.peek_tag()? {
+            t if t == Tag::ctx(0) => Ok(r.null(t)?),
+            t if t == Tag::ctx_cons(1) => Err(r.sequence(t, Diagnostic::read)?),
+            t => return Err(BerError::UnknownChoice(t)),
+        };
+        Ok(Self {
+            credentials,
+            invoke_id,
+            result,
+        })
     }
 }
 
@@ -751,6 +852,44 @@ mod tests {
             &[
                 0xbf, 0x65, 0x0b, 0x80, 0x00, 0x1a, 0x04, b'P', b'R', b'O', b'V', 0x80, 0x01, 0x05
             ]
+        );
+    }
+
+    #[test]
+    fn schedule_status_report_wire_format() {
+        // [4] { credentials unused, invoke ID 1, periodically [1] 30 }
+        let inv = ScheduleStatusReportInvocation {
+            credentials: Credentials::Unused,
+            invoke_id: 1,
+            request: ReportRequestType::Periodically(30),
+        };
+        let mut w = BerWriter::new();
+        w.constructed(TAG_SCHEDULE_STATUS_REPORT_INVOCATION, |w| inv.write(w));
+        let encoded = w.into_bytes();
+        assert_eq!(
+            &encoded[..],
+            &[0xa4, 0x08, 0x80, 0x00, 0x02, 0x01, 0x01, 0x81, 0x01, 0x1e]
+        );
+        let mut r = BerReader::new(encoded);
+        let decoded = r
+            .sequence(
+                TAG_SCHEDULE_STATUS_REPORT_INVOCATION,
+                ScheduleStatusReportInvocation::read,
+            )
+            .unwrap();
+        assert_eq!(decoded, inv);
+
+        // [5] { credentials unused, invoke ID 1, negative [1] { specific [1] alreadyStopped } }
+        let ret = ScheduleStatusReportReturn {
+            credentials: Credentials::Unused,
+            invoke_id: 1,
+            result: Err(Diagnostic::Specific(schedule_status_report_diagnostic::ALREADY_STOPPED)),
+        };
+        let mut w = BerWriter::new();
+        w.constructed(TAG_SCHEDULE_STATUS_REPORT_RETURN, |w| ret.write(w));
+        assert_eq!(
+            w.as_slice(),
+            &[0xa5, 0x0a, 0x80, 0x00, 0x02, 0x01, 0x01, 0xa1, 0x03, 0x81, 0x01, 0x01]
         );
     }
 

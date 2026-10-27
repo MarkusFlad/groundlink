@@ -25,10 +25,13 @@
 //! The other side of the association is the [`SleUserActor`], on top of a
 //! [`TmlClient`](crate::TmlClient) and an initiating link actor.
 //!
-//! Covered are BIND, UNBIND, START, STOP, TRANSFER-DATA and PEER-ABORT.
-//! Credentials are accepted but not checked. A user invoking
-//! GET-PARAMETER, SCHEDULE-STATUS-REPORT or THROW-EVENT is peer-aborted
-//! with `otherReason`. Each port serves one user at a time.
+//! Covered are BIND, UNBIND, START, STOP, TRANSFER-DATA, PEER-ABORT and
+//! SCHEDULE-STATUS-REPORT with the status reports of both services; for
+//! FCLTU also CLTU-ASYNC-NOTIFY (`cltuRadiated`, `productionHalted`) and
+//! CLTU-GET-PARAMETER for the expected CLTU and event identifications.
+//! Credentials are accepted but not checked. A user invoking RAF-GET-PARAMETER
+//! or CLTU-THROW-EVENT is peer-aborted with `otherReason`. Each port serves
+//! one user at a time.
 //!
 //! # Wiring
 //!

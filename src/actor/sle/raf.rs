@@ -15,8 +15,11 @@ use super::{BindRequest, DEFAULT_SLE_TICK, ReleaseRequest, check_bind};
 use crate::actor::batch::Downstream;
 use crate::actor::tml::{Tick, start_ticker};
 use crate::impl_batch_message;
-use crate::protocol::sle::common::{ServiceInstanceId, bind_diagnostic, service_type};
-use crate::protocol::sle::raf::{RafFrame, RequestedFrameQuality, encode_transfer_buffer};
+use crate::protocol::sle::common::{Credentials, ServiceInstanceId, bind_diagnostic, service_type};
+use crate::protocol::sle::raf::{
+    FrameQuality, LockStatus, RafFrame, RafProductionStatus, RafStatusReport, RequestedFrameQuality,
+    encode_transfer_buffer,
+};
 use crate::protocol::tml::SlePdu;
 
 /// Configuration of a [`RafServiceInstance`].
@@ -58,6 +61,11 @@ pub(crate) struct RafStartRequest {
     pub(crate) start_return: SlePdu,
 }
 
+/// Asks the instance for the content of a RAF-STATUS-REPORT.
+pub(crate) struct RafStatusRequest {
+    pub(crate) owner: ActorId,
+}
+
 /// Asks the instance to stop delivering frames. The frames in the transfer
 /// buffer are sent before the reply.
 pub(crate) struct RafStopRequest {
@@ -66,6 +74,10 @@ pub(crate) struct RafStopRequest {
 
 struct Binding {
     owner: ActorId,
+    /// Error-free frames received since BIND.
+    error_free_frames: u32,
+    /// Frames delivered since BIND.
+    delivered_frames: u32,
     /// `Some` while the association is active (after RAF-START).
     delivery: Option<Delivery>,
 }
@@ -176,6 +188,8 @@ impl Message<BindRequest> for RafServiceInstance {
         );
         self.binding = Some(Binding {
             owner: request.owner,
+            error_free_frames: 0,
+            delivered_frames: 0,
             delivery: None,
         });
         Ok(())
@@ -240,12 +254,19 @@ impl Message<RafFrame> for RafServiceInstance {
     async fn handle(&mut self, mut frame: RafFrame, _ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let buffer_size = self.config.transfer_buffer_size.max(1);
         let latency_limit = self.config.latency_limit;
-        let Some(delivery) = self.binding.as_mut().and_then(|binding| binding.delivery.as_mut()) else {
+        let Some(binding) = self.binding.as_mut() else {
+            return;
+        };
+        if frame.quality == FrameQuality::Good {
+            binding.error_free_frames = binding.error_free_frames.wrapping_add(1);
+        }
+        let Some(delivery) = binding.delivery.as_mut() else {
             return;
         };
         if !delivery.quality.accepts(frame.quality) {
             return;
         }
+        binding.delivered_frames = binding.delivered_frames.wrapping_add(1);
         if delivery.first_after_start {
             frame.data_link_continuity = -1;
             delivery.first_after_start = false;
@@ -261,6 +282,28 @@ impl Message<RafFrame> for RafServiceInstance {
 }
 
 impl_batch_message!(RafServiceInstance, RafFrame);
+
+/// The receiver is simulated: always in lock, production running.
+impl Message<RafStatusRequest> for RafServiceInstance {
+    type Reply = Result<RafStatusReport, Infallible>;
+
+    async fn handle(&mut self, request: RafStatusRequest, _ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (error_free, delivered) = self
+            .binding_of(request.owner)
+            .map(|binding| (binding.error_free_frames, binding.delivered_frames))
+            .unwrap_or_default();
+        Ok(RafStatusReport {
+            credentials: Credentials::Unused,
+            error_free_frame_number: error_free,
+            delivered_frame_number: delivered,
+            frame_sync_lock_status: LockStatus::InLock,
+            symbol_sync_lock_status: LockStatus::InLock,
+            subcarrier_lock_status: LockStatus::InLock,
+            carrier_lock_status: LockStatus::InLock,
+            production_status: RafProductionStatus::Running,
+        })
+    }
+}
 
 /// Sends a partly filled transfer buffer when the latency limit is up.
 impl Message<Tick> for RafServiceInstance {

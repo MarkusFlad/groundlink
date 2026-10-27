@@ -12,19 +12,24 @@ use kameo::message::{Context, Message};
 use tokio_util::sync::{CancellationToken, DropGuard};
 use tracing::{info, warn};
 
-use super::fcltu::{FcltuServiceInstance, FcltuStartRequest, FcltuStopRequest, FcltuTransferRequest};
-use super::raf::{RafServiceInstance, RafStartRequest, RafStopRequest};
+use super::fcltu::{
+    CltuNotice, ExpectedCltuIdRequest, FcltuServiceInstance, FcltuStartRequest, FcltuStatusRequest, FcltuStopRequest,
+    FcltuTransferRequest,
+};
+use super::raf::{RafServiceInstance, RafStartRequest, RafStatusRequest, RafStopRequest};
 use super::{BindRequest, ReleaseRequest};
 use crate::actor::batch::Downstream;
-use crate::actor::tml::{SleDisconnect, SlePeerAbort, TmlLinkActor, TmlLinkEvent};
+use crate::actor::tml::{SleDisconnect, SlePeerAbort, Tick, TmlLinkActor, TmlLinkEvent, start_ticker};
 use crate::impl_batch_message;
 use crate::protocol::sle::ber::{BerReader, Tag};
 use crate::protocol::sle::common::{
-    Acknowledgement, BindInvocation, BindReturn, ConditionalTime, Credentials, PduError, ServiceInstanceId, Time,
-    UnbindReturn, bind_diagnostic, peer_abort,
+    Acknowledgement, BindInvocation, BindReturn, ConditionalTime, Credentials, Diagnostic, PduError, ReportRequestType,
+    ScheduleStatusReportInvocation, ScheduleStatusReportReturn, ServiceInstanceId, Time, UnbindReturn, bind_diagnostic,
+    peer_abort, schedule_status_report_diagnostic,
 };
 use crate::protocol::sle::fcltu::{
-    CltuStartPositive, CltuStartReturn, CltuTransferDataReturn, FcltuProviderPdu, FcltuUserPdu,
+    CltuGetParameterInvocation, CltuGetParameterReturn, CltuParameter, CltuStartPositive, CltuStartReturn,
+    CltuTransferDataReturn, FcltuProviderPdu, FcltuUserPdu, get_parameter_diagnostic, parameter_name,
 };
 use crate::protocol::sle::raf::{RafProviderPdu, RafStartReturn, RafUserPdu};
 use crate::protocol::tml::SlePdu;
@@ -185,7 +190,20 @@ enum AssociationState {
         service_instance: ServiceInstanceId,
         instance: ServiceInstanceRef,
         active: bool,
+        /// The version of the service agreed in BIND.
+        version: u16,
+        /// Sends a [`Tick`] for every periodic status report.
+        reports: Option<DropGuard>,
     },
+}
+
+/// What the PDU handlers of a bound association need.
+struct BoundContext {
+    owner: ActorId,
+    service_instance: ServiceInstanceId,
+    active: bool,
+    version: u16,
+    me: ActorRef<SleAssociationActor>,
 }
 
 /// Reason to end an association with PEER-ABORT.
@@ -257,12 +275,19 @@ fn unbound_pdu_error(pdu: &Bytes, err: PduError) -> Abort {
 ///   association on UNBIND, after which the connection is closed;
 /// - answers every invocation with the return encoded for the service of
 ///   the instance; for RAF, the instance sends the transfer buffers, and
-///   the START return before them.
+///   the START return before them;
+/// - while bound, sends status reports on SCHEDULE-STATUS-REPORT: one at
+///   once, or every 2 to 600 s with the first at once; until `stop` or the
+///   end of the association;
+/// - for FCLTU, sends the CLTU-ASYNC-NOTIFY of the instance (after the
+///   return of the CLTU it reports on) and answers CLTU-GET-PARAMETER for
+///   the expected CLTU and event identifications, encoded for the version
+///   agreed in BIND; other parameters get `unknownParameter`.
 ///
 /// A PDU that is not allowed in the current state, e.g. STOP before START,
 /// aborts the association with PEER-ABORT `protocolError`, one that cannot
-/// be decoded with `encodingError`, and GET-PARAMETER,
-/// SCHEDULE-STATUS-REPORT and THROW-EVENT with `otherReason`. When the
+/// be decoded with `encodingError`, and RAF-GET-PARAMETER and
+/// CLTU-THROW-EVENT with `otherReason`. When the
 /// link is released, the association is aborted. Either way the service
 /// instance is released for the next BIND.
 ///
@@ -414,6 +439,8 @@ impl SleAssociationActor {
             service_instance: bind.service_instance.clone(),
             instance,
             active: false,
+            version: bind.version,
+            reports: None,
         };
         let ret = BindReturn {
             credentials: Credentials::Unused,
@@ -448,8 +475,12 @@ impl SleAssociationActor {
         service_instance: ServiceInstanceId,
         instance: ActorRef<RafServiceInstance>,
         active: bool,
+        me: ActorRef<Self>,
     ) -> Result<(), Abort> {
         match RafUserPdu::decode(pdu).map_err(decode_error)? {
+            RafUserPdu::ScheduleStatusReport(invocation) => {
+                self.schedule_status_report(invocation, owner, &me).await?;
+            }
             RafUserPdu::Start(invocation) if !active => {
                 let ret = RafStartReturn {
                     credentials: Credentials::Unused,
@@ -491,16 +522,22 @@ impl SleAssociationActor {
     async fn on_fcltu_pdu(
         &mut self,
         pdu: Bytes,
-        owner: ActorId,
-        service_instance: ServiceInstanceId,
+        bound: BoundContext,
         instance: ActorRef<FcltuServiceInstance>,
-        active: bool,
     ) -> Result<(), Abort> {
+        let BoundContext {
+            owner,
+            service_instance,
+            active,
+            version,
+            me,
+        } = bound;
         match FcltuUserPdu::decode(pdu).map_err(decode_error)? {
             FcltuUserPdu::Start(invocation) if !active => {
                 let request = FcltuStartRequest {
                     owner,
                     first_cltu_id: invocation.first_cltu_id,
+                    notices: me.recipient::<CltuNotice>(),
                 };
                 instance.ask(request).await.map_err(instance_stopped)?;
                 let ret = CltuStartReturn {
@@ -544,6 +581,12 @@ impl SleAssociationActor {
                 let ret = FcltuProviderPdu::UnbindReturn(UnbindReturn::default());
                 self.unbind(owner, ret.encode()).await?;
             }
+            FcltuUserPdu::ScheduleStatusReport(invocation) => {
+                self.schedule_status_report(invocation, owner, &me).await?;
+            }
+            FcltuUserPdu::GetParameter(invocation) => {
+                self.get_parameter(invocation, owner, &instance, version).await?;
+            }
             FcltuUserPdu::Start(_) => return Err(protocol_error("START")),
             FcltuUserPdu::TransferData(_) => return Err(protocol_error("TRANSFER-DATA")),
             FcltuUserPdu::Stop(_) => return Err(protocol_error("STOP")),
@@ -551,6 +594,109 @@ impl SleAssociationActor {
             FcltuUserPdu::Bind(_) => return Err(protocol_error("BIND")),
         }
         Ok(())
+    }
+
+    fn bound_instance(&self) -> Option<ServiceInstanceRef> {
+        match &self.state {
+            AssociationState::Bound { instance, .. } => Some(instance.clone()),
+            _ => None,
+        }
+    }
+
+    /// SCHEDULE-STATUS-REPORT: answers, then reports at once or starts or
+    /// stops the periodic reports. The first periodic report follows at
+    /// once, so the user learns the state without waiting a cycle.
+    async fn schedule_status_report(
+        &mut self,
+        invocation: ScheduleStatusReportInvocation,
+        owner: ActorId,
+        me: &ActorRef<Self>,
+    ) -> Result<(), Abort> {
+        let reporting = matches!(self.state, AssociationState::Bound { reports: Some(_), .. });
+        let result = match invocation.request {
+            ReportRequestType::Periodically(cycle) if !(2..=600).contains(&cycle) => Err(Diagnostic::Specific(
+                schedule_status_report_diagnostic::INVALID_REPORTING_CYCLE,
+            )),
+            ReportRequestType::Stop if !reporting => {
+                Err(Diagnostic::Specific(schedule_status_report_diagnostic::ALREADY_STOPPED))
+            }
+            _ => Ok(()),
+        };
+        let ret = ScheduleStatusReportReturn {
+            credentials: Credentials::Unused,
+            invoke_id: invocation.invoke_id,
+            result,
+        };
+        let pdu = match self.bound_instance() {
+            Some(ServiceInstanceRef::Raf(_)) => RafProviderPdu::ScheduleStatusReportReturn(ret).encode(),
+            Some(ServiceInstanceRef::Fcltu(_)) => FcltuProviderPdu::ScheduleStatusReportReturn(ret).encode(),
+            None => return Ok(()),
+        };
+        self.send(pdu).await?;
+        if result.is_err() {
+            return Ok(());
+        }
+        let ticker = match invocation.request {
+            ReportRequestType::Immediately => return self.send_status_report(owner).await,
+            ReportRequestType::Periodically(cycle) => {
+                Some(start_ticker(me.clone(), Duration::from_secs(u64::from(cycle))))
+            }
+            ReportRequestType::Stop => None,
+        };
+        if let AssociationState::Bound { reports, .. } = &mut self.state {
+            *reports = ticker;
+        }
+        Ok(())
+    }
+
+    /// Sends a RAF- or CLTU-STATUS-REPORT with the state of the instance.
+    async fn send_status_report(&mut self, owner: ActorId) -> Result<(), Abort> {
+        let pdu = match self.bound_instance() {
+            Some(ServiceInstanceRef::Raf(instance)) => {
+                let report = instance
+                    .ask(RafStatusRequest { owner })
+                    .await
+                    .map_err(instance_stopped)?;
+                RafProviderPdu::StatusReport(report).encode()
+            }
+            Some(ServiceInstanceRef::Fcltu(instance)) => {
+                let report = instance.ask(FcltuStatusRequest).await.map_err(instance_stopped)?;
+                FcltuProviderPdu::StatusReport(report).encode()
+            }
+            None => return Ok(()),
+        };
+        self.send(pdu).await
+    }
+
+    /// CLTU-GET-PARAMETER for the expected CLTU and event identifications;
+    /// other parameters get `unknownParameter`.
+    async fn get_parameter(
+        &mut self,
+        invocation: CltuGetParameterInvocation,
+        owner: ActorId,
+        instance: &ActorRef<FcltuServiceInstance>,
+        version: u16,
+    ) -> Result<(), Abort> {
+        let result = match invocation.parameter {
+            parameter_name::EXPECTED_SLDU_IDENTIFICATION => {
+                let expected = instance
+                    .ask(ExpectedCltuIdRequest { owner })
+                    .await
+                    .map_err(instance_stopped)?;
+                Ok(CltuParameter::ExpectedSlduIdentification(expected))
+            }
+            // THROW-EVENT is not supported, so no event has been invoked.
+            parameter_name::EXPECTED_EVENT_INVOCATION_IDENTIFICATION => {
+                Ok(CltuParameter::ExpectedEventInvocationIdentification(0))
+            }
+            _ => Err(Diagnostic::Specific(get_parameter_diagnostic::UNKNOWN_PARAMETER)),
+        };
+        let ret = FcltuProviderPdu::GetParameterReturn(CltuGetParameterReturn {
+            credentials: Credentials::Unused,
+            invoke_id: invocation.invoke_id,
+            result,
+        });
+        self.send(ret.encode_version(version)).await
     }
 }
 
@@ -627,14 +773,25 @@ impl Message<SlePdu> for SleAssociationActor {
                 service_instance,
                 instance,
                 active,
+                version,
+                ..
             } => {
-                let (service_instance, active) = (service_instance.clone(), *active);
+                let (service_instance, active, version) = (service_instance.clone(), *active, *version);
+                let me = ctx.actor_ref().clone();
                 match instance.clone() {
                     ServiceInstanceRef::Raf(instance) => {
-                        self.on_raf_pdu(pdu, owner, service_instance, instance, active).await
+                        self.on_raf_pdu(pdu, owner, service_instance, instance, active, me)
+                            .await
                     }
                     ServiceInstanceRef::Fcltu(instance) => {
-                        self.on_fcltu_pdu(pdu, owner, service_instance, instance, active).await
+                        let bound = BoundContext {
+                            owner,
+                            service_instance,
+                            active,
+                            version,
+                            me,
+                        };
+                        self.on_fcltu_pdu(pdu, bound, instance).await
                     }
                 }
             }
@@ -646,6 +803,40 @@ impl Message<SlePdu> for SleAssociationActor {
 }
 
 impl_batch_message!(SleAssociationActor, SlePdu);
+
+/// Sends a periodic status report.
+impl Message<Tick> for SleAssociationActor {
+    type Reply = ();
+
+    async fn handle(&mut self, _tick: Tick, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let owner = ctx.actor_ref().id();
+        if matches!(self.state, AssociationState::Bound { reports: Some(_), .. })
+            && let Err(abort) = self.send_status_report(owner).await
+        {
+            self.abort(abort, owner).await;
+        }
+    }
+}
+
+/// Sends a CLTU-ASYNC-NOTIFY reported by the FCLTU instance.
+impl Message<CltuNotice> for SleAssociationActor {
+    type Reply = ();
+
+    async fn handle(&mut self, CltuNotice(notify): CltuNotice, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        if !matches!(
+            self.state,
+            AssociationState::Bound {
+                instance: ServiceInstanceRef::Fcltu(_),
+                ..
+            }
+        ) {
+            return;
+        }
+        if let Err(abort) = self.send(FcltuProviderPdu::AsyncNotify(notify).encode()).await {
+            self.abort(abort, ctx.actor_ref().id()).await;
+        }
+    }
+}
 
 /// Aborts the association if the BIND has not arrived in time.
 impl Message<BindTimeout> for SleAssociationActor {

@@ -32,8 +32,8 @@ const TAG_START_INVOCATION: Tag = Tag::ctx_cons(0);
 const TAG_START_RETURN: Tag = Tag::ctx_cons(1);
 const TAG_STOP_INVOCATION: Tag = Tag::ctx_cons(2);
 const TAG_STOP_RETURN: Tag = Tag::ctx_cons(3);
-const TAG_SCHEDULE_STATUS_REPORT: Tag = Tag::ctx_cons(4);
 const TAG_GET_PARAMETER: Tag = Tag::ctx_cons(6);
+const TAG_STATUS_REPORT: Tag = Tag::ctx_cons(9);
 const TAG_TRANSFER_BUFFER: Tag = Tag::ctx_cons(8);
 const TAG_ANNOTATED_FRAME: Tag = Tag::ctx_cons(0);
 const TAG_SYNC_NOTIFICATION: Tag = Tag::ctx_cons(1);
@@ -274,6 +274,102 @@ pub fn encode_transfer_buffer(frames: &[RafFrame]) -> Bytes {
     w.into_bytes()
 }
 
+/// The lock status of a receiver loop in a RAF-STATUS-REPORT.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LockStatus {
+    /// In lock.
+    InLock = 0,
+    /// Out of lock.
+    OutOfLock = 1,
+    /// Not in use (subcarrier only).
+    NotInUse = 2,
+    /// Unknown.
+    Unknown = 3,
+}
+
+impl LockStatus {
+    fn from_i64(v: i64) -> BerResult<Self> {
+        match v {
+            0 => Ok(Self::InLock),
+            1 => Ok(Self::OutOfLock),
+            2 => Ok(Self::NotInUse),
+            3 => Ok(Self::Unknown),
+            _ => Err(BerError::InvalidValue("lock status")),
+        }
+    }
+}
+
+/// The production status of a RAF service instance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RafProductionStatus {
+    /// Frames are produced.
+    Running = 0,
+    /// Production is interrupted.
+    Interrupted = 1,
+    /// Production is halted.
+    Halted = 2,
+}
+
+impl RafProductionStatus {
+    fn from_i64(v: i64) -> BerResult<Self> {
+        match v {
+            0 => Ok(Self::Running),
+            1 => Ok(Self::Interrupted),
+            2 => Ok(Self::Halted),
+            _ => Err(BerError::InvalidValue("RAF production status")),
+        }
+    }
+}
+
+/// RAF-STATUS-REPORT invocation, sent by the provider after a
+/// SCHEDULE-STATUS-REPORT. The encoding is the same for all versions; the
+/// lock statuses of version 1 and 2 may also be `NotInUse`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RafStatusReport {
+    /// The credentials of the provider.
+    pub credentials: Credentials,
+    /// Error-free frames received.
+    pub error_free_frame_number: u32,
+    /// Frames delivered to the user.
+    pub delivered_frame_number: u32,
+    /// Frame synchroniser lock.
+    pub frame_sync_lock_status: LockStatus,
+    /// Symbol synchroniser lock.
+    pub symbol_sync_lock_status: LockStatus,
+    /// Subcarrier demodulator lock.
+    pub subcarrier_lock_status: LockStatus,
+    /// Carrier demodulator lock.
+    pub carrier_lock_status: LockStatus,
+    /// The production status.
+    pub production_status: RafProductionStatus,
+}
+
+impl RafStatusReport {
+    fn write(&self, w: &mut BerWriter) {
+        self.credentials.write(w);
+        w.integer(Tag::INTEGER, i64::from(self.error_free_frame_number));
+        w.integer(Tag::INTEGER, i64::from(self.delivered_frame_number));
+        w.integer(Tag::INTEGER, self.frame_sync_lock_status as i64);
+        w.integer(Tag::INTEGER, self.symbol_sync_lock_status as i64);
+        w.integer(Tag::INTEGER, self.subcarrier_lock_status as i64);
+        w.integer(Tag::INTEGER, self.carrier_lock_status as i64);
+        w.integer(Tag::INTEGER, self.production_status as i64);
+    }
+
+    fn read(r: &mut BerReader) -> BerResult<Self> {
+        Ok(Self {
+            credentials: Credentials::read(r)?,
+            error_free_frame_number: r.integer_as(Tag::INTEGER)?,
+            delivered_frame_number: r.integer_as(Tag::INTEGER)?,
+            frame_sync_lock_status: LockStatus::from_i64(r.integer(Tag::INTEGER)?)?,
+            symbol_sync_lock_status: LockStatus::from_i64(r.integer(Tag::INTEGER)?)?,
+            subcarrier_lock_status: LockStatus::from_i64(r.integer(Tag::INTEGER)?)?,
+            carrier_lock_status: LockStatus::from_i64(r.integer(Tag::INTEGER)?)?,
+            production_status: RafProductionStatus::from_i64(r.integer(Tag::INTEGER)?)?,
+        })
+    }
+}
+
 /// PDUs sent by the RAF user.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RafUserPdu {
@@ -285,6 +381,8 @@ pub enum RafUserPdu {
     Start(RafStartInvocation),
     /// RAF-STOP invocation.
     Stop(StopInvocation),
+    /// RAF-SCHEDULE-STATUS-REPORT invocation.
+    ScheduleStatusReport(ScheduleStatusReportInvocation),
 }
 
 impl RafUserPdu {
@@ -296,12 +394,12 @@ impl RafUserPdu {
             Self::Unbind(v) => w.constructed(TAG_UNBIND_INVOCATION, |w| v.write(w)),
             Self::Start(v) => w.constructed(TAG_START_INVOCATION, |w| v.write(w)),
             Self::Stop(v) => w.constructed(TAG_STOP_INVOCATION, |w| v.write(w)),
+            Self::ScheduleStatusReport(v) => w.constructed(TAG_SCHEDULE_STATUS_REPORT_INVOCATION, |w| v.write(w)),
         }
         w.into_bytes()
     }
 
-    /// Decodes a PDU. GET-PARAMETER and SCHEDULE-STATUS-REPORT give
-    /// [`PduError::Unsupported`].
+    /// Decodes a PDU. GET-PARAMETER gives [`PduError::Unsupported`].
     pub fn decode(pdu: Bytes) -> Result<Self, PduError> {
         let (tag, mut r) = open_pdu(pdu)?;
         let pdu = match tag {
@@ -309,7 +407,10 @@ impl RafUserPdu {
             TAG_UNBIND_INVOCATION => Self::Unbind(UnbindInvocation::read(&mut r)?),
             TAG_START_INVOCATION => Self::Start(RafStartInvocation::read(&mut r)?),
             TAG_STOP_INVOCATION => Self::Stop(StopInvocation::read(&mut r)?),
-            TAG_SCHEDULE_STATUS_REPORT | TAG_GET_PARAMETER => return Err(PduError::Unsupported(tag)),
+            TAG_SCHEDULE_STATUS_REPORT_INVOCATION => {
+                Self::ScheduleStatusReport(ScheduleStatusReportInvocation::read(&mut r)?)
+            }
+            TAG_GET_PARAMETER => return Err(PduError::Unsupported(tag)),
             other => return Err(BerError::UnknownChoice(other).into()),
         };
         finish(r, pdu)
@@ -329,6 +430,10 @@ pub enum RafProviderPdu {
     StopReturn(Acknowledgement),
     /// RAF-TRANSFER-BUFFER with RAF-TRANSFER-DATA invocations.
     TransferBuffer(Vec<RafFrame>),
+    /// RAF-SCHEDULE-STATUS-REPORT return.
+    ScheduleStatusReportReturn(ScheduleStatusReportReturn),
+    /// RAF-STATUS-REPORT invocation.
+    StatusReport(RafStatusReport),
 }
 
 impl RafProviderPdu {
@@ -341,6 +446,8 @@ impl RafProviderPdu {
             Self::StartReturn(v) => w.constructed(TAG_START_RETURN, |w| v.write(w)),
             Self::StopReturn(v) => w.constructed(TAG_STOP_RETURN, |w| v.write(w)),
             Self::TransferBuffer(frames) => return encode_transfer_buffer(frames),
+            Self::ScheduleStatusReportReturn(v) => w.constructed(TAG_SCHEDULE_STATUS_REPORT_RETURN, |w| v.write(w)),
+            Self::StatusReport(v) => w.constructed(TAG_STATUS_REPORT, |w| v.write(w)),
         }
         w.into_bytes()
     }
@@ -354,6 +461,10 @@ impl RafProviderPdu {
             TAG_UNBIND_RETURN => Self::UnbindReturn(UnbindReturn::read(&mut r)?),
             TAG_START_RETURN => Self::StartReturn(RafStartReturn::read(&mut r)?),
             TAG_STOP_RETURN => Self::StopReturn(Acknowledgement::read(&mut r)?),
+            TAG_SCHEDULE_STATUS_REPORT_RETURN => {
+                Self::ScheduleStatusReportReturn(ScheduleStatusReportReturn::read(&mut r)?)
+            }
+            TAG_STATUS_REPORT => Self::StatusReport(RafStatusReport::read(&mut r)?),
             TAG_TRANSFER_BUFFER => {
                 let mut frames = Vec::new();
                 while !r.is_empty() {
@@ -454,6 +565,37 @@ mod tests {
         for p in pdus {
             assert_eq!(RafProviderPdu::decode(p.encode()).unwrap(), p);
         }
+    }
+
+    #[test]
+    fn status_report_wire_format() {
+        let report = RafProviderPdu::StatusReport(RafStatusReport {
+            credentials: Credentials::Unused,
+            error_free_frame_number: 300,
+            delivered_frame_number: 5,
+            frame_sync_lock_status: LockStatus::InLock,
+            symbol_sync_lock_status: LockStatus::InLock,
+            subcarrier_lock_status: LockStatus::NotInUse,
+            carrier_lock_status: LockStatus::InLock,
+            production_status: RafProductionStatus::Running,
+        });
+        let encoded = report.encode();
+        #[rustfmt::skip]
+        let expected = [
+            0xa9, 0x18, 0x80, 0x00,
+            0x02, 0x02, 0x01, 0x2c, 0x02, 0x01, 0x05,
+            0x02, 0x01, 0x00, 0x02, 0x01, 0x00, 0x02, 0x01, 0x02, 0x02, 0x01, 0x00,
+            0x02, 0x01, 0x00,
+        ];
+        assert_eq!(&encoded[..], &expected);
+        assert_eq!(RafProviderPdu::decode(encoded).unwrap(), report);
+
+        let ssr = RafUserPdu::ScheduleStatusReport(ScheduleStatusReportInvocation {
+            credentials: Credentials::Unused,
+            invoke_id: 4,
+            request: ReportRequestType::Immediately,
+        });
+        assert_eq!(RafUserPdu::decode(ssr.encode()).unwrap(), ssr);
     }
 
     #[test]

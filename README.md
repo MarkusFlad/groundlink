@@ -39,6 +39,11 @@ and [tokio](https://tokio.rs).
   heartbeats, dead timer) on top of a `TmlServer` or `TmlClient` and
   exchanges the BER-encoded SLE PDUs with the SLE layer as `SlePdu`
   messages.
+- **SLE PDUs and provider**: BER encoding and the PDUs of Return All Frames
+  (CCSDS 911.1-B-4) and Forward CLTU (CCSDS 912.1-B-4), with BIND, UNBIND,
+  START, STOP and TRANSFER-DATA; provider actors on top of the
+  `TmlLinkActor`: a `SleAssociationActor` per port and a
+  `RafServiceInstance` or `FcltuServiceInstance` per service instance.
 - **Simple string protocol**: a length-prefixed string protocol, useful for
   getting started and for tests.
 - **Test helpers**: `TestActor` records messages for assertions in tests.
@@ -143,6 +148,22 @@ TM(1,3) (start of execution), TM(17,2) (Are-You-Alive report) and TM(1,7)
 receives plain Space Packets, so that the `PusTcAcceptor` can answer an
 invalid PUS packet (for example one with a CRC error) with TM(1,2) instead
 of dropping it.
+
+### SLE provider
+
+An SLE provider with a RAF port and an FCLTU port:
+
+```sh
+cargo run --example sle_provider -- 5100 5101
+```
+
+The RAF service instance `sagr=1.spack=VST-PASS0001.rsl-fg=1.raf=onlt1`
+on port 5100 delivers a generated frame every 100 ms to a user that has
+bound and started it. The FCLTU service instance
+`sagr=1.spack=VST-PASS0001.fsl-fg=1.cltu=cltu1` on port 5101 prints the
+CLTUs it accepts. Both ports speak ISP1, so any SLE user (for example one
+built on ESA's SLE API) can connect. The provider events (bound, started,
+aborted, ...) are printed as well.
 
 ### Space Packet relay with batches
 

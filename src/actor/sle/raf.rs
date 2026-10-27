@@ -48,12 +48,14 @@ impl RafConfig {
     }
 }
 
-/// Asks the instance to start delivering frames to `link`, filtered by
-/// `quality`.
+/// Asks the instance to send `start_return` to `link` and then to deliver
+/// the frames of `quality` there. Sending the return here puts it before
+/// the first transfer buffer, and the frames after it are delivered.
 pub(crate) struct RafStartRequest {
     pub(crate) owner: ActorId,
     pub(crate) quality: RequestedFrameQuality,
     pub(crate) link: Downstream<SlePdu>,
+    pub(crate) start_return: SlePdu,
 }
 
 /// Asks the instance to stop delivering frames. The frames in the transfer
@@ -201,10 +203,14 @@ impl Message<RafStartRequest> for RafServiceInstance {
             warn!("RafServiceInstance: START from an association that is not bound");
             return;
         };
+        let mut link = request.link;
+        if let Err(err) = link.send(request.start_return).await {
+            warn!("RafServiceInstance: could not send the START return: {err}");
+        }
         // Online delivery: frames from before START are not delivered. None
         // are held here, since frames are discarded while not active.
         binding.delivery = Some(Delivery {
-            link: request.link,
+            link,
             quality: request.quality,
             first_after_start: true,
             buffer: Vec::with_capacity(capacity),

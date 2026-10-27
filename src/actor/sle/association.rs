@@ -256,7 +256,8 @@ fn unbound_pdu_error(pdu: &Bytes, err: PduError) -> Abort {
 /// - goes from bound to active on START and back on STOP, and ends the
 ///   association on UNBIND, after which the connection is closed;
 /// - answers every invocation with the return encoded for the service of
-///   the instance; for RAF, the instance sends the transfer buffers itself.
+///   the instance; for RAF, the instance sends the transfer buffers, and
+///   the START return before them.
 ///
 /// A PDU that is not allowed in the current state, e.g. STOP before START,
 /// aborts the association with PEER-ABORT `protocolError`, one that cannot
@@ -450,18 +451,18 @@ impl SleAssociationActor {
     ) -> Result<(), Abort> {
         match RafUserPdu::decode(pdu).map_err(decode_error)? {
             RafUserPdu::Start(invocation) if !active => {
-                // The START return goes to the link before the instance can
-                // send the first transfer buffer.
                 let ret = RafStartReturn {
                     credentials: Credentials::Unused,
                     invoke_id: invocation.invoke_id,
                     result: Ok(()),
                 };
-                self.send(RafProviderPdu::StartReturn(ret).encode()).await?;
+                // The instance sends the START return, before its first
+                // transfer buffer.
                 let request = RafStartRequest {
                     owner,
                     quality: invocation.requested_quality,
                     link: self.link.clone(),
+                    start_return: SlePdu(RafProviderPdu::StartReturn(ret).encode()),
                 };
                 instance.ask(request).await.map_err(instance_stopped)?;
                 self.set_active(true);

@@ -70,6 +70,10 @@
 //! - `pus_client <address> <tc_port> <tm_port>`: an interactive client with
 //!   two [`PusClient`]s that sends TC(17,1) and prints the received
 //!   telemetry.
+//! - `sle_provider <raf_port> <fcltu_port>`: an SLE provider with a
+//!   [`RafServiceInstance`] fed with generated frames and an
+//!   [`FcltuServiceInstance`] that prints the accepted CLTUs, each on its
+//!   own port.
 //!
 //! Run them with e.g. `cargo run --example pus_server -- 9000 9001` and
 //! `cargo run --example pus_client -- 127.0.0.1 9000 9001`.

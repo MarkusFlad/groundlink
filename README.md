@@ -34,6 +34,11 @@ and [tokio](https://tokio.rs).
   format, CRC, APID, service and subtype) and reports it via service 1;
   `PusTestServiceActor` implements service 17; `PusTmStamper` numbers the
   telemetry of an APID consecutively and adds the time stamps.
+- **SLE Transport Mapping Layer** (ISP1, CCSDS 913.1-B-2): TML messages and
+  a codec, and `TmlLinkActor`, which runs the TML rules (context message,
+  heartbeats, dead timer) on top of a `TmlServer` or `TmlClient` and
+  exchanges the BER-encoded SLE PDUs with the SLE layer as `SlePdu`
+  messages.
 - **Simple string protocol**: a length-prefixed string protocol, useful for
   getting started and for tests.
 - **Test helpers**: `TestActor` records messages for assertions in tests.
@@ -48,6 +53,7 @@ does not install a subscriber itself.
 | `simple_string` | `SimpleString` | `SimpleStringCodec` | `SimpleStringServer`, `SimpleStringClient`, … |
 | `ccsds` | `SpacePacket` | `SpacePacketCodec` | `SpacePacketServer`, `SpacePacketClient`, … |
 | `pus` | `PusPacket` | `PusCodec` | `PusServer`, `PusClient`, … |
+| `tml` | `TmlMessage` | `TmlCodec` | `TmlServer`, `TmlClient`, … |
 
 ## Usage
 

@@ -5,6 +5,8 @@
 //! - [`batch`]: several messages passed between actors as one kameo
 //!   message, for a high throughput of small messages.
 //! - [`pus`]: actors that process PUS packets for an application process.
+//! - [`tml`]: the SLE Transport Mapping Layer actor, which exchanges SLE
+//!   PDUs with the SLE layer as kameo messages.
 //! - [`test`](mod@test): a generic actor that records messages, for
 //!   assertions in tests.
 
@@ -12,3 +14,4 @@ pub mod batch;
 pub mod pus;
 pub mod tcp;
 pub mod test;
+pub mod tml;

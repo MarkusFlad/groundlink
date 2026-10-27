@@ -6,6 +6,8 @@
 //! - [`pus`]: ECSS PUS-C telecommand and telemetry packets on top of Space
 //!   Packets, their codec and typed service messages.
 //! - [`simple_string`]: a simple length-prefixed string protocol.
+//! - [`tml`]: the SLE Transport Mapping Layer messages of ISP1 (CCSDS
+//!   913.1-B-2), which carry BER-encoded SLE PDUs.
 //!
 //! A protocol consists of a message type implementing [`WireMessage`] and a
 //! codec implementing [`MessageCodec`].
@@ -18,6 +20,7 @@ pub mod ccsds;
 pub mod cuc;
 pub mod pus;
 pub mod simple_string;
+pub mod tml;
 
 /// A codec that can both decode (read) and encode (write) messages of type
 /// `M`.

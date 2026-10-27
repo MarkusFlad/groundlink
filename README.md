@@ -182,6 +182,36 @@ seconds and then sends five CLTUs:
 cargo run --example sle_user -- 127.0.0.1 5100 5101
 ```
 
+### PUS over SLE
+
+A simulated spacecraft behind an SLE provider, and an interactive ground
+segment that talks to it over RAF and FCLTU:
+
+```text
+sle_ground:     TC(17,1) ─▶ TcFrameEncoder ─CLTU─▶ SleUserActor ══FCLTU══╗
+                                                                         ▼
+sle_spacecraft: FcltuServiceInstance ─▶ TcFrameDecoder ─▶ PusTcAcceptor ─▶ PusTestServiceActor
+                RafServiceInstance ◀─ TmFrameEncoder ◀─ PusTmStamper ◀─ TM(1,x), TM(17,2)
+                       ║
+sle_ground:            ╚══RAF══▶ SleUserActor ─▶ TmFrameDecoder ─▶ printed TM
+```
+
+```sh
+cargo run --example sle_spacecraft -- 5200 5201
+```
+
+In a second terminal:
+
+```sh
+cargo run --example sle_ground -- 127.0.0.1 5200 5201
+```
+
+The ground segment reads the commands `Open` (binds and starts RAF and
+FCLTU), `TC17_1`, `Close` (stops and unbinds) and `Quit` from stdin. Each
+TC(17,1) goes as a CLTU with a TC Transfer Frame to the spacecraft, whose
+TM(1,1), TM(1,3), TM(17,2) and TM(1,7) come back in TM Transfer Frames
+and are printed.
+
 ### Space Packet relay with batches
 
 A relay that forwards Space Packets between a peer that connects to it

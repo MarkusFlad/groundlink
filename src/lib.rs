@@ -81,6 +81,12 @@
 //!   own port.
 //! - `sle_user <address> <raf_port> <fcltu_port>`: two [`SleUserActor`]s
 //!   that receive RAF frames from `sle_provider` and send it CLTUs.
+//! - `sle_spacecraft <raf_port> <fcltu_port>`: a simulated spacecraft
+//!   behind an SLE provider: TCs arrive in CLTUs over FCLTU, go through
+//!   [`TcFrameDecoder`] to the PUS actors, and their TM leaves through
+//!   [`TmFrameEncoder`] over RAF.
+//! - `sle_ground <address> <raf_port> <fcltu_port>`: an interactive ground
+//!   segment for `sle_spacecraft` that sends TC(17,1) and prints the TM.
 //!
 //! Run them with e.g. `cargo run --example pus_server -- 9000 9001` and
 //! `cargo run --example pus_client -- 127.0.0.1 9000 9001`.

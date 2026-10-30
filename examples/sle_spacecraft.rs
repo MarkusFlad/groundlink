@@ -2,10 +2,10 @@
 //! CLTUs over FCLTU, telemetry leaves as TM Transfer Frames over RAF.
 //!
 //! ```text
-//! FCLTU port ─▶ FcltuServiceInstance ─Cltu─▶ TcFrameDecoder ─SpacePacket─▶ PusTcAcceptor ─TC(17,1)─▶ PusTestServiceActor
-//!                                                                               │ TM(1,x)               │ TM(17,2)
-//!                                                                               ▼                       ▼
-//! RAF port   ◀─ RafServiceInstance ◀─RafFrame─ TmFrameEncoder ◀─PusPacket─ PusTmStamper ◀──────────────┘
+//! FCLTU port ─▶ FcltuServiceInstance ─Cltu─▶ TcFrameDecoder ─SpacePacket─▶ TcLog ─▶ PusTcAcceptor ─TC(17,1)─▶ PusTestServiceActor
+//!                                                                                        │ TM(1,x)               │ TM(17,2)
+//!                                                                                        ▼                       ▼
+//! RAF port   ◀─ RafServiceInstance ◀─RafFrame─ TmFrameEncoder ◀─PusPacket─ TmLog ◀─ PusTmStamper ◀──────────────┘
 //! ```
 //!
 //! Spacecraft ID 0x2a, TC and TM on virtual channel 0, TM frames of 1115
@@ -18,6 +18,10 @@
 //! only delivered while a RAF user has started the service; the rest is
 //! discarded, as on a real online RAF.
 //!
+//! Every telecommand that arrives is logged (`TC received: ...`), also one
+//! that is not a valid PUS packet, and so is every telemetry packet that
+//! is sent (`TM sent: ...`).
+//!
 //! Usage: `cargo run --example sle_spacecraft -- <raf_port> <fcltu_port>`,
 //! then `cargo run --example sle_ground -- 127.0.0.1 <raf_port> <fcltu_port>`.
 //!
@@ -29,16 +33,17 @@ use std::time::Duration;
 use anyhow::{Context as _, anyhow};
 use groundlink::protocol::pus::service17;
 use groundlink::{
-    Batch, Cltu, ConnectionEvent, FcltuConfig, FcltuServiceInstance, GetLocalAddr, PusConfig, PusPacket, PusTc,
-    PusTcAcceptor, PusTestServiceActor, PusTm, PusTmStamper, RafConfig, RafFrame, RafServiceInstance,
-    SleAssociationActor, SleAssociationConfig, SlePdu, SleProviderEvent, SleServiceRegistry, SpacePacket,
-    TcFrameConfig, TcFrameDecoder, TcpServerArgs, TmFrameConfig, TmFrameEncoder, TmlCodec, TmlLinkActor, TmlMessage,
-    TmlResponderConfig, TmlServer,
+    AreYouAliveReport, Batch, Cltu, ConnectionEvent, Downstream, FcltuConfig, FcltuServiceInstance, GetLocalAddr,
+    PusConfig, PusPacket, PusTc, PusTcAcceptor, PusTestServiceActor, PusTm, PusTmStamper, RafConfig, RafFrame,
+    RafServiceInstance, SleAssociationActor, SleAssociationConfig, SlePdu, SleProviderEvent, SleServiceRegistry,
+    SpacePacket, TcFrameConfig, TcFrameDecoder, TcpServerArgs, TmFrameConfig, TmFrameEncoder, TmlCodec, TmlLinkActor,
+    TmlMessage, TmlResponderConfig, TmlServer, VerificationReport,
 };
 use kameo::actor::{Actor, ActorRef, Recipient, Spawn};
 use kameo::error::Infallible;
 use kameo::mailbox;
 use kameo::message::{Context, Message};
+use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
 const RAF_SI: &str = "sagr=1.spack=VST-PASS0001.rsl-fg=1.raf=onlt1";
@@ -65,6 +70,102 @@ impl Message<SleProviderEvent> for EventPrinter {
         println!("SLE: {event:?}");
     }
 }
+
+/// Logs every telecommand on its way to the acceptance check.
+struct TcLog {
+    pus_config: PusConfig,
+    acceptor: Downstream<SpacePacket>,
+}
+
+impl Actor for TcLog {
+    type Args = Self;
+    type Error = Infallible;
+
+    async fn on_start(state: Self::Args, _actor_ref: ActorRef<Self>) -> Result<Self, Self::Error> {
+        Ok(state)
+    }
+}
+
+impl Message<SpacePacket> for TcLog {
+    type Reply = ();
+
+    async fn handle(&mut self, packet: SpacePacket, _ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let header = packet.header;
+        match PusPacket::from_space_packet(packet.clone(), &self.pus_config) {
+            Ok(PusPacket::Tc(tc)) => {
+                let sec = &tc.secondary_header;
+                let ack = sec.ack_flags;
+                let flag = |set: bool, c: char| if set { c } else { '-' };
+                info!(
+                    "TC received: TC({},{}) apid={:#05x} seq={} source={} ack={}{}{}{} app_data={} octets",
+                    sec.service_type,
+                    sec.message_subtype,
+                    header.apid,
+                    header.sequence_count,
+                    sec.source_id,
+                    flag(ack.acceptance, 'A'),
+                    flag(ack.start, 'S'),
+                    flag(ack.progress, 'P'),
+                    flag(ack.completion, 'C'),
+                    tc.app_data.len()
+                );
+            }
+            Ok(PusPacket::Tm(_)) => warn!(
+                "TC received: telemetry packet apid={:#05x} seq={} on the TC link",
+                header.apid, header.sequence_count
+            ),
+            Err(err) => warn!(
+                "TC received: space packet apid={:#05x} seq={} that is not a valid PUS TC: {err}",
+                header.apid, header.sequence_count
+            ),
+        }
+        if let Err(err) = self.acceptor.send(packet).await {
+            warn!("TC dropped, could not pass it on: {err}");
+        }
+    }
+}
+
+groundlink::impl_batch_message!(TcLog, SpacePacket, outputs = [acceptor]);
+
+/// Logs every telemetry packet on its way into the TM frames.
+struct TmLog {
+    encoder: Downstream<PusPacket>,
+}
+
+impl Actor for TmLog {
+    type Args = Self;
+    type Error = Infallible;
+
+    async fn on_start(state: Self::Args, _actor_ref: ActorRef<Self>) -> Result<Self, Self::Error> {
+        Ok(state)
+    }
+}
+
+impl Message<PusPacket> for TmLog {
+    type Reply = ();
+
+    async fn handle(&mut self, packet: PusPacket, _ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let header = packet.header();
+        let mut text = format!(
+            "TM sent: TM({},{}) apid={:#05x} seq={}",
+            packet.service_type(),
+            packet.message_subtype(),
+            header.apid,
+            header.sequence_count
+        );
+        if let Ok(report) = VerificationReport::try_from(packet.clone()) {
+            text += &format!(" {:?} for TC seq={}", report.kind, report.request_id.sequence_count);
+        } else if AreYouAliveReport::try_from(packet.clone()).is_ok() {
+            text += " are-you-alive report";
+        }
+        info!("{text}");
+        if let Err(err) = self.encoder.send(packet).await {
+            warn!("TM dropped, could not pass it on: {err}");
+        }
+    }
+}
+
+groundlink::impl_batch_message!(TmLog, PusPacket, outputs = [encoder]);
 
 /// Spawns a provider port on `port` for the instances of `registry`.
 async fn spawn_port(
@@ -125,7 +226,10 @@ async fn main() -> anyhow::Result<()> {
         TmFrameConfig::new(SPACECRAFT_ID, 0),
         raf.clone().recipient::<Batch<RafFrame>>(),
     ));
-    let stamper = PusTmStamper::spawn(PusTmStamper::new(APID, tm_encoder.recipient::<Batch<PusPacket>>()));
+    let tm_log = TmLog::spawn(TmLog {
+        encoder: tm_encoder.recipient::<Batch<PusPacket>>().into(),
+    });
+    let stamper = PusTmStamper::spawn(PusTmStamper::new(APID, tm_log.recipient::<Batch<PusPacket>>()));
     let telemetry = stamper.recipient::<PusTm>();
 
     // Telecommands: CLTU and frame decoding, acceptance check, service 17.
@@ -144,9 +248,13 @@ async fn main() -> anyhow::Result<()> {
                 test_service.recipient::<PusTc>(),
             ),
     );
+    let tc_log = TcLog::spawn(TcLog {
+        pus_config,
+        acceptor: acceptor.recipient::<Batch<SpacePacket>>().into(),
+    });
     let tc_decoder = TcFrameDecoder::spawn(TcFrameDecoder::new(
         TcFrameConfig::new(SPACECRAFT_ID, 0),
-        acceptor.recipient::<SpacePacket>(),
+        tc_log.recipient::<Batch<SpacePacket>>(),
     ));
     let fcltu = FcltuServiceInstance::spawn(FcltuServiceInstance::new(
         FcltuConfig::new(CLTU_SI.parse()?),

@@ -572,6 +572,26 @@ impl Default for PusConfig {
     }
 }
 
+impl PusConfig {
+    /// Uses time stamps of `tm_time_len` bytes in the TM secondary header.
+    pub fn with_tm_time_len(mut self, tm_time_len: usize) -> Self {
+        self.tm_time_len = tm_time_len;
+        self
+    }
+
+    /// Sets whether the packets carry a packet error control field.
+    pub fn with_packet_error_control(mut self, packet_error_control: bool) -> Self {
+        self.packet_error_control = packet_error_control;
+        self
+    }
+
+    /// Sets whether decoding also accepts telecommands with PUS version 1.
+    pub fn with_accept_tc_version_1(mut self, accept_tc_version_1: bool) -> Self {
+        self.accept_tc_version_1 = accept_tc_version_1;
+        self
+    }
+}
+
 /// Codec for PUS-C packets, usable with [`tokio_util::codec::Framed`] and
 /// the generic TCP actors (see [`PusServer`](crate::PusServer) and
 /// friends).

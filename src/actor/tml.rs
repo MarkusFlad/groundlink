@@ -96,6 +96,31 @@ impl Default for TmlResponderConfig {
 }
 
 impl TmlResponderConfig {
+    /// Allows `startup_timeout` between the TCP connect and the context
+    /// message.
+    pub fn with_startup_timeout(mut self, startup_timeout: Duration) -> Self {
+        self.startup_timeout = startup_timeout;
+        self
+    }
+
+    /// Sets whether the initiator may switch heartbeats off.
+    pub fn with_allow_no_heartbeat(mut self, allow_no_heartbeat: bool) -> Self {
+        self.allow_no_heartbeat = allow_no_heartbeat;
+        self
+    }
+
+    /// Accepts the heartbeat intervals in `heartbeat_interval`, in seconds.
+    pub fn with_heartbeat_interval(mut self, heartbeat_interval: RangeInclusive<u16>) -> Self {
+        self.heartbeat_interval = heartbeat_interval;
+        self
+    }
+
+    /// Accepts the dead factors in `dead_factor`.
+    pub fn with_dead_factor(mut self, dead_factor: RangeInclusive<u16>) -> Self {
+        self.dead_factor = dead_factor;
+        self
+    }
+
     fn check(&self, context: TmlContext) -> Result<(), TmlReleaseReason> {
         let rejected = |what: &str| Err(TmlReleaseReason::ContextRejected(what.to_string()));
         if context.heartbeat_interval == 0 {

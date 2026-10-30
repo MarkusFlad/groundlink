@@ -359,8 +359,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Telemetry: numbered and time-stamped, packed into TM frames that the
     // ground station receives and offers over RAF.
-    let mut raf_config = RafConfig::new(RAF_SI.parse()?);
-    raf_config.latency_limit = Duration::from_millis(100);
+    let raf_config = RafConfig::new(RAF_SI.parse()?).with_latency_limit(Duration::from_millis(100));
     let raf = RafServiceInstance::spawn(RafServiceInstance::new(raf_config));
     let tm_encoder = TmFrameEncoder::spawn(TmFrameEncoder::new(
         TmFrameConfig::new(SPACECRAFT_ID, 0),
@@ -375,8 +374,7 @@ async fn main() -> anyhow::Result<()> {
     // Telecommands: CLTU and frame decoding, acceptance check, service 17.
     let test_service = PusTestServiceActor::spawn(PusTestServiceActor::new(APID, telemetry.clone()));
     // Also PUS-A/B telecommands (version 1), as ReatMetric sends them.
-    let mut pus_config = PusConfig::default();
-    pus_config.accept_tc_version_1 = true;
+    let pus_config = PusConfig::default().with_accept_tc_version_1(true);
     let acceptor = PusTcAcceptor::spawn(
         PusTcAcceptor::new(APID, telemetry)
             .with_pus_config(pus_config)

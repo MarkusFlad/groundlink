@@ -49,6 +49,19 @@ impl TcFrameConfig {
             fecf: true,
         }
     }
+
+    /// Sends the packets with a segment header with the MAP identifier
+    /// `map_id`.
+    pub fn with_map_id(mut self, map_id: u8) -> Self {
+        self.map_id = Some(map_id);
+        self
+    }
+
+    /// Sets whether the frames carry a frame error control field.
+    pub fn with_fecf(mut self, fecf: bool) -> Self {
+        self.fecf = fecf;
+        self
+    }
 }
 
 /// A TC Transfer Frame.

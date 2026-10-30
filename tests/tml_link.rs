@@ -138,9 +138,7 @@ async fn an_sle_pdu_before_the_context_message_closes_the_connection() {
 
 #[tokio::test]
 async fn a_rejected_context_closes_the_connection() {
-    let mut config = TmlResponderConfig::default();
-    config.allow_no_heartbeat = false;
-    let responder = spawn_responder(config);
+    let responder = spawn_responder(TmlResponderConfig::default().with_allow_no_heartbeat(false));
     let mut peer = connect(&responder).await;
 
     peer.send(TmlMessage::Context(TmlContext::new(0, 0))).await.unwrap();
@@ -155,9 +153,7 @@ async fn a_rejected_context_closes_the_connection() {
 
 #[tokio::test]
 async fn a_missing_context_message_times_out() {
-    let mut config = TmlResponderConfig::default();
-    config.startup_timeout = Duration::from_millis(300);
-    let responder = spawn_responder(config);
+    let responder = spawn_responder(TmlResponderConfig::default().with_startup_timeout(Duration::from_millis(300)));
     let mut peer = connect(&responder).await;
 
     assert_eq!(next_non_heartbeat(&mut peer).await, None);

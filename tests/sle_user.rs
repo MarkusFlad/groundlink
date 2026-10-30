@@ -39,9 +39,9 @@ struct Provider {
 /// A provider port with a RAF instance (2 frames per buffer) and an FCLTU
 /// instance whose CLTUs go to a `TestActor`.
 async fn spawn_provider() -> Provider {
-    let mut raf_config = RafConfig::new(RAF_SI.parse().unwrap());
-    raf_config.transfer_buffer_size = 2;
-    raf_config.latency_limit = Duration::from_millis(50);
+    let raf_config = RafConfig::new(RAF_SI.parse().unwrap())
+        .with_transfer_buffer_size(2)
+        .with_latency_limit(Duration::from_millis(50));
     let raf = RafServiceInstance::spawn(RafServiceInstance::new(raf_config).with_tick(Duration::from_millis(10)));
     let cltus = TestActor::<Cltu>::spawn(TestActor::new());
     let fcltu = FcltuServiceInstance::spawn(FcltuServiceInstance::new(
@@ -238,11 +238,7 @@ async fn a_rejected_bind_is_reported_and_the_user_can_bind_again() {
         SleUserError::BindRejected(bind_diagnostic::NO_SUCH_SERVICE_INSTANCE)
     );
 
-    let user = spawn_user(provider.addr, true, {
-        let mut config = config(RAF_SI);
-        config.version = 1;
-        config
-    });
+    let user = spawn_user(provider.addr, true, config(RAF_SI).with_version(1));
     assert_eq!(
         user_error(user.user.ask(SleBind).await),
         SleUserError::BindRejected(bind_diagnostic::VERSION_NOT_SUPPORTED)
@@ -283,11 +279,11 @@ async fn operations_out_of_order_are_refused_locally() {
 async fn a_missing_return_aborts_the_association() {
     // A provider that accepts the connection but never answers.
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let user = spawn_user(listener.local_addr().unwrap(), true, {
-        let mut config = config(RAF_SI);
-        config.return_timeout = Duration::from_millis(200);
-        config
-    });
+    let user = spawn_user(
+        listener.local_addr().unwrap(),
+        true,
+        config(RAF_SI).with_return_timeout(Duration::from_millis(200)),
+    );
     let bind = tokio::spawn({
         let user = user.user.clone();
         async move { user.ask(SleBind).await }

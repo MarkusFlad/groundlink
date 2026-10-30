@@ -97,6 +97,24 @@ impl KeepAlive {
     pub fn timeout(&self) -> Duration {
         self.idle + self.interval * self.retries
     }
+
+    /// Sends the first probe after `idle` without traffic.
+    pub fn with_idle(mut self, idle: Duration) -> Self {
+        self.idle = idle;
+        self
+    }
+
+    /// Waits `interval` between two probes.
+    pub fn with_interval(mut self, interval: Duration) -> Self {
+        self.interval = interval;
+        self
+    }
+
+    /// Lets the connection fail after `retries` unanswered probes.
+    pub fn with_retries(mut self, retries: u32) -> Self {
+        self.retries = retries;
+        self
+    }
 }
 
 impl Default for KeepAlive {

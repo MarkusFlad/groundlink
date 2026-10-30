@@ -64,6 +64,18 @@ impl SleUserConfig {
             return_timeout: Duration::from_secs(30),
         }
     }
+
+    /// Binds with `version` of the service.
+    pub fn with_version(mut self, version: u16) -> Self {
+        self.version = version;
+        self
+    }
+
+    /// Waits up to `return_timeout` for the return of an invocation.
+    pub fn with_return_timeout(mut self, return_timeout: Duration) -> Self {
+        self.return_timeout = return_timeout;
+        self
+    }
 }
 
 /// Why an operation of a [`SleUserActor`] failed. Returned to callers that

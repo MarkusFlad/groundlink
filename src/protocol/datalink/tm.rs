@@ -72,6 +72,18 @@ impl TmFrameConfig {
     pub fn data_field_len(&self) -> usize {
         self.frame_len - PRIMARY_HEADER_LEN - if self.fecf { FECF_LEN } else { 0 }
     }
+
+    /// Uses frames of `frame_len` octets.
+    pub fn with_frame_len(mut self, frame_len: usize) -> Self {
+        self.frame_len = frame_len;
+        self
+    }
+
+    /// Sets whether the frames carry a frame error control field.
+    pub fn with_fecf(mut self, fecf: bool) -> Self {
+        self.fecf = fecf;
+        self
+    }
 }
 
 /// A TM Transfer Frame without secondary header.

@@ -55,6 +55,21 @@ impl Default for SleAssociationConfig {
     }
 }
 
+impl SleAssociationConfig {
+    /// Returns `responder_id` in every BIND return.
+    pub fn with_responder_id(mut self, responder_id: impl Into<String>) -> Self {
+        self.responder_id = responder_id.into();
+        self
+    }
+
+    /// Allows `bind_timeout` between the start of the TML link and the BIND
+    /// invocation.
+    pub fn with_bind_timeout(mut self, bind_timeout: Duration) -> Self {
+        self.bind_timeout = bind_timeout;
+        self
+    }
+}
+
 /// A service instance actor, as held by a [`SleServiceRegistry`].
 #[derive(Clone)]
 pub(crate) enum ServiceInstanceRef {

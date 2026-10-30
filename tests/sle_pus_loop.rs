@@ -66,8 +66,7 @@ async fn spawn_port(registry: SleServiceRegistry) -> SocketAddr {
 
 /// The simulated spacecraft behind a provider with a RAF and an FCLTU port.
 async fn spawn_spacecraft() -> (SocketAddr, SocketAddr) {
-    let mut raf_config = RafConfig::new(RAF_SI.parse().unwrap());
-    raf_config.latency_limit = Duration::from_millis(50);
+    let raf_config = RafConfig::new(RAF_SI.parse().unwrap()).with_latency_limit(Duration::from_millis(50));
     let raf = RafServiceInstance::spawn(RafServiceInstance::new(raf_config).with_tick(Duration::from_millis(10)));
 
     // Telemetry: stamped, packed into TM frames, received by the ground

@@ -81,9 +81,9 @@ async fn pus_config_of_the_codec_reaches_server_and_client() {
     use groundlink::actor::tcp::Connect;
 
     // No packet error control and a 4-byte time stamp, unlike the default.
-    let mut config = PusConfig::default();
-    config.tm_time_len = 4;
-    config.packet_error_control = false;
+    let config = PusConfig::default()
+        .with_tm_time_len(4)
+        .with_packet_error_control(false);
     let codec = PusCodec::new(config);
 
     let at_server = TestActor::<PusPacket>::spawn(TestActor::new());

@@ -1,0 +1,97 @@
+error[E0432]: unresolved imports `groundlink::actor::tcp::PusReader`, `groundlink::actor::tcp::PusWriter`, `groundlink::actor::tcp::SimpleStringReader`, `groundlink::actor::tcp::SimpleStringWriter`
+ --> tests/ui/tcp_internals.rs:4:30
+  |
+4 | use groundlink::actor::tcp::{PusReader, PusWriter, SimpleStringReader, SimpleStringWriter};
+  |                              ^^^^^^^^^  ^^^^^^^^^  ^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^ no `SimpleStringWriter` in `actor::tcp`
+  |                              |          |          |
+  |                              |          |          no `SimpleStringReader` in `actor::tcp`
+  |                              |          no `PusWriter` in `actor::tcp`
+  |                              no `PusReader` in `actor::tcp`
+  |
+help: a similar name exists in the module
+  |
+4 - use groundlink::actor::tcp::{PusReader, PusWriter, SimpleStringReader, SimpleStringWriter};
+4 + use groundlink::actor::tcp::{PusServer, PusWriter, SimpleStringReader, SimpleStringWriter};
+  |
+help: a similar name exists in the module
+  |
+4 - use groundlink::actor::tcp::{PusReader, PusWriter, SimpleStringReader, SimpleStringWriter};
+4 + use groundlink::actor::tcp::{PusReader, PusWriter, SimpleStringServer, SimpleStringWriter};
+  |
+help: a similar name exists in the module
+  |
+4 - use groundlink::actor::tcp::{PusReader, PusWriter, SimpleStringReader, SimpleStringWriter};
+4 + use groundlink::actor::tcp::{PusReader, PusWriter, SimpleStringReader, SimpleStringServer};
+  |
+
+error[E0603]: struct `ConnectionHalfClosed` is private
+ --> tests/ui/tcp_internals.rs:3:30
+  |
+3 | use groundlink::actor::tcp::{ConnectionHalfClosed, Shutdown};
+  |                              ^^^^^^^^^^^^^^^^^^^^ private struct
+  |
+note: the struct `ConnectionHalfClosed` is defined here
+ --> src/actor/tcp.rs
+  |
+  | pub(crate) use message::{ConnectionHalfClosed, Shutdown};
+  |                          ^^^^^^^^^^^^^^^^^^^^
+
+error[E0603]: struct `Shutdown` is private
+ --> tests/ui/tcp_internals.rs:3:52
+  |
+3 | use groundlink::actor::tcp::{ConnectionHalfClosed, Shutdown};
+  |                                                    ^^^^^^^^ private struct
+  |
+note: the struct `Shutdown` is defined here
+ --> src/actor/tcp.rs
+  |
+  | pub(crate) use message::{ConnectionHalfClosed, Shutdown};
+  |                                                ^^^^^^^^
+
+error[E0603]: struct `TcpReaderActor` is private
+ --> tests/ui/tcp_internals.rs:5:30
+  |
+5 | use groundlink::actor::tcp::{TcpReaderActor, TcpReaderArgs, TcpWriterActor, TcpWriterArgs};
+  |                              ^^^^^^^^^^^^^^ private struct
+  |
+note: the struct `TcpReaderActor` is defined here
+ --> src/actor/tcp.rs
+  |
+  | pub(crate) struct TcpReaderActor<M, C>
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0603]: struct `TcpReaderArgs` is private
+ --> tests/ui/tcp_internals.rs:5:46
+  |
+5 | use groundlink::actor::tcp::{TcpReaderActor, TcpReaderArgs, TcpWriterActor, TcpWriterArgs};
+  |                                              ^^^^^^^^^^^^^ private struct
+  |
+note: the struct `TcpReaderArgs` is defined here
+ --> src/actor/tcp.rs
+  |
+  | pub(crate) struct TcpReaderArgs<M: Send + 'static, C> {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0603]: struct `TcpWriterActor` is private
+ --> tests/ui/tcp_internals.rs:5:61
+  |
+5 | use groundlink::actor::tcp::{TcpReaderActor, TcpReaderArgs, TcpWriterActor, TcpWriterArgs};
+  |                                                             ^^^^^^^^^^^^^^ private struct
+  |
+note: the struct `TcpWriterActor` is defined here
+ --> src/actor/tcp.rs
+  |
+  | pub(crate) struct TcpWriterActor<M, C> {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0603]: struct `TcpWriterArgs` is private
+ --> tests/ui/tcp_internals.rs:5:77
+  |
+5 | use groundlink::actor::tcp::{TcpReaderActor, TcpReaderArgs, TcpWriterActor, TcpWriterArgs};
+  |                                                                             ^^^^^^^^^^^^^ private struct
+  |
+note: the struct `TcpWriterArgs` is defined here
+ --> src/actor/tcp.rs
+  |
+  | pub(crate) struct TcpWriterArgs<C> {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

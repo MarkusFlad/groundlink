@@ -503,7 +503,8 @@ impl PusPacket {
         }
 
         let version = data[0] >> 4;
-        if version != PUS_VERSION {
+        let version_1_tc = version == 1 && header.packet_type == PacketType::Telecommand && config.accept_tc_version_1;
+        if version != PUS_VERSION && !version_1_tc {
             return Err(PusDecodeError::UnsupportedPusVersion(version));
         }
 
@@ -549,14 +550,22 @@ pub struct PusConfig {
     /// Whether TC and TM packets carry a packet error control field
     /// (CRC-16).
     pub packet_error_control: bool,
+    /// Whether decoding also accepts telecommands with PUS version 1
+    /// (PUS-A/B, ECSS-E-70-41A), whose secondary header has the same layout
+    /// as PUS-C with a 16-bit source ID. Some ground systems, e.g.
+    /// ReatMetric, always send version 1. Encoding always writes
+    /// [`PUS_VERSION`].
+    pub accept_tc_version_1: bool,
 }
 
 impl Default for PusConfig {
-    /// Time stamp of [`DEFAULT_TM_TIME_LEN`] bytes, with packet error control.
+    /// Time stamp of [`DEFAULT_TM_TIME_LEN`] bytes, with packet error control,
+    /// PUS-C only.
     fn default() -> Self {
         PusConfig {
             tm_time_len: DEFAULT_TM_TIME_LEN,
             packet_error_control: true,
+            accept_tc_version_1: false,
         }
     }
 }
@@ -710,6 +719,7 @@ mod tests {
         let config = PusConfig {
             tm_time_len: 4,
             packet_error_control: false,
+            ..PusConfig::default()
         };
         let mut tm = PusTm::new(3, 99, 3, 25, &[1u8, 2, 3, 4][..], &b"housekeeping"[..]);
         tm.secondary_header.time_reference_status = 0x5;
@@ -794,8 +804,33 @@ mod tests {
         data[0] = 0x1F; // PUS-A
         space_packet.data = data.freeze();
 
-        let err = PusPacket::from_space_packet(space_packet, &config).unwrap_err();
+        let err = PusPacket::from_space_packet(space_packet.clone(), &config).unwrap_err();
         assert_eq!(err, PusDecodeError::UnsupportedPusVersion(1));
+
+        // Accepted on request, for telecommands only.
+        let lenient = PusConfig {
+            accept_tc_version_1: true,
+            ..config
+        };
+        let PusPacket::Tc(tc) = PusPacket::from_space_packet(space_packet, &lenient).unwrap() else {
+            panic!("expected a TC")
+        };
+        assert_eq!(
+            (tc.secondary_header.service_type, tc.secondary_header.message_subtype),
+            (17, 1)
+        );
+        assert_eq!(tc.secondary_header.ack_flags, AckFlags::from_bits(0xF));
+
+        let mut tm = PusPacket::from(PusTm::new(1, 1, 3, 25, vec![0u8; 7], Bytes::new()))
+            .to_space_packet(&lenient)
+            .unwrap();
+        let mut data = BytesMut::from(&tm.data[..]);
+        data[0] = 0x10;
+        tm.data = data.freeze();
+        assert_eq!(
+            PusPacket::from_space_packet(tm, &lenient).unwrap_err(),
+            PusDecodeError::UnsupportedPusVersion(1)
+        );
     }
 
     #[test]

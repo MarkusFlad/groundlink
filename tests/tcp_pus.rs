@@ -84,6 +84,7 @@ async fn pus_config_of_the_codec_reaches_server_and_client() {
     let config = PusConfig {
         tm_time_len: 4,
         packet_error_control: false,
+        ..PusConfig::default()
     };
     let codec = PusCodec::new(config);
 

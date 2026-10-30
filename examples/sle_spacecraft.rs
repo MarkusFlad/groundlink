@@ -11,7 +11,8 @@
 //! Spacecraft ID 0x2a, TC and TM on virtual channel 0, TM frames of 1115
 //! octets; both with frame error control field. The application process
 //! has APID 0x042 and supports TC(17,1), answered with TM(1,1), TM(1,3),
-//! TM(17,2) and TM(1,7). The service instances are
+//! TM(17,2) and TM(1,7). Telecommands may also carry PUS version 1, as
+//! ReatMetric sends them. The service instances are
 //! `sagr=1.spack=VST-PASS0001.rsl-fg=1.raf=onlt1` (RAF) and
 //! `sagr=1.spack=VST-PASS0001.fsl-fg=1.cltu=cltu1` (FCLTU). Telemetry is
 //! only delivered while a RAF user has started the service; the rest is
@@ -28,10 +29,11 @@ use std::time::Duration;
 use anyhow::{Context as _, anyhow};
 use groundlink::protocol::pus::service17;
 use groundlink::{
-    Batch, Cltu, ConnectionEvent, FcltuConfig, FcltuServiceInstance, GetLocalAddr, PusPacket, PusTc, PusTcAcceptor,
-    PusTestServiceActor, PusTm, PusTmStamper, RafConfig, RafFrame, RafServiceInstance, SleAssociationActor,
-    SleAssociationConfig, SlePdu, SleProviderEvent, SleServiceRegistry, SpacePacket, TcFrameConfig, TcFrameDecoder,
-    TcpServerArgs, TmFrameConfig, TmFrameEncoder, TmlCodec, TmlLinkActor, TmlMessage, TmlResponderConfig, TmlServer,
+    Batch, Cltu, ConnectionEvent, FcltuConfig, FcltuServiceInstance, GetLocalAddr, PusConfig, PusPacket, PusTc,
+    PusTcAcceptor, PusTestServiceActor, PusTm, PusTmStamper, RafConfig, RafFrame, RafServiceInstance,
+    SleAssociationActor, SleAssociationConfig, SlePdu, SleProviderEvent, SleServiceRegistry, SpacePacket,
+    TcFrameConfig, TcFrameDecoder, TcpServerArgs, TmFrameConfig, TmFrameEncoder, TmlCodec, TmlLinkActor, TmlMessage,
+    TmlResponderConfig, TmlServer,
 };
 use kameo::actor::{Actor, ActorRef, Recipient, Spawn};
 use kameo::error::Infallible;
@@ -128,11 +130,20 @@ async fn main() -> anyhow::Result<()> {
 
     // Telecommands: CLTU and frame decoding, acceptance check, service 17.
     let test_service = PusTestServiceActor::spawn(PusTestServiceActor::new(APID, telemetry.clone()));
-    let acceptor = PusTcAcceptor::spawn(PusTcAcceptor::new(APID, telemetry).with_service_handler(
-        service17::SERVICE_TYPE,
-        &[service17::ARE_YOU_ALIVE_REQUEST_SUBTYPE],
-        test_service.recipient::<PusTc>(),
-    ));
+    // Also PUS-A/B telecommands (version 1), as ReatMetric sends them.
+    let pus_config = PusConfig {
+        accept_tc_version_1: true,
+        ..PusConfig::default()
+    };
+    let acceptor = PusTcAcceptor::spawn(
+        PusTcAcceptor::new(APID, telemetry)
+            .with_pus_config(pus_config)
+            .with_service_handler(
+                service17::SERVICE_TYPE,
+                &[service17::ARE_YOU_ALIVE_REQUEST_SUBTYPE],
+                test_service.recipient::<PusTc>(),
+            ),
+    );
     let tc_decoder = TcFrameDecoder::spawn(TcFrameDecoder::new(
         TcFrameConfig::new(SPACECRAFT_ID, 0),
         acceptor.recipient::<SpacePacket>(),

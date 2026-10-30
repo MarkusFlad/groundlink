@@ -3,9 +3,12 @@
 use std::time::Duration;
 
 use bytes::Bytes;
+use groundlink::actor::sle::Cltu;
+use groundlink::protocol::ccsds::PacketType;
+use groundlink::protocol::sle::raf::RafFrame;
 use groundlink::{
-    Batch, Cltu, PacketType, RafFrame, SpacePacket, TcFrameConfig, TcFrameDecoder, TcFrameEncoder, TestActor,
-    TmFrameConfig, TmFrameDecoder, TmFrameEncoder,
+    Batch, SpacePacket, TcFrameConfig, TcFrameDecoder, TcFrameEncoder, TestActor, TmFrameConfig, TmFrameDecoder,
+    TmFrameEncoder,
 };
 use kameo::actor::Spawn;
 
@@ -17,10 +20,7 @@ fn packet(packet_type: PacketType, n: u16, len: usize) -> SpacePacket {
 
 #[tokio::test]
 async fn tc_packets_go_through_cltus_with_a_segment_header() {
-    let config = TcFrameConfig {
-        map_id: Some(3),
-        ..TcFrameConfig::new(0x2a, 1)
-    };
+    let config = TcFrameConfig::new(0x2a, 1).with_map_id(3);
     let cltus = TestActor::<Cltu>::spawn(TestActor::new());
     let encoder = TcFrameEncoder::spawn(TcFrameEncoder::new(config, 100, cltus.clone().recipient::<Cltu>()));
     for n in 0..3 {
@@ -33,14 +33,8 @@ async fn tc_packets_go_through_cltus_with_a_segment_header() {
     let decoder = TcFrameDecoder::spawn(TcFrameDecoder::new(config, packets.clone().recipient::<SpacePacket>()));
     // A CLTU for another spacecraft is dropped.
     let other = TestActor::<Cltu>::spawn(TestActor::new());
-    let other_encoder = TcFrameEncoder::spawn(TcFrameEncoder::new(
-        TcFrameConfig {
-            spacecraft_id: 0x2b,
-            ..config
-        },
-        0,
-        other.clone().recipient::<Cltu>(),
-    ));
+    let other_config = TcFrameConfig::new(0x2b, 1).with_map_id(3);
+    let other_encoder = TcFrameEncoder::spawn(TcFrameEncoder::new(other_config, 0, other.clone().recipient::<Cltu>()));
     other_encoder.tell(packet(PacketType::Telecommand, 9, 5)).await.unwrap();
     let foreign = TestActor::assert_received(&other, 1, TIMEOUT).await;
 

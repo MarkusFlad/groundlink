@@ -35,6 +35,7 @@ pub mod tm;
 
 /// Why a CLTU or a transfer frame could not be encoded or decoded.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum FrameError {
     /// The CLTU does not start with the start sequence.
     NoStartSequence,

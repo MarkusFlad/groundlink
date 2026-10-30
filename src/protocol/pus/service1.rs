@@ -19,9 +19,8 @@
 //! | 10 | `RoutingFailure` | failure notice |
 //!
 //! ```
-//! use groundlink::{
-//!     FailureCode, PusPacket, PusTc, VerificationKind, VerificationReport,
-//! };
+//! use groundlink::protocol::pus::service1::{FailureCode, VerificationKind, VerificationReport};
+//! use groundlink::{PusPacket, PusTc};
 //!
 //! let tc = PusTc::new(0x042, 7, 17, 1, &b""[..]);
 //! let kind = VerificationKind::StartFailure(FailureCode::InvalidApplicationData.notice(vec![17, 1]));
@@ -373,7 +372,7 @@ pub struct VerificationReport {
     /// Destination ID: receiver of the report, usually the source ID of the
     /// verified telecommand.
     pub destination_id: u16,
-    /// Time stamp as raw bytes (e.g. a [`CucTime`](crate::CucTime)).
+    /// Time stamp as raw bytes (e.g. a [`CucTime`](crate::protocol::cuc::CucTime)).
     pub time: Bytes,
     /// The verified telecommand.
     pub request_id: RequestId,

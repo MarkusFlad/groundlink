@@ -98,6 +98,7 @@ fn invalid_input(msg: String) -> io::Error {
 ///
 /// Converts into an [`io::Error`] of kind [`io::ErrorKind::InvalidData`].
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum PusDecodeError {
     /// The secondary header flag of the primary header is not set.
     MissingSecondaryHeader,
@@ -544,6 +545,7 @@ impl PusPacket {
 
 /// Mission-specific parameters of the PUS format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct PusConfig {
     /// Length of the time stamp in the TM secondary header in bytes.
     pub tm_time_len: usize,
@@ -567,6 +569,26 @@ impl Default for PusConfig {
             packet_error_control: true,
             accept_tc_version_1: false,
         }
+    }
+}
+
+impl PusConfig {
+    /// Uses time stamps of `tm_time_len` bytes in the TM secondary header.
+    pub fn with_tm_time_len(mut self, tm_time_len: usize) -> Self {
+        self.tm_time_len = tm_time_len;
+        self
+    }
+
+    /// Sets whether the packets carry a packet error control field.
+    pub fn with_packet_error_control(mut self, packet_error_control: bool) -> Self {
+        self.packet_error_control = packet_error_control;
+        self
+    }
+
+    /// Sets whether decoding also accepts telecommands with PUS version 1.
+    pub fn with_accept_tc_version_1(mut self, accept_tc_version_1: bool) -> Self {
+        self.accept_tc_version_1 = accept_tc_version_1;
+        self
     }
 }
 

@@ -21,6 +21,7 @@ use crate::protocol::sle::fcltu::{
 
 /// Configuration of an [`FcltuServiceInstance`].
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct FcltuConfig {
     /// The service instance identifier users bind to.
     pub service_instance: ServiceInstanceId,
@@ -45,6 +46,31 @@ impl FcltuConfig {
             max_cltu_len: 4096,
             buffer_capacity: 64,
         }
+    }
+
+    /// Allows only the initiators in `initiators` to bind.
+    pub fn with_allowed_initiators(mut self, initiators: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.allowed_initiators = Some(initiators.into_iter().map(Into::into).collect());
+        self
+    }
+
+    /// Accepts the versions of the service in `versions`.
+    pub fn with_versions(mut self, versions: RangeInclusive<u16>) -> Self {
+        self.versions = versions;
+        self
+    }
+
+    /// Accepts CLTUs of up to `max_cltu_len` octets.
+    pub fn with_max_cltu_len(mut self, max_cltu_len: usize) -> Self {
+        self.max_cltu_len = max_cltu_len;
+        self
+    }
+
+    /// Buffers up to `buffer_capacity` CLTUs on their way to the radiation
+    /// side.
+    pub fn with_buffer_capacity(mut self, buffer_capacity: usize) -> Self {
+        self.buffer_capacity = buffer_capacity;
+        self
     }
 }
 

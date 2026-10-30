@@ -6,9 +6,12 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
+use groundlink::actor::tcp::{Connect, GetLocalAddr};
+use groundlink::actor::tml::TmlReleaseReason;
+use groundlink::protocol::tml::TmlContext;
 use groundlink::{
-    Connect, ConnectionEvent, GetLocalAddr, SlePdu, TcpClientArgs, TcpServerArgs, TestActor, TmlClient, TmlCodec,
-    TmlContext, TmlLinkActor, TmlLinkEvent, TmlMessage, TmlReleaseReason, TmlResponderConfig, TmlServer,
+    ConnectionEvent, SlePdu, TcpClientArgs, TcpServerArgs, TestActor, TmlClient, TmlCodec, TmlLinkActor, TmlLinkEvent,
+    TmlMessage, TmlResponderConfig, TmlServer,
 };
 use kameo::actor::{ActorRef, Spawn};
 use tokio::net::{TcpListener, TcpStream};
@@ -135,10 +138,7 @@ async fn an_sle_pdu_before_the_context_message_closes_the_connection() {
 
 #[tokio::test]
 async fn a_rejected_context_closes_the_connection() {
-    let responder = spawn_responder(TmlResponderConfig {
-        allow_no_heartbeat: false,
-        ..TmlResponderConfig::default()
-    });
+    let responder = spawn_responder(TmlResponderConfig::default().with_allow_no_heartbeat(false));
     let mut peer = connect(&responder).await;
 
     peer.send(TmlMessage::Context(TmlContext::new(0, 0))).await.unwrap();
@@ -153,10 +153,7 @@ async fn a_rejected_context_closes_the_connection() {
 
 #[tokio::test]
 async fn a_missing_context_message_times_out() {
-    let responder = spawn_responder(TmlResponderConfig {
-        startup_timeout: Duration::from_millis(300),
-        ..TmlResponderConfig::default()
-    });
+    let responder = spawn_responder(TmlResponderConfig::default().with_startup_timeout(Duration::from_millis(300)));
     let mut peer = connect(&responder).await;
 
     assert_eq!(next_non_heartbeat(&mut peer).await, None);

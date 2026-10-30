@@ -7,9 +7,9 @@
 use std::time::Duration;
 
 use futures::FutureExt;
-use groundlink::{
-    GetLocalAddr, SimpleString, SimpleStringCodec, SimpleStringServer, TcpServerArgs, TestActor, encode_frame,
-};
+use groundlink::actor::tcp::GetLocalAddr;
+use groundlink::protocol::simple_string::encode_frame;
+use groundlink::{SimpleString, SimpleStringCodec, SimpleStringServer, TcpServerArgs, TestActor};
 use kameo::actor::{Recipient, Spawn};
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;

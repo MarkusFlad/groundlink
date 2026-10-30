@@ -42,6 +42,7 @@ const MIN_PACKET_LEN: usize = SPACE_PACKET_HEADER_LEN + 1;
 /// The parameters of a TM virtual channel that sender and receiver agree
 /// on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct TmFrameConfig {
     /// The spacecraft identifier, 10 bits.
     pub spacecraft_id: u16,
@@ -70,6 +71,18 @@ impl TmFrameConfig {
     /// field.
     pub fn data_field_len(&self) -> usize {
         self.frame_len - PRIMARY_HEADER_LEN - if self.fecf { FECF_LEN } else { 0 }
+    }
+
+    /// Uses frames of `frame_len` octets.
+    pub fn with_frame_len(mut self, frame_len: usize) -> Self {
+        self.frame_len = frame_len;
+        self
+    }
+
+    /// Sets whether the frames carry a frame error control field.
+    pub fn with_fecf(mut self, fecf: bool) -> Self {
+        self.fecf = fecf;
+        self
     }
 }
 
@@ -170,7 +183,8 @@ impl TmTransferFrame {
 ///
 /// ```
 /// use groundlink::protocol::datalink::tm::{TmFrameConfig, TmFramePacker};
-/// use groundlink::{PacketType, SpacePacket};
+/// use groundlink::protocol::ccsds::PacketType;
+/// use groundlink::SpacePacket;
 ///
 /// let mut packer = TmFramePacker::new(TmFrameConfig::new(0x2a, 0));
 /// let mut frames = packer.push(&SpacePacket::new(PacketType::Telemetry, 0x42, 0, vec![1, 2, 3])).unwrap();

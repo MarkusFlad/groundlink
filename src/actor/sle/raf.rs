@@ -24,6 +24,7 @@ use crate::protocol::tml::SlePdu;
 
 /// Configuration of a [`RafServiceInstance`].
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct RafConfig {
     /// The service instance identifier users bind to.
     pub service_instance: ServiceInstanceId,
@@ -48,6 +49,31 @@ impl RafConfig {
             transfer_buffer_size: 16,
             latency_limit: Duration::from_millis(500),
         }
+    }
+
+    /// Allows only the initiators in `initiators` to bind.
+    pub fn with_allowed_initiators(mut self, initiators: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.allowed_initiators = Some(initiators.into_iter().map(Into::into).collect());
+        self
+    }
+
+    /// Accepts the versions of the service in `versions`.
+    pub fn with_versions(mut self, versions: RangeInclusive<u16>) -> Self {
+        self.versions = versions;
+        self
+    }
+
+    /// Sends `transfer_buffer_size` frames per RAF-TRANSFER-BUFFER.
+    pub fn with_transfer_buffer_size(mut self, transfer_buffer_size: usize) -> Self {
+        self.transfer_buffer_size = transfer_buffer_size;
+        self
+    }
+
+    /// Lets a frame wait at most `latency_limit` in a partly filled
+    /// transfer buffer.
+    pub fn with_latency_limit(mut self, latency_limit: Duration) -> Self {
+        self.latency_limit = latency_limit;
+        self
     }
 }
 

@@ -1,16 +1,17 @@
 //! Shows that the same generic TCP actors (`TcpServerActor<M, C>`,
-//! `TcpReaderActor<M, C>`, `TcpWriterActor<M, C>`) that are used with
+//! `TcpClientActor<M, C>`) that are used with
 //! `SimpleString`/`SimpleStringCodec` also work unchanged for CCSDS Space
 //! Packets, here through the aliases `SpacePacketServer` and
-//! `SpacePacketWriter` (`TcpServerActor<SpacePacket, SpacePacketCodec>`
-//! and `TcpWriterActor<SpacePacket, SpacePacketCodec>`).
+//! `SpacePacketClient` (`TcpServerActor<SpacePacket, SpacePacketCodec>`
+//! and `TcpClientActor<SpacePacket, SpacePacketCodec>`).
 
 use std::time::Duration;
 
 use futures::{SinkExt, StreamExt};
+use groundlink::actor::tcp::{Connect, GetLocalAddr};
+use groundlink::protocol::ccsds::PacketType;
 use groundlink::{
-    ConnectionHalfClosed, GetLocalAddr, PacketType, SpacePacket, SpacePacketCodec, SpacePacketServer,
-    SpacePacketWriter, TcpServerArgs, TcpWriterArgs, TestActor,
+    SpacePacket, SpacePacketClient, SpacePacketCodec, SpacePacketServer, TcpClientArgs, TcpServerArgs, TestActor,
 };
 use kameo::actor::{Recipient, Spawn};
 use tokio::net::{TcpListener, TcpStream};
@@ -43,32 +44,22 @@ async fn space_packets_are_forwarded_to_downstream_actor() {
 }
 
 #[tokio::test]
-async fn space_packet_writer_writes_packet_readable_with_framed() {
+async fn space_packet_client_writes_packet_readable_with_framed() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-
-    let client_task = tokio::spawn(async move { TcpStream::connect(addr).await.unwrap() });
-
-    let (server_stream, peer_addr) = listener.accept().await.unwrap();
-    let client_stream = client_task.await.unwrap();
-
-    let (_server_read, server_write) = server_stream.into_split();
-    let mut client_framed = Framed::new(client_stream, SpacePacketCodec);
-
-    let listener_ref = TestActor::<ConnectionHalfClosed>::spawn(TestActor::new());
-    let listener_recipient = listener_ref.clone().recipient::<ConnectionHalfClosed>();
-
-    let writer_ref = SpacePacketWriter::spawn(TcpWriterArgs::new(
-        server_write,
-        peer_addr,
-        listener_recipient,
+    let received_ref = TestActor::<SpacePacket>::spawn(TestActor::new());
+    let client_ref = SpacePacketClient::spawn(TcpClientArgs::new(
+        listener.local_addr().unwrap(),
+        received_ref.recipient(),
         SpacePacketCodec,
     ));
+    let (connected, accepted) = tokio::join!(client_ref.ask(Connect), listener.accept());
+    connected.unwrap();
+    let mut peer_framed = Framed::new(accepted.unwrap().0, SpacePacketCodec);
 
     let packet = SpacePacket::new(PacketType::Telemetry, 7, 99, &b"status ok"[..]);
-    writer_ref.tell(packet.clone()).await.unwrap();
+    client_ref.tell(packet.clone()).await.unwrap();
 
-    let received = client_framed.next().await.unwrap().unwrap();
+    let received = peer_framed.next().await.unwrap().unwrap();
     assert_eq!(received, packet);
 }
 

@@ -27,9 +27,11 @@
 //! SLE Transport Mapping Layer (context message, heartbeats, dead timer) on
 //! top of a [`TmlServer`] or [`TmlClient`] and exchanges the BER-encoded SLE
 //! PDUs with the SLE layer as [`SlePdu`] messages. [`protocol::sle`]
-//! encodes and decodes these PDUs, e.g. as [`RafUserPdu`] or
-//! [`FcltuProviderPdu`]. The provider actors in [`actor::sle`] run the RAF
-//! and FCLTU services on top: a [`SleAssociationActor`] per port and a
+//! encodes and decodes these PDUs, e.g. as
+//! [`RafUserPdu`](protocol::sle::raf::RafUserPdu) or
+//! [`FcltuProviderPdu`](protocol::sle::fcltu::FcltuProviderPdu). The
+//! provider actors in [`actor::sle`] run the RAF and FCLTU services on
+//! top: a [`SleAssociationActor`] per port and a
 //! [`RafServiceInstance`] or [`FcltuServiceInstance`] per service instance.
 //! The [`SleUserActor`] is the user side, on top of a [`TmlClient`].
 //!
@@ -58,10 +60,14 @@
 //!     Transfer Frames.
 //!   - [`actor::tml`]: the SLE Transport Mapping Layer actor.
 //!   - [`actor::sle`]: SLE provider actors for RAF and FCLTU.
-//!   - [`actor::test`]: a generic actor that records messages, for
-//!     assertions in tests.
+//!   - `actor::test`: a generic actor that records messages, for
+//!     assertions in tests (feature `test-util`).
 //!
-//! The most important items are re-exported at the crate root.
+//! The crate root re-exports the entry points: the actors, their
+//! arguments, configurations and events, and the messages and codecs of
+//! the protocols. Control messages such as
+//! [`GetLocalAddr`](actor::tcp::GetLocalAddr), the SLE PDUs and the other
+//! details of a protocol are used through their module.
 //!
 //! # Example programs
 //!
@@ -100,17 +106,15 @@
 //! # Example
 //!
 //! A server that forwards every received [`SimpleString`] to a
-//! [`TestActor`]:
+//! `TestActor` (feature `test-util`):
 //!
 //! ```
 //! use std::time::Duration;
 //!
 //! use futures::SinkExt;
 //! use kameo::actor::Spawn;
-//! use groundlink::{
-//!     GetLocalAddr, SimpleString, SimpleStringCodec, SimpleStringServer, TcpServerArgs,
-//!     TestActor,
-//! };
+//! use groundlink::actor::tcp::GetLocalAddr;
+//! use groundlink::{SimpleString, SimpleStringCodec, SimpleStringServer, TcpServerArgs, TestActor};
 //! use tokio_util::codec::Framed;
 //!
 //! # #[tokio::main]
@@ -137,49 +141,27 @@
 pub mod actor;
 pub mod protocol;
 
-pub use actor::batch::{Batch, DEFAULT_MAX_BATCH_LEN, Downstream, DownstreamError};
+// The entry points: the actors, what it takes to set them up and the
+// messages of the protocols. Everything else is reached through its
+// module, e.g. `actor::tcp::GetLocalAddr` or `protocol::sle::raf`.
+pub use actor::batch::{Batch, Downstream};
 pub use actor::datalink::{TcFrameDecoder, TcFrameEncoder, TmFrameDecoder, TmFrameEncoder};
 pub use actor::pus::{PusPacketAdapter, PusTcAcceptor, PusTestServiceActor, PusTmStamper};
 pub use actor::sle::{
-    Cltu, CltuStart, DEFAULT_SLE_TICK, FcltuConfig, FcltuServiceInstance, RafConfig, RafServiceInstance, RafStart,
-    ServiceInstanceRef, SleAssociationActor, SleAssociationConfig, SleBind, SleProviderEvent, SleServiceRegistry,
-    SleStop, SleUnbind, SleUserActor, SleUserConfig, SleUserError, SleUserEvent,
+    FcltuConfig, FcltuServiceInstance, RafConfig, RafServiceInstance, SleAssociationActor, SleAssociationConfig,
+    SleProviderEvent, SleServiceRegistry, SleUserActor, SleUserConfig, SleUserEvent,
 };
 pub use actor::tcp::{
-    Close, CloseRead, CloseReason, CloseWrite, Connect, ConnectionEvent, ConnectionEventKind, ConnectionHalf,
-    ConnectionHalfClosed, ConnectionObserver, ConnectionPolicy, DEFAULT_MAILBOX_CAPACITY, DEFAULT_WRITE_TIMEOUT,
-    EventSource, GetLocalAddr, KeepAlive, PusClient, PusReader, PusServer, PusWriter, Shutdown, SimpleStringClient,
-    SimpleStringReader, SimpleStringServer, SimpleStringWriter, SpacePacketClient, SpacePacketReader,
-    SpacePacketServer, SpacePacketWriter, TcpClientActor, TcpClientArgs, TcpReaderActor, TcpReaderArgs, TcpServerActor,
-    TcpServerArgs, TcpWriterActor, TcpWriterArgs, TmlClient, TmlReader, TmlServer, TmlWriter,
+    ConnectionEvent, PusClient, PusServer, SimpleStringClient, SimpleStringServer, SpacePacketClient,
+    SpacePacketServer, TcpClientActor, TcpClientArgs, TcpServerActor, TcpServerArgs, TmlClient, TmlServer,
 };
+#[cfg(any(test, feature = "test-util"))]
 pub use actor::test::{GetMessages, TestActor};
-pub use actor::tml::{
-    DEFAULT_TML_TICK, SleDisconnect, SlePeerAbort, TmlLinkActor, TmlLinkEvent, TmlReleaseReason, TmlResponderConfig,
-    TmlRole,
-};
-pub use protocol::ccsds::{PacketType, SequenceFlags, SpacePacket, SpacePacketCodec, SpacePacketHeader};
-pub use protocol::cuc::{CucEpoch, CucFormat, CucTime};
-pub use protocol::datalink::FrameError;
-pub use protocol::datalink::tc::{TcFrameConfig, TcTransferFrame};
-pub use protocol::datalink::tm::{TmFrameConfig, TmTransferFrame};
-pub use protocol::pus::service1::{FailureCode, FailureNotice, RequestId, VerificationKind, VerificationReport};
-pub use protocol::pus::service17::{AreYouAliveReport, AreYouAliveRequest};
-pub use protocol::pus::{
-    AckFlags, PusCodec, PusConfig, PusDecodeError, PusPacket, PusTc, PusTcSecondaryHeader, PusTm, PusTmSecondaryHeader,
-};
-pub use protocol::simple_string::{SimpleString, SimpleStringCodec, encode_frame};
-pub use protocol::sle::ber::BerError;
-pub use protocol::sle::common::{
-    Acknowledgement, BindInvocation, BindReturn, PduError, ServiceInstanceId, StopInvocation, UnbindInvocation,
-    UnbindReturn,
-};
-pub use protocol::sle::fcltu::{
-    CltuId, CltuStartInvocation, CltuStartReturn, CltuTransferDataInvocation, CltuTransferDataReturn, FcltuProviderPdu,
-    FcltuUserPdu,
-};
-pub use protocol::sle::raf::{
-    RafFrame, RafProviderPdu, RafStartInvocation, RafStartReturn, RafUserPdu, RequestedFrameQuality,
-};
-pub use protocol::tml::{SlePdu, TmlCodec, TmlContext, TmlMessage};
+pub use actor::tml::{TmlLinkActor, TmlLinkEvent, TmlResponderConfig};
+pub use protocol::ccsds::{SpacePacket, SpacePacketCodec};
+pub use protocol::datalink::tc::TcFrameConfig;
+pub use protocol::datalink::tm::TmFrameConfig;
+pub use protocol::pus::{PusCodec, PusConfig, PusPacket, PusTc, PusTm};
+pub use protocol::simple_string::{SimpleString, SimpleStringCodec};
+pub use protocol::tml::{SlePdu, TmlCodec, TmlMessage};
 pub use protocol::{MessageCodec, WireMessage};

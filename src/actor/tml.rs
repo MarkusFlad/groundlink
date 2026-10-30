@@ -69,6 +69,7 @@ pub const DEFAULT_TML_TICK: Duration = Duration::from_millis(250);
 /// What a responding [`TmlLinkActor`] (the SLE provider side) accepts from
 /// the initiator.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct TmlResponderConfig {
     /// Time allowed between the TCP connect and the context message.
     pub startup_timeout: Duration,
@@ -95,6 +96,31 @@ impl Default for TmlResponderConfig {
 }
 
 impl TmlResponderConfig {
+    /// Allows `startup_timeout` between the TCP connect and the context
+    /// message.
+    pub fn with_startup_timeout(mut self, startup_timeout: Duration) -> Self {
+        self.startup_timeout = startup_timeout;
+        self
+    }
+
+    /// Sets whether the initiator may switch heartbeats off.
+    pub fn with_allow_no_heartbeat(mut self, allow_no_heartbeat: bool) -> Self {
+        self.allow_no_heartbeat = allow_no_heartbeat;
+        self
+    }
+
+    /// Accepts the heartbeat intervals in `heartbeat_interval`, in seconds.
+    pub fn with_heartbeat_interval(mut self, heartbeat_interval: RangeInclusive<u16>) -> Self {
+        self.heartbeat_interval = heartbeat_interval;
+        self
+    }
+
+    /// Accepts the dead factors in `dead_factor`.
+    pub fn with_dead_factor(mut self, dead_factor: RangeInclusive<u16>) -> Self {
+        self.dead_factor = dead_factor;
+        self
+    }
+
     fn check(&self, context: TmlContext) -> Result<(), TmlReleaseReason> {
         let rejected = |what: &str| Err(TmlReleaseReason::ContextRejected(what.to_string()));
         if context.heartbeat_interval == 0 {
@@ -127,6 +153,7 @@ pub enum TmlRole {
 
 /// Why a TML link ended; see [`TmlLinkEvent::Released`].
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum TmlReleaseReason {
     /// The TCP connection was closed or could not be opened. The text
     /// describes what happened.
@@ -164,6 +191,7 @@ impl fmt::Display for TmlReleaseReason {
 /// A connection closed because of [`SlePeerAbort`] is not reported, since
 /// the SLE layer asked for it.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum TmlLinkEvent {
     /// The context exchange is done; SLE PDUs can flow. Carries the
     /// heartbeat parameters in force.

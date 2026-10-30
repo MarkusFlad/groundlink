@@ -5,25 +5,25 @@
 //!    order.
 //! 2. A server coupled with a client passes batches through; all messages
 //!    arrive in order, and the connection closes after the last one.
-//! 3. A writer drops only the message of a batch that cannot be encoded.
-//! 4. `impl_batch_message!` calls the handler for each message; the
+//! 3. `impl_batch_message!` calls the handler for each message; the
 //!    messages sent to an output during a batch are passed on together.
-//! 5. `PusTmStamper` stamps a batch in order and passes it on as one batch.
-//! 6. A maximum batch length of 0 is rejected.
+//! 4. `PusTmStamper` stamps a batch in order and passes it on as one batch.
+//! 5. A maximum batch length of 0 is rejected.
 
 use std::time::Duration;
 
 use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
+use groundlink::actor::tcp::GetLocalAddr;
+use groundlink::protocol::simple_string::encode_frame;
 use groundlink::{
-    Batch, ConnectionEvent, ConnectionHalfClosed, Downstream, GetLocalAddr, GetMessages, PusPacket, PusTm,
-    PusTmStamper, SimpleString, SimpleStringClient, SimpleStringCodec, SimpleStringServer, SimpleStringWriter,
-    TcpClientArgs, TcpServerArgs, TcpWriterArgs, TestActor, encode_frame, impl_batch_message,
+    Batch, ConnectionEvent, Downstream, PusPacket, PusTm, PusTmStamper, SimpleString, SimpleStringClient,
+    SimpleStringCodec, SimpleStringServer, TcpClientArgs, TcpServerArgs, TestActor, impl_batch_message,
 };
 use kameo::actor::{Actor, ActorRef, Spawn};
 use kameo::error::Infallible;
 use kameo::message::{Context, Message};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio_util::codec::Framed;
 
@@ -158,37 +158,6 @@ async fn coupled_server_and_client_pass_batches_through() {
     }
     sending.await.unwrap();
     assert_eq!(received, sent);
-}
-
-#[tokio::test]
-async fn writer_drops_only_the_message_of_a_batch_that_cannot_be_encoded() {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let (client_stream, accepted) = tokio::join!(TcpStream::connect(addr), listener.accept());
-    let mut client_stream = client_stream.unwrap();
-    let (server_stream, peer_addr) = accepted.unwrap();
-    let (_server_read, server_write) = server_stream.into_split();
-
-    let closed = TestActor::<ConnectionHalfClosed>::spawn(TestActor::new());
-    let writer = SimpleStringWriter::spawn(TcpWriterArgs::new(
-        server_write,
-        peer_addr,
-        closed.clone().recipient(),
-        SimpleStringCodec::default(),
-    ));
-
-    // The second message is too long for the 16-bit length field.
-    let batch = Batch::from(vec![text("before"), text("x".repeat(70_000)), text("after")]);
-    writer.tell(batch).await.unwrap();
-
-    let mut frames = [0u8; 2 + 6 + 2 + 5];
-    tokio::time::timeout(Duration::from_secs(1), client_stream.read_exact(&mut frames))
-        .await
-        .expect("both valid messages should arrive")
-        .unwrap();
-    assert_eq!(&frames, b"\x00\x06before\x00\x05after");
-    assert!(writer.is_alive());
-    assert!(closed.ask(GetMessages::new()).await.unwrap().is_empty());
 }
 
 /// Sends every message on twice.

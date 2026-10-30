@@ -195,8 +195,9 @@ impl_batch_message!(PusTmStamper, PusTm, outputs = [target]);
 /// For each TC:
 /// 1. Only for a [`SpacePacket`]: if it is not a valid PUS packet (see
 ///    [`PusPacket::from_space_packet`]), TM(1,2) with the
-///    [`FailureCode`] for the [`PusDecodeError`](crate::PusDecodeError)
-///    (e.g. [`FailureCode::ChecksumError`]) and empty failure data. The
+///    [`FailureCode`] for the
+///    [`PusDecodeError`](crate::protocol::pus::PusDecodeError) (e.g.
+///    [`FailureCode::ChecksumError`]) and empty failure data. The
 ///    request ID comes from the primary header; the destination ID is 0,
 ///    because the source ID of the TC is unknown. The TC is dropped.
 /// 2. No handler for the service type → TM(1,2) with
@@ -404,9 +405,9 @@ impl_batch_message!(PusTcAcceptor, SpacePacket);
 /// # use std::time::Duration;
 /// # use kameo::actor::Spawn;
 /// # use groundlink::protocol::pus::service17;
+/// # use groundlink::protocol::pus::service17::AreYouAliveRequest;
 /// # use groundlink::{
-/// #     AreYouAliveRequest, PusPacket, PusTc, PusTcAcceptor, PusTestServiceActor, PusTm,
-/// #     PusTmStamper, TestActor,
+/// #     PusPacket, PusTc, PusTcAcceptor, PusTestServiceActor, PusTm, PusTmStamper, TestActor,
 /// # };
 /// # #[tokio::main]
 /// # async fn main() {
@@ -538,10 +539,8 @@ impl Message<PusTc> for PusTestServiceActor {
 /// ```
 /// # use std::time::Duration;
 /// # use kameo::actor::Spawn;
-/// # use groundlink::{
-/// #     PusPacket, PusPacketAdapter, PusTc, RequestId, TestActor, VerificationKind,
-/// #     VerificationReport,
-/// # };
+/// # use groundlink::protocol::pus::service1::{RequestId, VerificationKind, VerificationReport};
+/// # use groundlink::{PusPacket, PusPacketAdapter, PusTc, TestActor};
 /// # #[tokio::main]
 /// # async fn main() {
 /// // The target would typically be a `PusServer`; here a `TestActor`.

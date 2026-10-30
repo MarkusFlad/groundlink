@@ -58,7 +58,8 @@ and [tokio](https://tokio.rs).
   come back over RAF (see `tests/sle_pus_loop.rs`).
 - **Simple string protocol**: a length-prefixed string protocol, useful for
   getting started and for tests.
-- **Test helpers**: `TestActor` records messages for assertions in tests.
+- **Test helpers**: `TestActor` records messages for assertions in tests
+  (feature `test-util`).
 
 The crate logs through [`tracing`](https://crates.io/crates/tracing) and
 does not install a subscriber itself.
@@ -83,17 +84,16 @@ kameo = "0.22"
 tokio = { version = "1", features = ["full"] }
 ```
 
-A server that forwards every received `SimpleString` to a `TestActor`:
+A server that forwards every received `SimpleString` to a `TestActor`
+(which requires the feature `test-util`):
 
 ```rust
 use std::time::Duration;
 
 use futures::SinkExt;
 use kameo::actor::Spawn;
-use groundlink::{
-    GetLocalAddr, SimpleString, SimpleStringCodec, SimpleStringServer, TcpServerArgs,
-    TestActor,
-};
+use groundlink::actor::tcp::GetLocalAddr;
+use groundlink::{SimpleString, SimpleStringCodec, SimpleStringServer, TcpServerArgs, TestActor};
 use tokio_util::codec::Framed;
 
 #[tokio::main]

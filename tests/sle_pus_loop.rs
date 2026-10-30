@@ -11,14 +11,18 @@
 use std::time::Duration;
 
 use bytes::Bytes;
+use groundlink::actor::sle::{Cltu, CltuStart, RafStart, SleBind};
+use groundlink::actor::tcp::GetLocalAddr;
+use groundlink::protocol::pus::service1::{RequestId, VerificationKind, VerificationReport};
 use groundlink::protocol::pus::{service1, service17};
+use groundlink::protocol::sle::raf::{RafFrame, RequestedFrameQuality};
+use groundlink::protocol::tml::TmlContext;
 use groundlink::{
-    Batch, Cltu, CltuStart, ConnectionEvent, FcltuConfig, FcltuServiceInstance, GetLocalAddr, PusConfig, PusPacket,
-    PusTc, PusTcAcceptor, PusTestServiceActor, PusTm, PusTmStamper, RafConfig, RafFrame, RafServiceInstance, RafStart,
-    RequestId, RequestedFrameQuality, SleAssociationActor, SleAssociationConfig, SleBind, SlePdu, SleServiceRegistry,
-    SleUserActor, SleUserConfig, SpacePacket, TcFrameConfig, TcFrameDecoder, TcFrameEncoder, TcpClientArgs,
-    TcpServerArgs, TestActor, TmFrameConfig, TmFrameDecoder, TmFrameEncoder, TmlClient, TmlCodec, TmlContext,
-    TmlLinkActor, TmlMessage, TmlResponderConfig, TmlServer, VerificationKind, VerificationReport,
+    Batch, ConnectionEvent, FcltuConfig, FcltuServiceInstance, PusConfig, PusPacket, PusTc, PusTcAcceptor,
+    PusTestServiceActor, PusTm, PusTmStamper, RafConfig, RafServiceInstance, SleAssociationActor, SleAssociationConfig,
+    SlePdu, SleServiceRegistry, SleUserActor, SleUserConfig, SpacePacket, TcFrameConfig, TcFrameDecoder,
+    TcFrameEncoder, TcpClientArgs, TcpServerArgs, TestActor, TmFrameConfig, TmFrameDecoder, TmFrameEncoder, TmlClient,
+    TmlCodec, TmlLinkActor, TmlMessage, TmlResponderConfig, TmlServer,
 };
 use kameo::actor::{ActorRef, Spawn};
 use kameo::mailbox;
@@ -62,8 +66,7 @@ async fn spawn_port(registry: SleServiceRegistry) -> SocketAddr {
 
 /// The simulated spacecraft behind a provider with a RAF and an FCLTU port.
 async fn spawn_spacecraft() -> (SocketAddr, SocketAddr) {
-    let mut raf_config = RafConfig::new(RAF_SI.parse().unwrap());
-    raf_config.latency_limit = Duration::from_millis(50);
+    let raf_config = RafConfig::new(RAF_SI.parse().unwrap()).with_latency_limit(Duration::from_millis(50));
     let raf = RafServiceInstance::spawn(RafServiceInstance::new(raf_config).with_tick(Duration::from_millis(10)));
 
     // Telemetry: stamped, packed into TM frames, received by the ground

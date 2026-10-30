@@ -18,11 +18,12 @@
 use std::net::SocketAddr;
 
 use anyhow::Context as _;
+use groundlink::actor::tcp::{Close, Connect, ConnectionEventKind};
 use groundlink::protocol::ccsds::SEQUENCE_COUNT_MAX;
-use groundlink::{
-    AreYouAliveReport, AreYouAliveRequest, Close, Connect, ConnectionEvent, ConnectionEventKind, CucFormat, PusClient,
-    PusCodec, PusPacket, TcpClientArgs, VerificationReport,
-};
+use groundlink::protocol::cuc::CucFormat;
+use groundlink::protocol::pus::service1::VerificationReport;
+use groundlink::protocol::pus::service17::{AreYouAliveReport, AreYouAliveRequest};
+use groundlink::{ConnectionEvent, PusClient, PusCodec, PusPacket, TcpClientArgs};
 use kameo::actor::{Actor, ActorRef, Spawn};
 use kameo::error::Infallible;
 use kameo::message::{Context, Message};
@@ -73,6 +74,7 @@ impl Message<ConnectionEvent> for PacketPrinter {
             ConnectionEventKind::Disconnected => {
                 println!("[{}] disconnected from {}", self.connection, event.peer_addr)
             }
+            _ => {}
         }
     }
 }

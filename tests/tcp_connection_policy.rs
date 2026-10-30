@@ -4,10 +4,8 @@
 use std::time::Duration;
 
 use futures::{SinkExt, StreamExt};
-use groundlink::{
-    ConnectionPolicy, GetLocalAddr, GetMessages, SimpleString, SimpleStringCodec, SimpleStringServer, TcpServerArgs,
-    TestActor,
-};
+use groundlink::actor::tcp::{ConnectionPolicy, GetLocalAddr};
+use groundlink::{GetMessages, SimpleString, SimpleStringCodec, SimpleStringServer, TcpServerArgs, TestActor};
 use kameo::actor::{ActorRef, Spawn};
 use tokio::net::TcpStream;
 use tokio_util::codec::Framed;

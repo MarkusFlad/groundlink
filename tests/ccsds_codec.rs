@@ -4,7 +4,8 @@
 
 use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
-use groundlink::{PacketType, SequenceFlags, SpacePacket, SpacePacketCodec, SpacePacketHeader};
+use groundlink::protocol::ccsds::{PacketType, SequenceFlags, SpacePacketHeader};
+use groundlink::{SpacePacket, SpacePacketCodec};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_util::codec::Framed;
 

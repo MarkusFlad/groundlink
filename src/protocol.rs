@@ -32,8 +32,8 @@ pub mod tml;
 /// `M`.
 ///
 /// This is the requirement for using `M` with
-/// [`TcpReaderActor<M, C>`](crate::actor::tcp::TcpReaderActor) and
-/// [`TcpWriterActor<M, C>`](crate::actor::tcp::TcpWriterActor). The trait has
+/// [`TcpServerActor<M, C>`](crate::actor::tcp::TcpServerActor) and
+/// [`TcpClientActor<M, C>`](crate::actor::tcp::TcpClientActor). The trait has
 /// a blanket implementation, so any codec satisfying the bounds implements
 /// it automatically. The codec is passed to the actors as a value (e.g. in
 /// [`TcpServerArgs::codec`](crate::actor::tcp::TcpServerArgs::codec)); every
@@ -64,8 +64,9 @@ impl<M, C> MessageCodec<M> for C where
 /// impl WireMessage for MyMessage {}
 /// ```
 ///
-/// The control messages of this crate (e.g. [`GetLocalAddr`](crate::GetLocalAddr) or
-/// [`Connect`](crate::Connect)) never implement it. This lets the actors implement both
-/// `Message<M>` and `Message<GetLocalAddr>` without the implementations
-/// overlapping.
+/// The control messages of this crate (e.g.
+/// [`GetLocalAddr`](crate::actor::tcp::GetLocalAddr) or
+/// [`Connect`](crate::actor::tcp::Connect)) never implement it. This lets
+/// the actors implement both `Message<M>` and `Message<GetLocalAddr>`
+/// without the implementations overlapping.
 pub trait WireMessage {}

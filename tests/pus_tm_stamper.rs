@@ -4,7 +4,8 @@
 use std::time::Duration;
 
 use bytes::Bytes;
-use groundlink::{CucFormat, CucTime, PusPacket, PusTm, PusTmStamper, TestActor};
+use groundlink::protocol::cuc::{CucFormat, CucTime};
+use groundlink::{PusPacket, PusTm, PusTmStamper, TestActor};
 use kameo::actor::{ActorRef, Spawn};
 
 const APID: u16 = 0x042;

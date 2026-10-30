@@ -28,7 +28,7 @@
 //!
 //! ```
 //! use groundlink::protocol::sle::common::{Credentials, ConditionalTime};
-//! use groundlink::{RafStartInvocation, RafUserPdu, RequestedFrameQuality};
+//! use groundlink::protocol::sle::raf::{RafStartInvocation, RafUserPdu, RequestedFrameQuality};
 //!
 //! let start = RafUserPdu::Start(RafStartInvocation {
 //!     credentials: Credentials::Unused,

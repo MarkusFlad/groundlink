@@ -6,10 +6,10 @@
 //! through a mailbox at once, while the actors still handle them one by
 //! one.
 //!
-//! Batches form only where messages arrive together anyway: a
-//! [`TcpReaderActor`](crate::TcpReaderActor) forwards what one read from
-//! the socket has delivered as one batch. It never waits for more, so
-//! batching adds no latency, and nothing can be left behind in a buffer.
+//! Batches form only where messages arrive together anyway: a TCP server
+//! or client forwards what one read from the socket has delivered as one
+//! batch. It never waits for more, so batching adds no latency, and
+//! nothing can be left behind in a buffer.
 //!
 //! # Receiving batches
 //!
@@ -126,11 +126,10 @@ impl std::error::Error for DownstreamError {}
 /// messages (`Recipient<M>`) or of batches (`Recipient<Batch<M>>`). Create
 /// it from either with `into()`.
 ///
-/// While the actor handles a batch, between [`hold`](Self::hold) and
-/// [`release`](Self::release), the messages are collected and then sent on
-/// together: as one batch to a batch recipient, one after the other to a
-/// recipient of single messages.
-/// [`impl_batch_message!`](crate::impl_batch_message) calls both for the
+/// While the actor handles a batch, the messages are collected and then
+/// sent on together: as one batch to a batch recipient, one after the
+/// other to a recipient of single messages.
+/// [`impl_batch_message!`](crate::impl_batch_message) does this for the
 /// fields named as `outputs`.
 pub struct Downstream<M: Send + 'static> {
     target: Target<M>,
@@ -144,11 +143,6 @@ enum Target<M: Send + 'static> {
 }
 
 impl<M: Send + 'static> Downstream<M> {
-    /// Whether the recipient takes batches.
-    pub fn is_batched(&self) -> bool {
-        matches!(self.target, Target::Batched(_))
-    }
-
     /// Sends `message`, or collects it while messages are held.
     pub async fn send(&mut self, message: M) -> Result<(), DownstreamError> {
         match &mut self.held {
@@ -177,12 +171,20 @@ impl<M: Send + 'static> Downstream<M> {
 
     /// Collects the messages sent from now on until
     /// [`release`](Self::release).
+    ///
+    /// Called by [`impl_batch_message!`](crate::impl_batch_message); not
+    /// part of the public API.
+    #[doc(hidden)]
     pub fn hold(&mut self) {
         self.held.get_or_insert_with(Vec::new);
     }
 
     /// Sends the messages collected since [`hold`](Self::hold). If the
     /// recipient has stopped, they are dropped with a warning.
+    ///
+    /// Called by [`impl_batch_message!`](crate::impl_batch_message); not
+    /// part of the public API.
+    #[doc(hidden)]
     pub async fn release(&mut self) {
         let Some(messages) = self.held.take() else {
             return;

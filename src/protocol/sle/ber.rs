@@ -117,6 +117,7 @@ impl fmt::Display for Tag {
 
 /// Why BER data could not be decoded.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum BerError {
     /// The data ends inside an element.
     Truncated,

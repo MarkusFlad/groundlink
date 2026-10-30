@@ -17,7 +17,8 @@
 //! [`crate::protocol::pus::DEFAULT_TM_TIME_LEN`].
 //!
 //! ```
-//! use groundlink::{CucFormat, CucTime, PusTm};
+//! use groundlink::protocol::cuc::{CucFormat, CucTime};
+//! use groundlink::PusTm;
 //!
 //! let t: CucTime = "2026-09-26T12:00:00.5Z".parse().unwrap();
 //! assert_eq!(t.to_string(), "2026-09-26T12:00:00.500000Z");
@@ -186,7 +187,7 @@ impl CucFormat {
 /// [`Display`](fmt::Display).
 ///
 /// ```
-/// use groundlink::{CucFormat, CucTime};
+/// use groundlink::protocol::cuc::{CucFormat, CucTime};
 ///
 /// let t = CucTime::from_utc_str("2026-09-26T12:00:00.25Z", CucFormat::default()).unwrap();
 /// assert_eq!(t.fine, 0x4000); // 0.25 s in units of 2^-16 s

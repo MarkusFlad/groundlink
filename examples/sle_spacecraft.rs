@@ -45,13 +45,17 @@ use std::time::Duration;
 use anyhow::{Context as _, anyhow};
 use bytes::BytesMut;
 use groundlink::actor::datalink::{LOG_TARGET_CLTU, LOG_TARGET_TC_FRAME, LOG_TARGET_TM_FRAME};
+use groundlink::actor::sle::Cltu;
+use groundlink::actor::tcp::GetLocalAddr;
+use groundlink::protocol::pus::service1::VerificationReport;
 use groundlink::protocol::pus::service17;
+use groundlink::protocol::pus::service17::AreYouAliveReport;
+use groundlink::protocol::sle::raf::RafFrame;
 use groundlink::{
-    AreYouAliveReport, Batch, Cltu, ConnectionEvent, Downstream, FcltuConfig, FcltuServiceInstance, GetLocalAddr,
-    PusConfig, PusPacket, PusTc, PusTcAcceptor, PusTestServiceActor, PusTm, PusTmStamper, RafConfig, RafFrame,
-    RafServiceInstance, SleAssociationActor, SleAssociationConfig, SlePdu, SleProviderEvent, SleServiceRegistry,
-    SpacePacket, SpacePacketCodec, TcFrameConfig, TcFrameDecoder, TcpServerArgs, TmFrameConfig, TmFrameEncoder,
-    TmlCodec, TmlLinkActor, TmlMessage, TmlResponderConfig, TmlServer, VerificationReport,
+    Batch, ConnectionEvent, Downstream, FcltuConfig, FcltuServiceInstance, PusConfig, PusPacket, PusTc, PusTcAcceptor,
+    PusTestServiceActor, PusTm, PusTmStamper, RafConfig, RafServiceInstance, SleAssociationActor, SleAssociationConfig,
+    SlePdu, SleProviderEvent, SleServiceRegistry, SpacePacket, SpacePacketCodec, TcFrameConfig, TcFrameDecoder,
+    TcpServerArgs, TmFrameConfig, TmFrameEncoder, TmlCodec, TmlLinkActor, TmlMessage, TmlResponderConfig, TmlServer,
 };
 use kameo::actor::{Actor, ActorRef, Recipient, Spawn};
 use kameo::error::Infallible;
@@ -355,8 +359,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Telemetry: numbered and time-stamped, packed into TM frames that the
     // ground station receives and offers over RAF.
-    let mut raf_config = RafConfig::new(RAF_SI.parse()?);
-    raf_config.latency_limit = Duration::from_millis(100);
+    let raf_config = RafConfig::new(RAF_SI.parse()?).with_latency_limit(Duration::from_millis(100));
     let raf = RafServiceInstance::spawn(RafServiceInstance::new(raf_config));
     let tm_encoder = TmFrameEncoder::spawn(TmFrameEncoder::new(
         TmFrameConfig::new(SPACECRAFT_ID, 0),
@@ -371,10 +374,7 @@ async fn main() -> anyhow::Result<()> {
     // Telecommands: CLTU and frame decoding, acceptance check, service 17.
     let test_service = PusTestServiceActor::spawn(PusTestServiceActor::new(APID, telemetry.clone()));
     // Also PUS-A/B telecommands (version 1), as ReatMetric sends them.
-    let pus_config = PusConfig {
-        accept_tc_version_1: true,
-        ..PusConfig::default()
-    };
+    let pus_config = PusConfig::default().with_accept_tc_version_1(true);
     let acceptor = PusTcAcceptor::spawn(
         PusTcAcceptor::new(APID, telemetry)
             .with_pus_config(pus_config)

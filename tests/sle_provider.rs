@@ -7,6 +7,11 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
+use groundlink::actor::sle::Cltu;
+use groundlink::actor::tcp::GetLocalAddr;
+use groundlink::protocol::sle::common::{
+    Acknowledgement, BindInvocation, BindReturn, StopInvocation, UnbindInvocation,
+};
 use groundlink::protocol::sle::common::{
     ConditionalTime, Credentials, Diagnostic, Time, bind_diagnostic, service_type, unbind_reason,
 };
@@ -17,15 +22,20 @@ use groundlink::protocol::sle::fcltu::{
     CltuGetParameterInvocation, CltuLastOk, CltuNotification, CltuParameter, CltuProductionStatus, UplinkStatus,
     parameter_name, transfer_diagnostic,
 };
+use groundlink::protocol::sle::fcltu::{
+    CltuStartInvocation, CltuStartReturn, CltuTransferDataInvocation, CltuTransferDataReturn, FcltuProviderPdu,
+    FcltuUserPdu,
+};
 use groundlink::protocol::sle::raf::{AntennaId, FrameQuality};
 use groundlink::protocol::sle::raf::{LockStatus, RafProductionStatus};
+use groundlink::protocol::sle::raf::{
+    RafFrame, RafProviderPdu, RafStartInvocation, RafStartReturn, RafUserPdu, RequestedFrameQuality,
+};
+use groundlink::protocol::tml::TmlContext;
 use groundlink::{
-    Acknowledgement, Batch, BindInvocation, BindReturn, Cltu, CltuStartInvocation, CltuStartReturn,
-    CltuTransferDataInvocation, CltuTransferDataReturn, ConnectionEvent, FcltuConfig, FcltuProviderPdu,
-    FcltuServiceInstance, FcltuUserPdu, GetLocalAddr, RafConfig, RafFrame, RafProviderPdu, RafServiceInstance,
-    RafStartInvocation, RafStartReturn, RafUserPdu, RequestedFrameQuality, SleAssociationActor, SleAssociationConfig,
-    SlePdu, SleProviderEvent, SleServiceRegistry, StopInvocation, TcpServerArgs, TestActor, TmlCodec, TmlContext,
-    TmlLinkActor, TmlMessage, TmlResponderConfig, TmlServer, UnbindInvocation,
+    Batch, ConnectionEvent, FcltuConfig, FcltuServiceInstance, RafConfig, RafServiceInstance, SleAssociationActor,
+    SleAssociationConfig, SlePdu, SleProviderEvent, SleServiceRegistry, TcpServerArgs, TestActor, TmlCodec,
+    TmlLinkActor, TmlMessage, TmlResponderConfig, TmlServer,
 };
 use kameo::actor::{Actor, ActorRef, Spawn};
 use kameo::error::Infallible;
@@ -76,10 +86,10 @@ struct Provider {
 /// A RAF instance (4 frames per buffer, 50 ms latency, only `MOC1` may
 /// bind) and an FCLTU instance (buffer of 2 CLTUs, gated radiator).
 fn spawn_instances() -> Provider {
-    let mut raf_config = RafConfig::new(RAF_SI.parse().unwrap());
-    raf_config.transfer_buffer_size = 4;
-    raf_config.latency_limit = Duration::from_millis(50);
-    raf_config.allowed_initiators = Some(vec!["MOC1".to_string()]);
+    let raf_config = RafConfig::new(RAF_SI.parse().unwrap())
+        .with_transfer_buffer_size(4)
+        .with_latency_limit(Duration::from_millis(50))
+        .with_allowed_initiators(["MOC1"]);
     let raf = RafServiceInstance::spawn(RafServiceInstance::new(raf_config).with_tick(Duration::from_millis(10)));
 
     let gate = Arc::new(Semaphore::new(0));
@@ -91,8 +101,7 @@ fn spawn_instances() -> Provider {
         },
         mailbox::bounded(1),
     );
-    let mut cltu_config = FcltuConfig::new(CLTU_SI.parse().unwrap());
-    cltu_config.buffer_capacity = 2;
+    let cltu_config = FcltuConfig::new(CLTU_SI.parse().unwrap()).with_buffer_capacity(2);
     let fcltu = FcltuServiceInstance::spawn(FcltuServiceInstance::new(cltu_config, radiator.recipient()));
 
     let registry = SleServiceRegistry::new()
@@ -134,10 +143,9 @@ fn spawn_port_with_bind_timeout(provider: &Provider, bind_timeout: Duration) -> 
         .with_events(association.actor_ref().clone().recipient())
         .with_tick(Duration::from_millis(50)),
     );
-    let config = SleAssociationConfig {
-        responder_id: "PROV".to_string(),
-        bind_timeout,
-    };
+    let config = SleAssociationConfig::default()
+        .with_responder_id("PROV")
+        .with_bind_timeout(bind_timeout);
     association.spawn(
         SleAssociationActor::new(link_ref, provider.registry.clone(), config)
             .with_events(provider.events.clone().recipient()),

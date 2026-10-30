@@ -25,6 +25,7 @@ pub const MAX_FRAME_LEN: usize = 1024;
 /// The parameters of a TC virtual channel that sender and receiver agree
 /// on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct TcFrameConfig {
     /// The spacecraft identifier, 10 bits.
     pub spacecraft_id: u16,
@@ -47,6 +48,19 @@ impl TcFrameConfig {
             map_id: None,
             fecf: true,
         }
+    }
+
+    /// Sends the packets with a segment header with the MAP identifier
+    /// `map_id`.
+    pub fn with_map_id(mut self, map_id: u8) -> Self {
+        self.map_id = Some(map_id);
+        self
+    }
+
+    /// Sets whether the frames carry a frame error control field.
+    pub fn with_fecf(mut self, fecf: bool) -> Self {
+        self.fecf = fecf;
+        self
     }
 }
 

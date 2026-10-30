@@ -15,7 +15,8 @@
 //!
 //! ```
 //! use bytes::BytesMut;
-//! use groundlink::{PacketType, SpacePacket, SpacePacketCodec};
+//! use groundlink::protocol::ccsds::PacketType;
+//! use groundlink::{SpacePacket, SpacePacketCodec};
 //! use tokio_util::codec::{Decoder, Encoder};
 //!
 //! let packet = SpacePacket::new(PacketType::Telemetry, 42, 7, &b"payload"[..]);

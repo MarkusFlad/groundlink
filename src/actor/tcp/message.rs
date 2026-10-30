@@ -1,11 +1,12 @@
 //! Control messages of the generic TCP actors: requests such as
 //! [`Connect`] or [`GetLocalAddr`] and notifications such as
-//! [`ConnectionHalfClosed`].
+//! [`ConnectionEvent`].
 
 use std::net::SocketAddr;
 
 /// Why one half of a connection (reading or writing) was closed.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum CloseReason {
     /// Clean end: EOF while reading, or the connection was shut down in an
     /// orderly way.
@@ -33,13 +34,13 @@ pub enum ConnectionHalf {
 /// half and by the [`TcpWriterActor`](crate::actor::tcp::TcpWriterActor) for
 /// the write half.
 #[derive(Debug, Clone, PartialEq)]
-pub struct ConnectionHalfClosed {
+pub(crate) struct ConnectionHalfClosed {
     /// Address of the remote peer of the connection.
-    pub peer_addr: SocketAddr,
+    pub(crate) peer_addr: SocketAddr,
     /// The half that was closed.
-    pub half: ConnectionHalf,
+    pub(crate) half: ConnectionHalf,
     /// Why it was closed.
-    pub reason: CloseReason,
+    pub(crate) reason: CloseReason,
 }
 
 /// Asks a [`TcpServerActor`](crate::actor::tcp::TcpServerActor) for the local
@@ -61,7 +62,7 @@ pub struct Connect;
 /// Closes both halves of the current connection of a
 /// [`TcpServerActor`](crate::actor::tcp::TcpServerActor) or
 /// [`TcpClientActor`](crate::actor::tcp::TcpClientActor) in an orderly way
-/// (if connected), by sending [`Shutdown<M>`] to the reader and the writer.
+/// (if connected).
 ///
 /// Sent to a `TcpClientActor` with `ask`, the reply comes once both halves
 /// are closed, so a following [`Connect`] cannot fail because the old
@@ -92,6 +93,7 @@ pub enum EventSource {
 
 /// What happened to a connection; see [`ConnectionEvent`].
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum ConnectionEventKind {
     /// The connection has been set up.
     Connected,
@@ -129,6 +131,7 @@ pub enum ConnectionEventKind {
 /// [`TcpClientActor`](crate::actor::tcp::TcpClientActor) for how to wire
 /// them.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct ConnectionEvent {
     /// Which kind of actor reported the event.
     pub source: EventSource,
@@ -152,11 +155,11 @@ pub struct ConnectionEvent {
 /// The type parameter only selects the actor; it is carried as
 /// `PhantomData<fn() -> M>` so that `Shutdown<M>` is `Send`, `Sync` and
 /// `Copy` for every `M`.
-pub struct Shutdown<M>(std::marker::PhantomData<fn() -> M>);
+pub(crate) struct Shutdown<M>(std::marker::PhantomData<fn() -> M>);
 
 impl<M> Shutdown<M> {
     /// Creates the message.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Shutdown(std::marker::PhantomData)
     }
 }

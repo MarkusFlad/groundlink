@@ -9,7 +9,7 @@
 //! use bytes::Bytes;
 //! use groundlink::protocol::sle::common::Time;
 //! use groundlink::protocol::sle::raf::{AntennaId, FrameQuality};
-//! use groundlink::{RafFrame, RafProviderPdu};
+//! use groundlink::protocol::sle::raf::{RafFrame, RafProviderPdu};
 //!
 //! let frame = RafFrame {
 //!     earth_receive_time: Time::now(),

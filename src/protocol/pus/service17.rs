@@ -5,7 +5,8 @@
 //! [`PusCodec`](crate::PusCodec) and the PUS actors.
 //!
 //! ```
-//! use groundlink::{AreYouAliveReport, AreYouAliveRequest, PusPacket};
+//! use groundlink::protocol::pus::service17::{AreYouAliveReport, AreYouAliveRequest};
+//! use groundlink::PusPacket;
 //!
 //! let request = AreYouAliveRequest::new(0x042, 1);
 //! let packet = PusPacket::from(request.clone());
@@ -144,7 +145,7 @@ pub struct AreYouAliveReport {
     /// Destination ID: receiver of the report, usually the source ID of the
     /// TC(17,1).
     pub destination_id: u16,
-    /// Time stamp as raw bytes (e.g. a [`CucTime`](crate::CucTime)).
+    /// Time stamp as raw bytes (e.g. a [`CucTime`](crate::protocol::cuc::CucTime)).
     pub time: Bytes,
 }
 

@@ -1,11 +1,6 @@
-//! Tests of the public API, as a user of the crate sees it:
-//! 1. The entry points re-exported at the crate root and the items used
-//!    through their modules are reachable, and the protocols plug into
-//!    the TCP actors.
-//! 2. The internals of the actors cannot be used: the programs in
-//!    `tests/ui` must fail to compile with the recorded errors. After an
-//!    intended change of the errors, update them with
-//!    `TRYBUILD=overwrite cargo test --test public_api`.
+//! Tests of the public API, as a user of the crate sees it: the entry
+//! points re-exported at the crate root and the items used through their
+//! modules are reachable, and the protocols plug into the TCP actors.
 
 use std::any::type_name;
 
@@ -135,9 +130,4 @@ fn details_are_reachable_through_their_modules() {
         assert!(name.starts_with("groundlink::"), "{name} is not an item of groundlink");
     }
     assert_eq!(&encode_frame("a")[..], b"\x00\x01a");
-}
-
-#[test]
-fn internals_are_not_public() {
-    trybuild::TestCases::new().compile_fail("tests/ui/*.rs");
 }

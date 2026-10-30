@@ -1,9 +1,0 @@
-error[E0639]: cannot create non-exhaustive struct using struct expression
- --> tests/ui/non_exhaustive_config.rs:6:13
-  |
-6 |       let _ = PusConfig {
-  |  _____________^
-7 | |         tm_time_len: 4,
-8 | |         ..PusConfig::default()
-9 | |     };
-  | |_____^

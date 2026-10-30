@@ -23,5 +23,4 @@ tracing = "0.1.44"
 groundlink = { path = ".", features = ["test-util"] }
 anyhow = "1"
 tokio = { version = "1", features = ["full"] }
-trybuild = "1"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }

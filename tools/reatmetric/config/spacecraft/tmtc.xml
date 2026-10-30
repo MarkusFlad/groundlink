@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+  TM/TC packets of the groundlink example sle_spacecraft (APID 0x042 = 66).
+  The TM packets carry no parameters; they are listed so that ReatMetric
+  names them in the raw data view. The command verification needs no
+  definitions: it reads the PUS header of every TM(1,x).
+-->
+<ns2:packet_definitions xmlns:ns2="http://dariolucia.eu/ccsds/encdec">
+    <id_fields>
+        <field id="I-APID" offset="0" len="2" and="2047" or="0" lshift="0" rshift="0"/>
+        <field id="I-PUS-TYPE" offset="7" len="1" and="-1" or="0" lshift="0" rshift="0"/>
+        <field id="I-PUS-SUBTYPE" offset="8" len="1" and="-1" or="0" lshift="0" rshift="0"/>
+    </id_fields>
+    <packets>
+        <packet id="TM-1-1" external_id="10101" description="Acceptance success" type="TM">
+            <identification>
+                <match field="I-APID" value="66"/>
+                <match field="I-PUS-TYPE" value="1"/>
+                <match field="I-PUS-SUBTYPE" value="1"/>
+            </identification>
+            <structure/>
+        </packet>
+        <packet id="TM-1-2" external_id="10102" description="Acceptance failure" type="TM">
+            <identification>
+                <match field="I-APID" value="66"/>
+                <match field="I-PUS-TYPE" value="1"/>
+                <match field="I-PUS-SUBTYPE" value="2"/>
+            </identification>
+            <structure/>
+        </packet>
+        <packet id="TM-1-3" external_id="10103" description="Start of execution success" type="TM">
+            <identification>
+                <match field="I-APID" value="66"/>
+                <match field="I-PUS-TYPE" value="1"/>
+                <match field="I-PUS-SUBTYPE" value="3"/>
+            </identification>
+            <structure/>
+        </packet>
+        <packet id="TM-1-4" external_id="10104" description="Start of execution failure" type="TM">
+            <identification>
+                <match field="I-APID" value="66"/>
+                <match field="I-PUS-TYPE" value="1"/>
+                <match field="I-PUS-SUBTYPE" value="4"/>
+            </identification>
+            <structure/>
+        </packet>
+        <packet id="TM-1-7" external_id="10107" description="Completion of execution success" type="TM">
+            <identification>
+                <match field="I-APID" value="66"/>
+                <match field="I-PUS-TYPE" value="1"/>
+                <match field="I-PUS-SUBTYPE" value="7"/>
+            </identification>
+            <structure/>
+        </packet>
+        <packet id="TM-1-8" external_id="10108" description="Completion of execution failure" type="TM">
+            <identification>
+                <match field="I-APID" value="66"/>
+                <match field="I-PUS-TYPE" value="1"/>
+                <match field="I-PUS-SUBTYPE" value="8"/>
+            </identification>
+            <structure/>
+        </packet>
+        <packet id="TM-17-2" external_id="11702" description="Are-You-Alive report" type="TM">
+            <identification>
+                <match field="I-APID" value="66"/>
+                <match field="I-PUS-TYPE" value="17"/>
+                <match field="I-PUS-SUBTYPE" value="2"/>
+            </identification>
+            <structure/>
+        </packet>
+        <!-- Encoded for activity #1701; ACKS: acceptance, start, progress, completion. -->
+        <packet id="TC-17-1" external_id="1701" description="Are-You-Alive request" type="TC">
+            <identification/>
+            <structure/>
+            <extension>APID=66.PUSTYPE=17.PUSSUBTYPE=1.ACKS=XX-X</extension>
+        </packet>
+    </packets>
+    <parameters/>
+</ns2:packet_definitions>

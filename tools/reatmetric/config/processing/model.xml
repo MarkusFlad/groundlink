@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+  Processing model for the groundlink SLE test: TC(17,1), and one event per
+  verification report. The command verification service raises the event
+  whose ID is the external_id of the TM(1,x) packet in spacecraft/tmtc.xml.
+-->
+<ns2:processing xmlns:ns2="http://dariolucia.eu/reatmetric/processing/definition" synthetic_parameter_processing_enabled="true">
+    <parameters/>
+    <events>
+        <event severity="INFO" type="ON-BOARD" inhibition_period="0" log_enabled="true" id="#10101" location="SPACE.GROUNDLINK.PUS1.TM1_1" description="TM(1,1) acceptance success"/>
+        <event severity="ALARM" type="ON-BOARD" inhibition_period="0" log_enabled="true" id="#10102" location="SPACE.GROUNDLINK.PUS1.TM1_2" description="TM(1,2) acceptance failure"/>
+        <event severity="INFO" type="ON-BOARD" inhibition_period="0" log_enabled="true" id="#10103" location="SPACE.GROUNDLINK.PUS1.TM1_3" description="TM(1,3) start of execution success"/>
+        <event severity="ALARM" type="ON-BOARD" inhibition_period="0" log_enabled="true" id="#10104" location="SPACE.GROUNDLINK.PUS1.TM1_4" description="TM(1,4) start of execution failure"/>
+        <event severity="INFO" type="ON-BOARD" inhibition_period="0" log_enabled="true" id="#10107" location="SPACE.GROUNDLINK.PUS1.TM1_7" description="TM(1,7) completion of execution success"/>
+        <event severity="ALARM" type="ON-BOARD" inhibition_period="0" log_enabled="true" id="#10108" location="SPACE.GROUNDLINK.PUS1.TM1_8" description="TM(1,8) completion of execution failure"/>
+    </events>
+    <activities>
+        <activity type="TC" transmission_timeout="0" execution_timeout="0" verification_timeout="0" expected_duration="1000"
+                  id="#1701" location="SPACE.GROUNDLINK.PUS17.TC17_1" description="TC(17,1) Are-You-Alive request"/>
+    </activities>
+</ns2:processing>

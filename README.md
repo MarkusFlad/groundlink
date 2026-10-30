@@ -34,6 +34,28 @@ and [tokio](https://tokio.rs).
   format, CRC, APID, service and subtype) and reports it via service 1;
   `PusTestServiceActor` implements service 17; `PusTmStamper` numbers the
   telemetry of an APID consecutively and adds the time stamps.
+- **SLE Transport Mapping Layer** (ISP1, CCSDS 913.1-B-2): TML messages and
+  a codec, and `TmlLinkActor`, which runs the TML rules (context message,
+  heartbeats, dead timer) on top of a `TmlServer` or `TmlClient` and
+  exchanges the BER-encoded SLE PDUs with the SLE layer as `SlePdu`
+  messages.
+- **SLE PDUs and provider**: BER encoding and the PDUs of Return All Frames
+  (CCSDS 911.1-B-4) and Forward CLTU (CCSDS 912.1-B-4), with BIND, UNBIND,
+  START, STOP, TRANSFER-DATA and SCHEDULE-STATUS-REPORT, for FCLTU also
+  ASYNC-NOTIFY and GET-PARAMETER (as needed by users such as ReatMetric);
+  provider actors on top of the
+  `TmlLinkActor`: a `SleAssociationActor` per port and a
+  `RafServiceInstance` or `FcltuServiceInstance` per service instance.
+  On the user side, `SleUserActor` binds, starts and stops RAF and FCLTU
+  on top of a `TmlClient`; each operation is a message answered when the
+  provider's return has arrived.
+- **Space data link**: CLTUs with the BCH code (CCSDS 231.0-B-4), TC
+  Transfer Frames (CCSDS 232.0-B-4) and TM Transfer Frames (CCSDS
+  132.0-B-3), and the actors `TcFrameEncoder`/`TcFrameDecoder` and
+  `TmFrameEncoder`/`TmFrameDecoder` between Space Packets and the SLE
+  services. A PUS TC(17,1) can thus go from the ground over FCLTU to a
+  simulated spacecraft, and its TM(1,1), TM(1,3), TM(17,2) and TM(1,7)
+  come back over RAF (see `tests/sle_pus_loop.rs`).
 - **Simple string protocol**: a length-prefixed string protocol, useful for
   getting started and for tests.
 - **Test helpers**: `TestActor` records messages for assertions in tests.
@@ -48,6 +70,7 @@ does not install a subscriber itself.
 | `simple_string` | `SimpleString` | `SimpleStringCodec` | `SimpleStringServer`, `SimpleStringClient`, … |
 | `ccsds` | `SpacePacket` | `SpacePacketCodec` | `SpacePacketServer`, `SpacePacketClient`, … |
 | `pus` | `PusPacket` | `PusCodec` | `PusServer`, `PusClient`, … |
+| `tml` | `TmlMessage` | `TmlCodec` | `TmlServer`, `TmlClient`, … |
 
 ## Usage
 
@@ -138,6 +161,66 @@ receives plain Space Packets, so that the `PusTcAcceptor` can answer an
 invalid PUS packet (for example one with a CRC error) with TM(1,2) instead
 of dropping it.
 
+### SLE provider
+
+An SLE provider with a RAF port and an FCLTU port:
+
+```sh
+cargo run --example sle_provider -- 5100 5101
+```
+
+The RAF service instance `sagr=1.spack=VST-PASS0001.rsl-fg=1.raf=onlt1`
+on port 5100 delivers a generated frame every 100 ms to a user that has
+bound and started it. The FCLTU service instance
+`sagr=1.spack=VST-PASS0001.fsl-fg=1.cltu=cltu1` on port 5101 prints the
+CLTUs it accepts. Both ports speak ISP1, so any SLE user (for example one
+built on ESA's SLE API) can connect. The provider events (bound, started,
+aborted, ...) are printed as well.
+
+In a second terminal, the matching SLE user receives RAF frames for five
+seconds and then sends five CLTUs:
+
+```sh
+cargo run --example sle_user -- 127.0.0.1 5100 5101
+```
+
+### PUS over SLE
+
+A simulated spacecraft behind an SLE provider, and an interactive ground
+segment that talks to it over RAF and FCLTU:
+
+```text
+sle_ground:     TC(17,1) ─▶ TcFrameEncoder ─CLTU─▶ SleUserActor ══FCLTU══╗
+                                                                         ▼
+sle_spacecraft: FcltuServiceInstance ─▶ TcFrameDecoder ─▶ PusTcAcceptor ─▶ PusTestServiceActor
+                RafServiceInstance ◀─ TmFrameEncoder ◀─ PusTmStamper ◀─ TM(1,x), TM(17,2)
+                       ║
+sle_ground:            ╚══RAF══▶ SleUserActor ─▶ TmFrameDecoder ─▶ printed TM
+```
+
+```sh
+cargo run --example sle_spacecraft -- 5200 5201
+```
+
+In a second terminal:
+
+```sh
+cargo run --example sle_ground -- 127.0.0.1 5200 5201
+```
+
+The ground segment reads the commands `Open` (binds and starts RAF and
+FCLTU), `TC17_1`, `Close` (stops and unbinds) and `Quit` from stdin. Each
+TC(17,1) goes as a CLTU with a TC Transfer Frame to the spacecraft, whose
+TM(1,1), TM(1,3), TM(17,2) and TM(1,7) come back in TM Transfer Frames
+and are printed. `sle_spacecraft` logs every TC it receives and every TM
+it sends; `--log all --hex` adds the CLTUs, TC and TM Transfer Frames,
+with hex dumps.
+
+`sle_spacecraft` can also be commanded by
+[ReatMetric](https://github.com/dariol83/reatmetric), an independent SLE
+user: `tools/reatmetric/setup.sh` installs and configures it, see
+[Testing the SLE provider with ReatMetric](docs/reatmetric.md).
+
 ### Space Packet relay with batches
 
 A relay that forwards Space Packets between a peer that connects to it
@@ -195,6 +278,9 @@ RUST_LOG=debug cargo run --example pus_server -- 9000 9001
   between actors), the settings an application can tune (batch length,
   mailbox capacity, worker threads), what was tried and not adopted, and
   throughput measurements for each.
+- [Testing the SLE provider with ReatMetric](docs/reatmetric.md): setting
+  up ReatMetric as an independent SLE user for `sle_spacecraft`, with the
+  setup script, what is configured and why, and the logs.
 
 ## Development
 

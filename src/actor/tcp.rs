@@ -20,7 +20,8 @@
 //! module.
 //!
 //! The protocols of this crate get type aliases, e.g. [`PusServer`] for
-//! `TcpServerActor<PusPacket, PusCodec>`.
+//! `TcpServerActor<PusPacket, PusCodec>` or [`TmlServer`] for
+//! `TcpServerActor<TmlMessage, TmlCodec>`.
 //!
 //! Closing is tracked per connection half: the reader and the writer report
 //! [`ConnectionHalfClosed`] to their server or client. When the read half
@@ -50,6 +51,7 @@ use crate::actor::batch::{Batch, DEFAULT_MAX_BATCH_LEN, Downstream};
 use crate::protocol::ccsds::{SpacePacket, SpacePacketCodec};
 use crate::protocol::pus::{PusCodec, PusPacket};
 use crate::protocol::simple_string::{SimpleString, SimpleStringCodec};
+use crate::protocol::tml::{TmlCodec, TmlMessage};
 use crate::protocol::{MessageCodec, WireMessage};
 
 mod message;
@@ -1868,6 +1870,15 @@ pub type PusReader = TcpReaderActor<PusPacket, PusCodec>;
 pub type PusWriter = TcpWriterActor<PusPacket, PusCodec>;
 /// [`TcpClientActor`] for ECSS PUS-C packets ([`PusPacket`]).
 pub type PusClient = TcpClientActor<PusPacket, PusCodec>;
+
+/// [`TcpServerActor`] for SLE TML messages ([`TmlMessage`]).
+pub type TmlServer = TcpServerActor<TmlMessage, TmlCodec>;
+/// [`TcpReaderActor`] for SLE TML messages ([`TmlMessage`]).
+pub type TmlReader = TcpReaderActor<TmlMessage, TmlCodec>;
+/// [`TcpWriterActor`] for SLE TML messages ([`TmlMessage`]).
+pub type TmlWriter = TcpWriterActor<TmlMessage, TmlCodec>;
+/// [`TcpClientActor`] for SLE TML messages ([`TmlMessage`]).
+pub type TmlClient = TcpClientActor<TmlMessage, TmlCodec>;
 
 #[cfg(test)]
 mod tests {

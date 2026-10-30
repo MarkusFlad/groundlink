@@ -36,10 +36,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context as _, anyhow};
+use groundlink::actor::tcp::GetLocalAddr;
 use groundlink::protocol::ccsds::PRIMARY_HEADER_LEN;
 use groundlink::{
-    Batch, ConnectionEvent, Downstream, GetLocalAddr, SpacePacket, SpacePacketClient, SpacePacketCodec,
-    SpacePacketServer, TcpClientArgs, TcpServerArgs, impl_batch_message,
+    Batch, ConnectionEvent, Downstream, SpacePacket, SpacePacketClient, SpacePacketCodec, SpacePacketServer,
+    TcpClientArgs, TcpServerArgs, impl_batch_message,
 };
 use kameo::actor::{Actor, ActorRef, Recipient, Spawn};
 use kameo::error::Infallible;

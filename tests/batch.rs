@@ -14,9 +14,11 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
+use groundlink::actor::tcp::GetLocalAddr;
+use groundlink::protocol::simple_string::encode_frame;
 use groundlink::{
-    Batch, ConnectionEvent, Downstream, GetLocalAddr, PusPacket, PusTm, PusTmStamper, SimpleString, SimpleStringClient,
-    SimpleStringCodec, SimpleStringServer, TcpClientArgs, TcpServerArgs, TestActor, encode_frame, impl_batch_message,
+    Batch, ConnectionEvent, Downstream, PusPacket, PusTm, PusTmStamper, SimpleString, SimpleStringClient,
+    SimpleStringCodec, SimpleStringServer, TcpClientArgs, TcpServerArgs, TestActor, impl_batch_message,
 };
 use kameo::actor::{Actor, ActorRef, Spawn};
 use kameo::error::Infallible;

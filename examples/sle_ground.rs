@@ -21,12 +21,17 @@
 use std::net::SocketAddr;
 
 use anyhow::Context as _;
+use groundlink::actor::sle::{Cltu, CltuStart, RafStart, SleBind, SleStop, SleUnbind};
 use groundlink::protocol::ccsds::SEQUENCE_COUNT_MAX;
+use groundlink::protocol::cuc::CucFormat;
+use groundlink::protocol::pus::service1::VerificationReport;
+use groundlink::protocol::pus::service17::{AreYouAliveReport, AreYouAliveRequest};
+use groundlink::protocol::sle::raf::{RafFrame, RequestedFrameQuality};
+use groundlink::protocol::tml::TmlContext;
 use groundlink::{
-    AreYouAliveReport, AreYouAliveRequest, Batch, Cltu, CltuStart, ConnectionEvent, CucFormat, PusConfig, PusPacket,
-    RafFrame, RafStart, RequestedFrameQuality, SleBind, SlePdu, SleStop, SleUnbind, SleUserActor, SleUserConfig,
-    SleUserEvent, SpacePacket, TcFrameConfig, TcFrameEncoder, TcpClientArgs, TmFrameConfig, TmFrameDecoder, TmlClient,
-    TmlCodec, TmlContext, TmlLinkActor, TmlMessage, VerificationReport,
+    Batch, ConnectionEvent, PusConfig, PusPacket, SlePdu, SleUserActor, SleUserConfig, SleUserEvent, SpacePacket,
+    TcFrameConfig, TcFrameEncoder, TcpClientArgs, TmFrameConfig, TmFrameDecoder, TmlClient, TmlCodec, TmlLinkActor,
+    TmlMessage,
 };
 use kameo::actor::{Actor, ActorRef, Spawn};
 use kameo::error::Infallible;
@@ -147,7 +152,7 @@ fn spawn_user(
 /// Sends `msg` with `ask` and prints the outcome.
 async fn request<M>(service: &str, what: &str, user: &ActorRef<SleUserActor>, msg: M) -> bool
 where
-    SleUserActor: Message<M, Reply = kameo::reply::DelegatedReply<Result<(), groundlink::SleUserError>>>,
+    SleUserActor: Message<M, Reply = kameo::reply::DelegatedReply<Result<(), groundlink::actor::sle::SleUserError>>>,
     M: std::fmt::Debug + Send + 'static,
 {
     match user.ask(msg).await {

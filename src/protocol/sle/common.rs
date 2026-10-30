@@ -7,7 +7,7 @@
 //! are therefore encoded with an explicit (constructed) tag.
 //!
 //! ```
-//! use groundlink::ServiceInstanceId;
+//! use groundlink::protocol::sle::common::ServiceInstanceId;
 //!
 //! let si: ServiceInstanceId = "sagr=1.spack=VST-PASS0001.rsl-fg=1.raf=onlt1".parse().unwrap();
 //! assert_eq!(si.attributes().count(), 4);
@@ -74,8 +74,8 @@ pub mod unbind_reason {
 }
 
 /// `PeerAbortDiagnostic` values, sent with
-/// [`SlePeerAbort`](crate::SlePeerAbort) (CCSDS 913.1-B-2 sends them as TCP
-/// urgent data).
+/// [`SlePeerAbort`](crate::actor::tml::SlePeerAbort) (CCSDS 913.1-B-2
+/// sends them as TCP urgent data).
 pub mod peer_abort {
     /// Access denied.
     pub const ACCESS_DENIED: u8 = 0;

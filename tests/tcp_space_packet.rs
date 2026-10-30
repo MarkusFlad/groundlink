@@ -8,9 +8,10 @@
 use std::time::Duration;
 
 use futures::{SinkExt, StreamExt};
+use groundlink::actor::tcp::{Connect, GetLocalAddr};
+use groundlink::protocol::ccsds::PacketType;
 use groundlink::{
-    Connect, GetLocalAddr, PacketType, SpacePacket, SpacePacketClient, SpacePacketCodec, SpacePacketServer,
-    TcpClientArgs, TcpServerArgs, TestActor,
+    SpacePacket, SpacePacketClient, SpacePacketCodec, SpacePacketServer, TcpClientArgs, TcpServerArgs, TestActor,
 };
 use kameo::actor::{Recipient, Spawn};
 use tokio::net::{TcpListener, TcpStream};

@@ -20,9 +20,10 @@
 use std::time::{Duration, Instant};
 
 use bytes::BytesMut;
+use groundlink::actor::tcp::GetLocalAddr;
+use groundlink::protocol::ccsds::PacketType;
 use groundlink::{
-    ConnectionEvent, GetLocalAddr, PacketType, SpacePacket, SpacePacketClient, SpacePacketCodec, SpacePacketServer,
-    TcpClientArgs, TcpServerArgs,
+    ConnectionEvent, SpacePacket, SpacePacketClient, SpacePacketCodec, SpacePacketServer, TcpClientArgs, TcpServerArgs,
 };
 use kameo::actor::Spawn;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};

@@ -64,8 +64,9 @@ impl<M, C> MessageCodec<M> for C where
 /// impl WireMessage for MyMessage {}
 /// ```
 ///
-/// The control messages of this crate (e.g. [`GetLocalAddr`](crate::GetLocalAddr) or
-/// [`Connect`](crate::Connect)) never implement it. This lets the actors implement both
-/// `Message<M>` and `Message<GetLocalAddr>` without the implementations
-/// overlapping.
+/// The control messages of this crate (e.g.
+/// [`GetLocalAddr`](crate::actor::tcp::GetLocalAddr) or
+/// [`Connect`](crate::actor::tcp::Connect)) never implement it. This lets
+/// the actors implement both `Message<M>` and `Message<GetLocalAddr>`
+/// without the implementations overlapping.
 pub trait WireMessage {}

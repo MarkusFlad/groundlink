@@ -309,9 +309,12 @@ fn reply<T: Send + 'static>(reply: Option<ReplySender<Result<T, SleUserError>>>,
 /// ```no_run
 /// use kameo::actor::Spawn;
 /// use kameo::mailbox;
+/// use groundlink::actor::sle::{RafStart, SleBind};
+/// use groundlink::protocol::sle::raf::{RafFrame, RequestedFrameQuality};
+/// use groundlink::protocol::tml::TmlContext;
 /// use groundlink::{
-///     Batch, ConnectionEvent, RafFrame, RafStart, RequestedFrameQuality, SleBind, SlePdu, SleUserActor,
-///     SleUserConfig, TcpClientArgs, TestActor, TmlClient, TmlCodec, TmlContext, TmlLinkActor, TmlMessage,
+///     Batch, ConnectionEvent, SlePdu, SleUserActor, SleUserConfig, TcpClientArgs, TestActor,
+///     TmlClient, TmlCodec, TmlLinkActor, TmlMessage,
 /// };
 ///
 /// # #[tokio::main]

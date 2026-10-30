@@ -4,10 +4,10 @@
 use std::time::Duration;
 
 use bytes::Bytes;
-use groundlink::{
-    AckFlags, AreYouAliveReport, AreYouAliveRequest, FailureCode, GetMessages, PusPacket, PusTc, PusTcAcceptor,
-    PusTestServiceActor, PusTm, PusTmStamper, RequestId, TestActor, VerificationKind, VerificationReport,
-};
+use groundlink::protocol::pus::AckFlags;
+use groundlink::protocol::pus::service1::{FailureCode, RequestId, VerificationKind, VerificationReport};
+use groundlink::protocol::pus::service17::{AreYouAliveReport, AreYouAliveRequest};
+use groundlink::{GetMessages, PusPacket, PusTc, PusTcAcceptor, PusTestServiceActor, PusTm, PusTmStamper, TestActor};
 use kameo::actor::Spawn;
 
 const APID: u16 = 0x042;

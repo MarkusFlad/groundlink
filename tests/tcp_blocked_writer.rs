@@ -6,9 +6,9 @@
 
 use std::time::Duration;
 
+use groundlink::actor::tcp::{Close, ConnectionPolicy, GetLocalAddr};
 use groundlink::{
-    Close, ConnectionPolicy, GetLocalAddr, SimpleString, SimpleStringClient, SimpleStringCodec, SimpleStringServer,
-    TcpClientArgs, TcpServerArgs, TestActor,
+    SimpleString, SimpleStringClient, SimpleStringCodec, SimpleStringServer, TcpClientArgs, TcpServerArgs, TestActor,
 };
 use kameo::actor::{Recipient, Spawn};
 use tokio::io::AsyncWriteExt;
@@ -48,13 +48,19 @@ async fn replace_current_serves_a_new_client_while_the_old_one_stops_reading() {
 
     // The first client sends one message and then never reads.
     let mut first = TcpStream::connect(addr).await.unwrap();
-    first.write_all(&groundlink::encode_frame("first")).await.unwrap();
+    first
+        .write_all(&groundlink::protocol::simple_string::encode_frame("first"))
+        .await
+        .unwrap();
     TestActor::assert_received(&messages, 1, Duration::from_secs(1)).await;
     let flooding = flood(server.clone().recipient());
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let mut second = TcpStream::connect(addr).await.unwrap();
-    second.write_all(&groundlink::encode_frame("second")).await.unwrap();
+    second
+        .write_all(&groundlink::protocol::simple_string::encode_frame("second"))
+        .await
+        .unwrap();
     let all = TestActor::assert_received(&messages, 2, Duration::from_secs(5)).await;
     flooding.abort();
 
@@ -71,7 +77,7 @@ async fn close_is_answered_while_the_peer_stops_reading() {
             .with_keepalive(None)
             .with_write_timeout(Some(SHORT_TIMEOUT)),
     );
-    client.ask(groundlink::Connect).await.unwrap();
+    client.ask(groundlink::actor::tcp::Connect).await.unwrap();
     // Accepted, but never read.
     let (_peer, _) = listener.accept().await.unwrap();
 

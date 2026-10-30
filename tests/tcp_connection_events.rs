@@ -5,10 +5,12 @@
 use std::time::Duration;
 
 use futures::{SinkExt, StreamExt};
+use groundlink::actor::tcp::{
+    Close, CloseRead, CloseWrite, Connect, ConnectionEventKind, ConnectionHalf, EventSource, GetLocalAddr,
+};
 use groundlink::{
-    Close, CloseRead, CloseWrite, Connect, ConnectionEvent, ConnectionEventKind, ConnectionHalf, EventSource,
-    GetLocalAddr, GetMessages, SimpleString, SimpleStringClient, SimpleStringCodec, SimpleStringServer, TcpClientArgs,
-    TcpServerArgs, TestActor,
+    ConnectionEvent, GetMessages, SimpleString, SimpleStringClient, SimpleStringCodec, SimpleStringServer,
+    TcpClientArgs, TcpServerArgs, TestActor,
 };
 use kameo::actor::{Actor, ActorRef, Spawn};
 use kameo::error::Infallible;

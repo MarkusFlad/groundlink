@@ -171,7 +171,8 @@ impl TmTransferFrame {
 ///
 /// ```
 /// use groundlink::protocol::datalink::tm::{TmFrameConfig, TmFramePacker};
-/// use groundlink::{PacketType, SpacePacket};
+/// use groundlink::protocol::ccsds::PacketType;
+/// use groundlink::SpacePacket;
 ///
 /// let mut packer = TmFramePacker::new(TmFrameConfig::new(0x2a, 0));
 /// let mut frames = packer.push(&SpacePacket::new(PacketType::Telemetry, 0x42, 0, vec![1, 2, 3])).unwrap();

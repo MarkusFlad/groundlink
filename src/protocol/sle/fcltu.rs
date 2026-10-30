@@ -9,7 +9,7 @@
 //! ```
 //! use bytes::Bytes;
 //! use groundlink::protocol::sle::common::{ConditionalTime, Credentials};
-//! use groundlink::{CltuTransferDataInvocation, FcltuUserPdu};
+//! use groundlink::protocol::sle::fcltu::{CltuTransferDataInvocation, FcltuUserPdu};
 //!
 //! let transfer = FcltuUserPdu::TransferData(CltuTransferDataInvocation {
 //!     credentials: Credentials::Unused,

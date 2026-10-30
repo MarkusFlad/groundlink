@@ -23,7 +23,8 @@
 //!
 //! ```
 //! use bytes::{Bytes, BytesMut};
-//! use groundlink::{TmlCodec, TmlContext, TmlMessage};
+//! use groundlink::protocol::tml::TmlContext;
+//! use groundlink::{TmlCodec, TmlMessage};
 //! use tokio_util::codec::{Decoder, Encoder};
 //!
 //! let mut codec = TmlCodec::default();

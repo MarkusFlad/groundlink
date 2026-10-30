@@ -6,9 +6,9 @@ use std::time::Duration;
 
 use bytes::BytesMut;
 use futures::SinkExt;
+use groundlink::actor::tcp::GetLocalAddr;
 use groundlink::{
-    GetLocalAddr, PusClient, PusCodec, PusConfig, PusPacket, PusServer, PusTc, PusTm, TcpClientArgs, TcpServerArgs,
-    TestActor,
+    PusClient, PusCodec, PusConfig, PusPacket, PusServer, PusTc, PusTm, TcpClientArgs, TcpServerArgs, TestActor,
 };
 use kameo::actor::{Recipient, Spawn};
 use tokio::io::AsyncWriteExt;
@@ -78,7 +78,7 @@ async fn invalid_pus_packet_is_dropped_and_connection_stays_open() {
 
 #[tokio::test]
 async fn pus_config_of_the_codec_reaches_server_and_client() {
-    use groundlink::Connect;
+    use groundlink::actor::tcp::Connect;
 
     // No packet error control and a 4-byte time stamp, unlike the default.
     let mut config = PusConfig::default();

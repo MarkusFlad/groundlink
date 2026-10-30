@@ -7,16 +7,16 @@ messages, and why the message types of a protocol implement the
 ## How messages flow through a server
 
 A `TcpServerActor<M, C>` (for example `PusServer`) is not on the path of
-incoming messages. For each accepted connection, it spawns a
-`TcpReaderActor` and a `TcpWriterActor`:
+incoming messages. For each accepted connection, it spawns a reader and a
+writer actor, which are internal to the crate:
 
 - The **reader** decodes messages from the socket and sends them directly
   to the `downstream: Recipient<M>` that was passed when the server was
   spawned.
 - The **writer** encodes every `M` it receives onto the socket.
 
-Besides its control messages (`GetLocalAddr`, `ConnectionHalfClosed`, and
-an internal notification when a writer has been spawned), the server
+Besides its control messages (`GetLocalAddr`, `Close`, and internal
+notifications from the reader and writer), the server
 handles `M` itself: it forwards the message to the writer of its current
 connection. Without a connection, the message is dropped with a warning.
 

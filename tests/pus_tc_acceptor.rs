@@ -6,10 +6,13 @@ use std::time::Duration;
 
 use bytes::{Bytes, BytesMut};
 use futures::SinkExt;
+use groundlink::actor::tcp::GetLocalAddr;
+use groundlink::protocol::ccsds::{PacketType, SpacePacketHeader};
+use groundlink::protocol::pus::AckFlags;
+use groundlink::protocol::pus::service1::{FailureCode, RequestId, VerificationKind, VerificationReport};
 use groundlink::{
-    AckFlags, FailureCode, GetLocalAddr, GetMessages, PacketType, PusCodec, PusConfig, PusPacket, PusServer, PusTc,
-    PusTcAcceptor, PusTm, RequestId, SpacePacket, SpacePacketCodec, SpacePacketHeader, SpacePacketServer,
-    TcpServerArgs, TestActor, VerificationKind, VerificationReport,
+    GetMessages, PusCodec, PusConfig, PusPacket, PusServer, PusTc, PusTcAcceptor, PusTm, SpacePacket, SpacePacketCodec,
+    SpacePacketServer, TcpServerArgs, TestActor,
 };
 use kameo::actor::{ActorRef, Recipient, Spawn};
 use tokio::net::TcpStream;
@@ -119,7 +122,8 @@ async fn end_to_end_over_tcp() {
 #[tokio::test]
 async fn tm_1_1_is_sent_back_over_tcp_via_stamper_and_pus_client() {
     use futures::StreamExt;
-    use groundlink::{Connect, PusClient, PusTmStamper, TcpClientArgs};
+    use groundlink::actor::tcp::Connect;
+    use groundlink::{PusClient, PusTmStamper, TcpClientArgs};
     use tokio::net::TcpListener;
 
     // Set up a TCP connection: the PusClient writes, the peer reads.
@@ -152,7 +156,8 @@ async fn tm_1_1_is_sent_back_over_tcp_via_stamper_and_pus_client() {
 
 #[tokio::test]
 async fn adapter_accepts_infallible_conversions() {
-    use groundlink::{AreYouAliveReport, PusPacketAdapter};
+    use groundlink::PusPacketAdapter;
+    use groundlink::protocol::pus::service17::AreYouAliveReport;
 
     let packets = TestActor::<PusPacket>::spawn(TestActor::new());
     let adapter =

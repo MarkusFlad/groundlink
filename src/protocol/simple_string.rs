@@ -3,7 +3,8 @@
 //!
 //! ```
 //! use bytes::BytesMut;
-//! use groundlink::{encode_frame, SimpleString, SimpleStringCodec};
+//! use groundlink::protocol::simple_string::encode_frame;
+//! use groundlink::{SimpleString, SimpleStringCodec};
 //! use tokio_util::codec::Decoder;
 //!
 //! assert_eq!(encode_frame("hi"), vec![0x00, 0x02, b'h', b'i']);

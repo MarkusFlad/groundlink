@@ -212,7 +212,13 @@ The ground segment reads the commands `Open` (binds and starts RAF and
 FCLTU), `TC17_1`, `Close` (stops and unbinds) and `Quit` from stdin. Each
 TC(17,1) goes as a CLTU with a TC Transfer Frame to the spacecraft, whose
 TM(1,1), TM(1,3), TM(17,2) and TM(1,7) come back in TM Transfer Frames
-and are printed.
+and are printed. `sle_spacecraft` logs every TC it receives and every TM
+it sends.
+
+`sle_spacecraft` can also be commanded by
+[ReatMetric](https://github.com/dariol83/reatmetric), an independent SLE
+user: `tools/reatmetric/setup.sh` installs and configures it, see
+[Testing the SLE provider with ReatMetric](docs/reatmetric.md).
 
 ### Space Packet relay with batches
 
@@ -271,6 +277,9 @@ RUST_LOG=debug cargo run --example pus_server -- 9000 9001
   between actors), the settings an application can tune (batch length,
   mailbox capacity, worker threads), what was tried and not adopted, and
   throughput measurements for each.
+- [Testing the SLE provider with ReatMetric](docs/reatmetric.md): setting
+  up ReatMetric as an independent SLE user for `sle_spacecraft`, with the
+  setup script, what is configured and why, and the logs.
 
 ## Development
 

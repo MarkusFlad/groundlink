@@ -1,0 +1,49 @@
+<!--
+  ReatMetric spacecraft driver configuration matching the groundlink example
+  sle_spacecraft (spacecraft ID 0x2a, APID 0x042, PUS-C TM, ECSS PUS TC).
+-->
+<ns1:spacecraft xmlns:ns1="http://dariolucia.eu/reatmetric/driver/spacecraft">
+	<name>GROUNDLINK</name>
+	<!-- 0x2a -->
+	<id>42</id>
+	<!-- No obt-epoch: CUC times count from 1958-01-01, as groundlink's CucEpoch::Ccsds. -->
+	<propagation-delay>0</propagation-delay>
+	<!-- TC: no randomisation (groundlink has none), FECF, type-BD frames
+	     (groundlink has no FARM and sends no CLCW), no segment header. -->
+	<tc randomize="false" fecf="true" ad-mode-default="false">
+		<tc-vc-descriptor tc-vc="0" segmentation="false" default-tc-vc="true" />
+	</tc>
+	<!-- TM: 1115-octet frames with FECF, no OCF, not randomised; packets on VC 0. -->
+	<tm fecf="true" ocf="false" derandomize="false" frame-length="1115">
+		<tm-vc-descriptor id="0" process-type="PACKET" />
+		<tm-vc-descriptor id="7" process-type="IGNORE" />
+		<type>TM</type>
+	</tm>
+	<!-- PUS-C TM secondary header: version/time reference status (8 bits),
+	     service, subtype, message type counter (16 bits), destination ID
+	     (16 bits), CUC time with P-field (4 coarse, 2 fine octets).
+	     ReatMetric only knows an 8-bit sub-counter, so counter and
+	     destination ID are read as one 32-bit destination field. -->
+	<tm-packet parameter-id-offset="100000">
+		<default-pus-configuration
+			destination-field-length="32"
+			packet-subcounter-present="false"
+			tm-spare-length="0"
+			tm-pec-present="CRC">
+			<obt-cuc-config explicit-p-field="true" coarse="4" fine="2" />
+		</default-pus-configuration>
+	</tm-packet>
+	<!-- TC secondary header with a 16-bit source ID and CRC, as groundlink's
+	     PusTc. ReatMetric writes PUS version 1; sle_spacecraft accepts it. -->
+	<tc-packet
+		activity-tc-packet-type="TC"
+		pus-source-id-default-value="1"
+		pus-source-id-length="16"
+		pus-spare-length="0"
+		tc-pec-present="CRC">
+	</tc-packet>
+	<services>
+		<!-- Tracks TCs through TM(1,1), TM(1,3) and TM(1,7). -->
+		<service type="eu.dariolucia.reatmetric.driver.spacecraft.services.impl.CommandVerificationService" configuration="" />
+	</services>
+</ns1:spacecraft>

@@ -1,0 +1,65 @@
+<!--
+  SLE user configuration (eu.dariolucia.ccsds.sle.utl) for the groundlink
+  example sle_spacecraft with RAF port @RAF_PORT@ and FCLTU port @FCLTU_PORT@.
+-->
+<utl-configuration-file>
+    <peer-configuration id="MOC1" password="AABBCCDDEEFF00" auth-delay="180">
+        <port-mappings>
+            <mapping port-name="GL_RAF" address="@RAF_ADDRESS@" dead-factor="3" heartbeat-time="30" tcp-tx-buffer="65536" tcp-rx-buffer="65536" />
+            <mapping port-name="GL_CLTU" address="@FCLTU_ADDRESS@" dead-factor="3" heartbeat-time="30" tcp-tx-buffer="65536" tcp-rx-buffer="65536" />
+        </port-mappings>
+        <remote-peers>
+            <!-- SleAssociationConfig::default().responder_id; groundlink checks no credentials. -->
+            <peer id="PROVIDER" auth-mode="NONE" auth-hash="SHA_1" password="AABBCCDDEEFF00" />
+        </remote-peers>
+    </peer-configuration>
+    <service-instances>
+        <raf>
+            <service-instance-id>sagr=1.spack=VST-PASS0001.rsl-fg=1.raf=onlt1</service-instance-id>
+            <service-version-number>5</service-version-number>
+            <initiator>USER</initiator>
+            <initiator-id>MOC1</initiator-id>
+            <responder-id>PROVIDER</responder-id>
+            <responder-port-id>GL_RAF</responder-port-id>
+            <return-timeout-period>30</return-timeout-period>
+            <reporting-cycle>30</reporting-cycle>
+            <delivery-mode>TIMELY_ONLINE</delivery-mode>
+            <latency-limit>1</latency-limit>
+            <transfer-buffer-size>16</transfer-buffer-size>
+            <minimum-reporting-cycle>0</minimum-reporting-cycle>
+            <permitted-frame-quality-set>
+                <quality>GOOD_FRAMES_ONLY</quality>
+                <quality>BAD_FRAMES_ONLY</quality>
+                <quality>ALL_FRAMES</quality>
+            </permitted-frame-quality-set>
+            <requested-frame-quality>GOOD_FRAMES_ONLY</requested-frame-quality>
+        </raf>
+        <cltu>
+            <service-instance-id>sagr=1.spack=VST-PASS0001.fsl-fg=1.cltu=cltu1</service-instance-id>
+            <service-version-number>5</service-version-number>
+            <initiator>USER</initiator>
+            <initiator-id>MOC1</initiator-id>
+            <responder-id>PROVIDER</responder-id>
+            <responder-port-id>GL_CLTU</responder-port-id>
+            <return-timeout-period>30</return-timeout-period>
+            <!-- Required: ReatMetric sends CLTUs only after the first
+                 CLTU-STATUS-REPORT has told it the buffer size. -->
+            <reporting-cycle>30</reporting-cycle>
+            <maximum-cltu-length>4096</maximum-cltu-length>
+            <minimum-cltu-delay>0</minimum-cltu-delay>
+            <bit-lock-required>false</bit-lock-required>
+            <rf-available-required>false</rf-available-required>
+            <protocol-abort-mode>ABORT_MODE</protocol-abort-mode>
+            <minimum-reporting-cycle>0</minimum-reporting-cycle>
+            <acquisition-sequence-length>0</acquisition-sequence-length>
+            <clcw-physical-channel>CLCW_PH_CH</clcw-physical-channel>
+            <clcw-global-vcid scid="42" tfvn="0" vcid="0" />
+            <modulation-frequency>700</modulation-frequency>
+            <modulation-index>10</modulation-index>
+            <notification-mode>IMMEDIATE</notification-mode>
+            <plop-1-idle-sequence-length>0</plop-1-idle-sequence-length>
+            <plop-in-effect>PLOP2</plop-in-effect>
+            <subcarrier-to-bit-rate-ratio>1</subcarrier-to-bit-rate-ratio>
+        </cltu>
+    </service-instances>
+</utl-configuration-file>

@@ -89,9 +89,7 @@ pub mod fcltu;
 pub mod raf;
 pub mod user;
 
-pub use association::{
-    ServiceInstanceRef, SleAssociationActor, SleAssociationConfig, SleProviderEvent, SleServiceRegistry,
-};
+pub use association::{SleAssociationActor, SleAssociationConfig, SleProviderEvent, SleServiceRegistry};
 pub use fcltu::{Cltu, FcltuConfig, FcltuServiceInstance};
 pub use raf::{RafConfig, RafServiceInstance};
 pub use user::{

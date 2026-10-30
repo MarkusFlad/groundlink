@@ -98,6 +98,7 @@ fn invalid_input(msg: String) -> io::Error {
 ///
 /// Converts into an [`io::Error`] of kind [`io::ErrorKind::InvalidData`].
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum PusDecodeError {
     /// The secondary header flag of the primary header is not set.
     MissingSecondaryHeader,
@@ -544,6 +545,7 @@ impl PusPacket {
 
 /// Mission-specific parameters of the PUS format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct PusConfig {
     /// Length of the time stamp in the TM secondary header in bytes.
     pub tm_time_len: usize,

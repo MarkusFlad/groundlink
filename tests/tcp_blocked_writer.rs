@@ -1,21 +1,17 @@
 //! Tests for a peer that stays connected but no longer reads, e.g. a frozen
-//! GUI. The writer then blocks as soon as the TCP buffers are full:
-//! 1. The write timeout turns the stall into a write error.
-//! 2. The shutdown token interrupts a blocked write.
-//! 3. A server with `ConnectionPolicy::ReplaceCurrent` still serves a new
+//! GUI. Writing then blocks as soon as the TCP buffers are full:
+//! 1. A server with `ConnectionPolicy::ReplaceCurrent` still serves a new
 //!    client.
-//! 4. `Close` to a client is still answered.
+//! 2. `Close` to a client is still answered.
 
 use std::time::Duration;
 
 use groundlink::{
-    Close, CloseReason, ConnectionHalf, ConnectionHalfClosed, ConnectionPolicy, GetLocalAddr, SimpleString,
-    SimpleStringClient, SimpleStringCodec, SimpleStringServer, SimpleStringWriter, TcpClientArgs, TcpServerArgs,
-    TcpWriterArgs, TestActor,
+    Close, ConnectionPolicy, GetLocalAddr, SimpleString, SimpleStringClient, SimpleStringCodec, SimpleStringServer,
+    TcpClientArgs, TcpServerArgs, TestActor,
 };
 use kameo::actor::{Recipient, Spawn};
 use tokio::io::AsyncWriteExt;
-use tokio::net::tcp::OwnedWriteHalf;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinHandle;
 
@@ -33,69 +29,6 @@ fn flood(target: Recipient<SimpleString>) -> JoinHandle<()> {
             let _ = target.tell(SimpleString("x".repeat(60_000))).await;
         }
     })
-}
-
-/// A connection whose client end is returned but never read.
-async fn stalled_connection() -> (OwnedWriteHalf, std::net::SocketAddr, TcpStream) {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let (client, accepted) = tokio::join!(TcpStream::connect(addr), listener.accept());
-    let (server_stream, peer_addr) = accepted.unwrap();
-    let (_read_half, write_half) = server_stream.into_split();
-    (write_half, peer_addr, client.unwrap())
-}
-
-#[tokio::test]
-async fn write_timeout_reports_an_error_when_the_peer_stops_reading() {
-    let (write_half, peer_addr, _client) = stalled_connection().await;
-    let listener = TestActor::<ConnectionHalfClosed>::spawn(TestActor::new());
-    let writer = SimpleStringWriter::spawn(
-        TcpWriterArgs::new(
-            write_half,
-            peer_addr,
-            listener.clone().recipient(),
-            SimpleStringCodec::default(),
-        )
-        .with_write_timeout(Some(SHORT_TIMEOUT)),
-    );
-
-    let flooding = flood(writer.clone().recipient());
-    let received = TestActor::assert_received(&listener, 1, Duration::from_secs(10)).await;
-    flooding.abort();
-
-    assert_eq!(received[0].half, ConnectionHalf::Write);
-    assert!(
-        matches!(received[0].reason, CloseReason::Error(_)),
-        "expected an error, got {:?}",
-        received[0].reason
-    );
-}
-
-#[tokio::test]
-async fn shutdown_token_interrupts_a_blocked_write() {
-    let (write_half, peer_addr, _client) = stalled_connection().await;
-    let listener = TestActor::<ConnectionHalfClosed>::spawn(TestActor::new());
-    let args = TcpWriterArgs::new(
-        write_half,
-        peer_addr,
-        listener.clone().recipient(),
-        SimpleStringCodec::default(),
-    )
-    .with_write_timeout(None);
-    let shutdown = args.shutdown.clone();
-    let writer = SimpleStringWriter::spawn(args);
-
-    let flooding = flood(writer.clone().recipient());
-    // Long enough for the buffers to fill and the writer to block.
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    assert!(writer.is_alive());
-
-    shutdown.cancel();
-    let received = TestActor::assert_received(&listener, 1, Duration::from_secs(1)).await;
-    flooding.abort();
-
-    assert_eq!(received[0].half, ConnectionHalf::Write);
-    assert_eq!(received[0].reason, CloseReason::Graceful);
 }
 
 #[tokio::test]

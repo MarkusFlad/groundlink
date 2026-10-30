@@ -36,6 +36,7 @@ use crate::protocol::tml::SlePdu;
 
 /// Configuration of a [`SleAssociationActor`].
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct SleAssociationConfig {
     /// Responder identifier returned in every BIND return.
     pub responder_id: String,
@@ -56,7 +57,7 @@ impl Default for SleAssociationConfig {
 
 /// A service instance actor, as held by a [`SleServiceRegistry`].
 #[derive(Clone)]
-pub enum ServiceInstanceRef {
+pub(crate) enum ServiceInstanceRef {
     /// A RAF service instance.
     Raf(ActorRef<RafServiceInstance>),
     /// An FCLTU service instance.
@@ -120,7 +121,7 @@ impl SleServiceRegistry {
     }
 
     /// The instance with the identifier `service_instance`.
-    pub fn get(&self, service_instance: &ServiceInstanceId) -> Option<&ServiceInstanceRef> {
+    pub(crate) fn get(&self, service_instance: &ServiceInstanceId) -> Option<&ServiceInstanceRef> {
         self.instances.get(service_instance)
     }
 }
@@ -128,6 +129,7 @@ impl SleServiceRegistry {
 /// What happened to an association, sent by the [`SleAssociationActor`]
 /// (see [`SleAssociationActor::with_events`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SleProviderEvent {
     /// A BIND was accepted.
     Bound {

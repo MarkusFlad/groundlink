@@ -3,17 +3,17 @@
 //!
 //! - [`TcpServerActor`] accepts incoming connections.
 //! - [`TcpClientActor`] opens outgoing connections.
-//! - Each connection is served by a [`TcpReaderActor`] (read half,
-//!   forwards decoded messages to a `downstream` recipient) and a
-//!   [`TcpWriterActor`] (write half, encodes and sends every `M` it
-//!   receives).
+//!
+//! Both forward every decoded message to a `downstream` recipient. Inside,
+//! each connection is served by a reader actor for the read half and a
+//! writer actor for the write half; they are not part of the public API.
 //!
 //! Both [`TcpServerActor`] and [`TcpClientActor`] write every `M` they
 //! receive to their current connection, so the same code can send to an
 //! accepted or to an opened connection. This requires `M` to implement
 //! [`WireMessage`].
 //!
-//! All four actors also handle [`Batch<M>`], several messages as one kameo
+//! Both actors also handle [`Batch<M>`], several messages as one kameo
 //! message. A server or client created with `batched` forwards the
 //! messages that arrive together as one batch, which raises the throughput
 //! of small messages several times; see the [`batch`](crate::actor::batch)
@@ -23,9 +23,9 @@
 //! `TcpServerActor<PusPacket, PusCodec>` or [`TmlServer`] for
 //! `TcpServerActor<TmlMessage, TmlCodec>`.
 //!
-//! Closing is tracked per connection half: the reader and the writer report
-//! [`ConnectionHalfClosed`] to their server or client. When the read half
-//! ends, the reader also asks the writer to shut down.
+//! Closing is tracked per connection half and reported to an observer as
+//! [`ConnectionEvent`]s. When the read half ends, the write half is shut
+//! down as well.
 
 use std::collections::VecDeque;
 use std::io;
@@ -58,8 +58,9 @@ mod message;
 
 pub use message::{
     Close, CloseRead, CloseReason, CloseWrite, Connect, ConnectionEvent, ConnectionEventKind, ConnectionHalf,
-    ConnectionHalfClosed, EventSource, GetLocalAddr, Shutdown,
+    EventSource, GetLocalAddr,
 };
+pub(crate) use message::{ConnectionHalfClosed, Shutdown};
 
 /// TCP keepalive settings that detect a peer that has failed or become
 /// unreachable without closing the connection.
@@ -80,6 +81,7 @@ pub use message::{
 /// `interval` and `retries` are applied on Linux, Android, macOS, iOS,
 /// FreeBSD, NetBSD and Windows; on other systems only `idle` is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct KeepAlive {
     /// Time without traffic before the first probe.
     pub idle: Duration,
@@ -135,6 +137,7 @@ pub(crate) fn configure_keepalive(stream: &TcpStream, keepalive: Option<KeepAliv
 /// What a [`TcpServerActor`] does when a new client connects while a
 /// connection is active.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum ConnectionPolicy {
     /// The new client is accepted only after both halves of the current
     /// connection have been closed. Until then, the operating system keeps
@@ -155,6 +158,7 @@ pub enum ConnectionPolicy {
 pub type ConnectionObserver = ReplyRecipient<ConnectionEvent, ()>;
 
 /// Arguments for spawning a [`TcpServerActor<M, C>`].
+#[non_exhaustive]
 pub struct TcpServerArgs<M: Send + 'static, C> {
     /// Address to bind to. Use port 0 to let the operating system choose a
     /// port and query it with [`GetLocalAddr`].
@@ -174,7 +178,7 @@ pub struct TcpServerArgs<M: Send + 'static, C> {
     /// Receives the [`ConnectionEvent`]s of the accepted connections.
     pub observer: Option<ConnectionObserver>,
     /// How long a write to a client may make no progress before the
-    /// connection counts as failed; see [`TcpWriterArgs::write_timeout`].
+    /// connection counts as failed. `None` waits forever.
     pub write_timeout: Option<Duration>,
     /// How many messages the mailbox of each reader and writer actor
     /// spawned for a connection holds before senders have to wait. Larger
@@ -284,9 +288,9 @@ impl<M: Send + 'static, C> TcpServerArgs<M, C> {
     }
 }
 
-/// Actor that binds a TCP port and spawns a [`TcpReaderActor<M, C>`]
-/// (reading) and a [`TcpWriterActor<M, C>`] (writing) for each incoming
-/// connection. `M` is the message type, `C` its [`MessageCodec<M>`].
+/// Actor that binds a TCP port and spawns a reader and a writer actor for
+/// each incoming connection. `M` is the message type, `C` its
+/// [`MessageCodec<M>`].
 ///
 /// Connections are served one at a time. With
 /// [`ConnectionPolicy::WaitForClose`], the next connection is accepted only
@@ -308,7 +312,7 @@ impl<M: Send + 'static, C> TcpServerArgs<M, C> {
 /// [`TcpClientActor`] for coupling a server and a client.
 ///
 /// Spawning fails with the I/O error of binding the address. Also handles
-/// [`GetLocalAddr`] and [`ConnectionHalfClosed`].
+/// [`GetLocalAddr`].
 pub struct TcpServerActor<M, C>
 where
     M: Send + 'static,
@@ -706,58 +710,23 @@ async fn accept_loop<M, C>(
 const READ_BUFFER_LEN: usize = 64 * 1024;
 
 /// Arguments for spawning a [`TcpReaderActor<M, C>`].
-pub struct TcpReaderArgs<M: Send + 'static, C> {
+pub(crate) struct TcpReaderArgs<M: Send + 'static, C> {
     /// Read half of the connection.
-    pub read_half: OwnedReadHalf,
+    pub(crate) read_half: OwnedReadHalf,
     /// Address of the remote peer.
-    pub peer_addr: SocketAddr,
+    pub(crate) peer_addr: SocketAddr,
     /// Receives every decoded message, single or in batches.
-    pub downstream: Downstream<M>,
+    pub(crate) downstream: Downstream<M>,
     /// Receives [`ConnectionHalfClosed`] when the read half ends.
-    pub listener: Recipient<ConnectionHalfClosed>,
+    pub(crate) listener: Recipient<ConnectionHalfClosed>,
     /// Writer of the same connection; asked to shut down when the read half
     /// ends.
-    pub writer_shutdown: Recipient<Shutdown<M>>,
+    pub(crate) writer_shutdown: Recipient<Shutdown<M>>,
     /// Codec that decodes the messages.
-    pub codec: C,
+    pub(crate) codec: C,
     /// How many messages that have arrived together are forwarded at once
     /// at most; see [`TcpServerArgs::max_batch_len`].
-    pub max_batch_len: usize,
-}
-
-impl<M: Send + 'static, C> TcpReaderArgs<M, C> {
-    /// Arguments with [`DEFAULT_MAX_BATCH_LEN`]; change it with
-    /// [`with_max_batch_len`](Self::with_max_batch_len). `downstream` is a
-    /// `Recipient<M>` or, to forward batches, a `Recipient<Batch<M>>`.
-    pub fn new(
-        read_half: OwnedReadHalf,
-        peer_addr: SocketAddr,
-        downstream: impl Into<Downstream<M>>,
-        listener: Recipient<ConnectionHalfClosed>,
-        writer_shutdown: Recipient<Shutdown<M>>,
-        codec: C,
-    ) -> Self {
-        TcpReaderArgs {
-            read_half,
-            peer_addr,
-            downstream: downstream.into(),
-            listener,
-            writer_shutdown,
-            codec,
-            max_batch_len: DEFAULT_MAX_BATCH_LEN,
-        }
-    }
-
-    /// Forwards at most `max_batch_len` messages at once.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `max_batch_len` is 0.
-    pub fn with_max_batch_len(mut self, max_batch_len: usize) -> Self {
-        assert!(max_batch_len > 0, "max batch length must be at least 1");
-        self.max_batch_len = max_batch_len;
-        self
-    }
+    pub(crate) max_batch_len: usize,
 }
 
 /// Actor that owns the read half ([`OwnedReadHalf`]) of a TCP connection and
@@ -774,7 +743,7 @@ impl<M: Send + 'static, C> TcpReaderArgs<M, C> {
 /// [`ConnectionHalfClosed`] with [`ConnectionHalf::Read`] to its `listener`,
 /// sends [`Shutdown<M>`] to the writer and stops. [`Shutdown<M>`] sent to
 /// this actor closes the read half on request.
-pub struct TcpReaderActor<M, C>
+pub(crate) struct TcpReaderActor<M, C>
 where
     M: Send + 'static,
     C: MessageCodec<M>,
@@ -920,33 +889,34 @@ where
 pub const DEFAULT_MAILBOX_CAPACITY: usize = 64;
 
 /// Default for how long a write to the peer may make no progress before
-/// it counts as failed; see [`TcpWriterArgs::write_timeout`].
+/// it counts as failed, e.g. because the peer is alive but no longer reads;
+/// see [`TcpServerArgs::write_timeout`].
 pub const DEFAULT_WRITE_TIMEOUT: Duration = Duration::from_secs(25);
 
 /// Arguments for spawning a [`TcpWriterActor<M, C>`].
-pub struct TcpWriterArgs<C> {
+pub(crate) struct TcpWriterArgs<C> {
     /// Write half of the connection.
-    pub write_half: OwnedWriteHalf,
+    pub(crate) write_half: OwnedWriteHalf,
     /// Address of the remote peer.
-    pub peer_addr: SocketAddr,
+    pub(crate) peer_addr: SocketAddr,
     /// Receives [`ConnectionHalfClosed`] when the write half is closed.
-    pub listener: Recipient<ConnectionHalfClosed>,
+    pub(crate) listener: Recipient<ConnectionHalfClosed>,
     /// Codec that encodes the messages.
-    pub codec: C,
+    pub(crate) codec: C,
     /// How long a write may make no progress before it fails, e.g.
     /// because the peer is alive but no longer reads. `None` waits
     /// forever.
-    pub write_timeout: Option<Duration>,
+    pub(crate) write_timeout: Option<Duration>,
     /// Cancelling this token shuts the write half down like
     /// [`Shutdown<M>`], but also while a write is blocked and without
     /// waiting for the actor's mailbox.
-    pub shutdown: CancellationToken,
+    pub(crate) shutdown: CancellationToken,
 }
 
 impl<C> TcpWriterArgs<C> {
     /// Arguments with [`DEFAULT_WRITE_TIMEOUT`] and a new shutdown token;
     /// change the timeout with [`with_write_timeout`](Self::with_write_timeout).
-    pub fn new(
+    pub(crate) fn new(
         write_half: OwnedWriteHalf,
         peer_addr: SocketAddr,
         listener: Recipient<ConnectionHalfClosed>,
@@ -963,7 +933,7 @@ impl<C> TcpWriterArgs<C> {
     }
 
     /// Uses `write_timeout`; `None` waits forever.
-    pub fn with_write_timeout(mut self, write_timeout: Option<Duration>) -> Self {
+    pub(crate) fn with_write_timeout(mut self, write_timeout: Option<Duration>) -> Self {
         self.write_timeout = write_timeout;
         self
     }
@@ -996,7 +966,7 @@ struct Flush<M>(PhantomData<fn() -> M>);
 /// stops the actor. Cancelling the shutdown token does the same without
 /// writing the buffer and also interrupts a blocked write; the peer then
 /// receives a partial frame.
-pub struct TcpWriterActor<M, C> {
+pub(crate) struct TcpWriterActor<M, C> {
     write_half: OwnedWriteHalf,
     codec: C,
     /// Encoded messages not yet written; reused between writes.
@@ -1258,6 +1228,7 @@ where
 }
 
 /// Arguments for spawning a [`TcpClientActor<M, C>`].
+#[non_exhaustive]
 pub struct TcpClientArgs<M: Send + 'static, C> {
     /// Address to connect to.
     pub remote_addr: SocketAddr,
@@ -1273,7 +1244,7 @@ pub struct TcpClientArgs<M: Send + 'static, C> {
     /// Receives the [`ConnectionEvent`]s of the connections.
     pub observer: Option<ConnectionObserver>,
     /// How long a write to the peer may make no progress before the
-    /// connection counts as failed; see [`TcpWriterArgs::write_timeout`].
+    /// connection counts as failed. `None` waits forever.
     pub write_timeout: Option<Duration>,
     /// How many messages the mailbox of each reader and writer actor
     /// spawned for a connection holds before senders have to wait. Larger
@@ -1369,9 +1340,8 @@ impl<M: Send + 'static, C> TcpClientArgs<M, C> {
 }
 
 /// Actor that opens an outgoing TCP connection to `remote_addr` and, just
-/// like [`TcpServerActor`] after an `accept()`, spawns a
-/// [`TcpReaderActor<M, C>`] (reading) and a [`TcpWriterActor<M, C>`]
-/// (writing) for it.
+/// like [`TcpServerActor`] after an `accept()`, spawns a reader and a
+/// writer actor for it.
 ///
 /// Messages:
 /// - [`Connect`]: connects; replies with the peer address, or an error of
@@ -1380,8 +1350,9 @@ impl<M: Send + 'static, C> TcpClientArgs<M, C> {
 ///   if not connected; requires `M: WireMessage`).
 /// - [`Close`], [`CloseRead`], [`CloseWrite`]: close both or one half.
 /// - [`ConnectionEvent`] from a server (see below).
-/// - [`ConnectionHalfClosed`]: sent by the reader and writer; once both
-///   halves are closed, the actor can connect again.
+///
+/// Once both halves of a connection are closed, the actor can connect
+/// again.
 ///
 /// If an observer is set (see [`TcpClientArgs::with_observer`]), it
 /// receives the [`ConnectionEvent`]s of every connection, all sent with
@@ -1846,82 +1817,23 @@ where
 
 /// [`TcpServerActor`] for the [`SimpleString`] protocol.
 pub type SimpleStringServer = TcpServerActor<SimpleString, SimpleStringCodec>;
-/// [`TcpReaderActor`] for the [`SimpleString`] protocol.
-pub type SimpleStringReader = TcpReaderActor<SimpleString, SimpleStringCodec>;
-/// [`TcpWriterActor`] for the [`SimpleString`] protocol.
-pub type SimpleStringWriter = TcpWriterActor<SimpleString, SimpleStringCodec>;
 /// [`TcpClientActor`] for the [`SimpleString`] protocol.
 pub type SimpleStringClient = TcpClientActor<SimpleString, SimpleStringCodec>;
 
 /// [`TcpServerActor`] for CCSDS [`SpacePacket`]s.
 pub type SpacePacketServer = TcpServerActor<SpacePacket, SpacePacketCodec>;
-/// [`TcpReaderActor`] for CCSDS [`SpacePacket`]s.
-pub type SpacePacketReader = TcpReaderActor<SpacePacket, SpacePacketCodec>;
-/// [`TcpWriterActor`] for CCSDS [`SpacePacket`]s.
-pub type SpacePacketWriter = TcpWriterActor<SpacePacket, SpacePacketCodec>;
 /// [`TcpClientActor`] for CCSDS [`SpacePacket`]s.
 pub type SpacePacketClient = TcpClientActor<SpacePacket, SpacePacketCodec>;
 
 /// [`TcpServerActor`] for ECSS PUS-C packets ([`PusPacket`]).
 pub type PusServer = TcpServerActor<PusPacket, PusCodec>;
-/// [`TcpReaderActor`] for ECSS PUS-C packets ([`PusPacket`]).
-pub type PusReader = TcpReaderActor<PusPacket, PusCodec>;
-/// [`TcpWriterActor`] for ECSS PUS-C packets ([`PusPacket`]).
-pub type PusWriter = TcpWriterActor<PusPacket, PusCodec>;
 /// [`TcpClientActor`] for ECSS PUS-C packets ([`PusPacket`]).
 pub type PusClient = TcpClientActor<PusPacket, PusCodec>;
 
 /// [`TcpServerActor`] for SLE TML messages ([`TmlMessage`]).
 pub type TmlServer = TcpServerActor<TmlMessage, TmlCodec>;
-/// [`TcpReaderActor`] for SLE TML messages ([`TmlMessage`]).
-pub type TmlReader = TcpReaderActor<TmlMessage, TmlCodec>;
-/// [`TcpWriterActor`] for SLE TML messages ([`TmlMessage`]).
-pub type TmlWriter = TcpWriterActor<TmlMessage, TmlCodec>;
 /// [`TcpClientActor`] for SLE TML messages ([`TmlMessage`]).
 pub type TmlClient = TcpClientActor<TmlMessage, TmlCodec>;
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    async fn connected_stream() -> TcpStream {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let (client, _server) = tokio::join!(TcpStream::connect(addr), listener.accept());
-        client.unwrap()
-    }
-
-    #[test]
-    fn default_keepalive_detects_failed_peer_after_25_seconds() {
-        assert_eq!(KeepAlive::default().timeout(), Duration::from_secs(25));
-    }
-
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    #[tokio::test]
-    async fn keepalive_is_applied_to_the_socket() {
-        let stream = connected_stream().await;
-        let keepalive = KeepAlive {
-            idle: Duration::from_secs(7),
-            interval: Duration::from_secs(2),
-            retries: 4,
-        };
-
-        configure_keepalive(&stream, Some(keepalive)).unwrap();
-
-        let socket = socket2::SockRef::from(&stream);
-        assert!(socket.keepalive().unwrap());
-        assert_eq!(socket.tcp_keepalive_time().unwrap(), keepalive.idle);
-        assert_eq!(socket.tcp_keepalive_interval().unwrap(), keepalive.interval);
-        assert_eq!(socket.tcp_keepalive_retries().unwrap(), keepalive.retries);
-        assert_eq!(socket.tcp_user_timeout().unwrap(), Some(Duration::from_secs(15)));
-    }
-
-    #[tokio::test]
-    async fn no_keepalive_leaves_the_socket_unchanged() {
-        let stream = connected_stream().await;
-
-        configure_keepalive(&stream, None).unwrap();
-
-        assert!(!socket2::SockRef::from(&stream).keepalive().unwrap());
-    }
-}
+mod tests;

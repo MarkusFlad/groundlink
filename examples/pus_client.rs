@@ -73,6 +73,7 @@ impl Message<ConnectionEvent> for PacketPrinter {
             ConnectionEventKind::Disconnected => {
                 println!("[{}] disconnected from {}", self.connection, event.peer_addr)
             }
+            _ => {}
         }
     }
 }

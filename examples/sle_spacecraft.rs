@@ -371,10 +371,8 @@ async fn main() -> anyhow::Result<()> {
     // Telecommands: CLTU and frame decoding, acceptance check, service 17.
     let test_service = PusTestServiceActor::spawn(PusTestServiceActor::new(APID, telemetry.clone()));
     // Also PUS-A/B telecommands (version 1), as ReatMetric sends them.
-    let pus_config = PusConfig {
-        accept_tc_version_1: true,
-        ..PusConfig::default()
-    };
+    let mut pus_config = PusConfig::default();
+    pus_config.accept_tc_version_1 = true;
     let acceptor = PusTcAcceptor::spawn(
         PusTcAcceptor::new(APID, telemetry)
             .with_pus_config(pus_config)

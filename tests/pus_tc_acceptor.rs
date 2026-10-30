@@ -117,26 +117,22 @@ async fn end_to_end_over_tcp() {
 }
 
 #[tokio::test]
-async fn tm_1_1_is_sent_back_over_tcp_via_stamper_and_pus_writer() {
+async fn tm_1_1_is_sent_back_over_tcp_via_stamper_and_pus_client() {
     use futures::StreamExt;
-    use groundlink::{ConnectionHalfClosed, PusTmStamper, PusWriter, TcpWriterArgs};
+    use groundlink::{Connect, PusClient, PusTmStamper, TcpClientArgs};
     use tokio::net::TcpListener;
 
-    // Set up a TCP connection: the server side writes, the client reads.
+    // Set up a TCP connection: the PusClient writes, the peer reads.
     let tcp_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = tcp_listener.local_addr().unwrap();
-    let client_task = tokio::spawn(async move { TcpStream::connect(addr).await.unwrap() });
-    let (server_stream, peer_addr) = tcp_listener.accept().await.unwrap();
-    let mut client = Framed::new(client_task.await.unwrap(), PusCodec::default());
-    let (_server_read, server_write) = server_stream.into_split();
-
-    let closed = TestActor::<ConnectionHalfClosed>::spawn(TestActor::new());
-    let writer = PusWriter::spawn(TcpWriterArgs::new(
-        server_write,
-        peer_addr,
-        closed.recipient(),
+    let from_peer = TestActor::<PusPacket>::spawn(TestActor::new());
+    let writer = PusClient::spawn(TcpClientArgs::new(
+        tcp_listener.local_addr().unwrap(),
+        from_peer.recipient(),
         PusCodec::default(),
     ));
+    let (connected, accepted) = tokio::join!(writer.ask(Connect), tcp_listener.accept());
+    connected.unwrap();
+    let mut client = Framed::new(accepted.unwrap().0, PusCodec::default());
     let stamper = PusTmStamper::spawn(PusTmStamper::new(APID, writer.recipient::<PusPacket>()));
     let (acceptor, _handler) = acceptor(stamper.recipient());
     let acceptor = PusTcAcceptor::spawn(acceptor);

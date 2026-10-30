@@ -21,6 +21,7 @@ use crate::protocol::sle::fcltu::{
 
 /// Configuration of an [`FcltuServiceInstance`].
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct FcltuConfig {
     /// The service instance identifier users bind to.
     pub service_instance: ServiceInstanceId,

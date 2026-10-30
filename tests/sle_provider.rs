@@ -134,10 +134,9 @@ fn spawn_port_with_bind_timeout(provider: &Provider, bind_timeout: Duration) -> 
         .with_events(association.actor_ref().clone().recipient())
         .with_tick(Duration::from_millis(50)),
     );
-    let config = SleAssociationConfig {
-        responder_id: "PROV".to_string(),
-        bind_timeout,
-    };
+    let mut config = SleAssociationConfig::default();
+    config.responder_id = "PROV".to_string();
+    config.bind_timeout = bind_timeout;
     association.spawn(
         SleAssociationActor::new(link_ref, provider.registry.clone(), config)
             .with_events(provider.events.clone().recipient()),

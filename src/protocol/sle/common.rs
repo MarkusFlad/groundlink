@@ -121,6 +121,7 @@ pub(crate) const TAG_SCHEDULE_STATUS_REPORT_RETURN: Tag = Tag::ctx_cons(5);
 
 /// Why an SLE PDU could not be decoded.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum PduError {
     /// The PDU is not valid BER, or not a valid PDU of the service.
     Ber(BerError),

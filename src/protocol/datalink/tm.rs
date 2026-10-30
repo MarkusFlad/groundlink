@@ -42,6 +42,7 @@ const MIN_PACKET_LEN: usize = SPACE_PACKET_HEADER_LEN + 1;
 /// The parameters of a TM virtual channel that sender and receiver agree
 /// on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct TmFrameConfig {
     /// The spacecraft identifier, 10 bits.
     pub spacecraft_id: u16,

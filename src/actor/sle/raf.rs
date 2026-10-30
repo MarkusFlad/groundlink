@@ -24,6 +24,7 @@ use crate::protocol::tml::SlePdu;
 
 /// Configuration of a [`RafServiceInstance`].
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct RafConfig {
     /// The service instance identifier users bind to.
     pub service_instance: ServiceInstanceId,

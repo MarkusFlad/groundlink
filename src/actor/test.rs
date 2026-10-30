@@ -82,8 +82,8 @@ where
 /// Query message: replies (via `ask`) with a copy of all messages received
 /// so far.
 ///
-/// Tied to `M` through `PhantomData<fn() -> M>`, for the same coherence
-/// reasons as [`Shutdown`](crate::Shutdown).
+/// Tied to `M` through `PhantomData<fn() -> M>`, so that `GetMessages<M>`
+/// is a different message type than `M` itself for every `M`.
 pub struct GetMessages<M>(std::marker::PhantomData<fn() -> M>);
 
 impl<M> GetMessages<M> {

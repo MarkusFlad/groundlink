@@ -32,8 +32,8 @@ pub mod tml;
 /// `M`.
 ///
 /// This is the requirement for using `M` with
-/// [`TcpReaderActor<M, C>`](crate::actor::tcp::TcpReaderActor) and
-/// [`TcpWriterActor<M, C>`](crate::actor::tcp::TcpWriterActor). The trait has
+/// [`TcpServerActor<M, C>`](crate::actor::tcp::TcpServerActor) and
+/// [`TcpClientActor<M, C>`](crate::actor::tcp::TcpClientActor). The trait has
 /// a blanket implementation, so any codec satisfying the bounds implements
 /// it automatically. The codec is passed to the actors as a value (e.g. in
 /// [`TcpServerArgs::codec`](crate::actor::tcp::TcpServerArgs::codec)); every

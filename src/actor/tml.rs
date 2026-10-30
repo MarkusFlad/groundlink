@@ -69,6 +69,7 @@ pub const DEFAULT_TML_TICK: Duration = Duration::from_millis(250);
 /// What a responding [`TmlLinkActor`] (the SLE provider side) accepts from
 /// the initiator.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct TmlResponderConfig {
     /// Time allowed between the TCP connect and the context message.
     pub startup_timeout: Duration,
@@ -127,6 +128,7 @@ pub enum TmlRole {
 
 /// Why a TML link ended; see [`TmlLinkEvent::Released`].
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum TmlReleaseReason {
     /// The TCP connection was closed or could not be opened. The text
     /// describes what happened.
@@ -164,6 +166,7 @@ impl fmt::Display for TmlReleaseReason {
 /// A connection closed because of [`SlePeerAbort`] is not reported, since
 /// the SLE layer asked for it.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum TmlLinkEvent {
     /// The context exchange is done; SLE PDUs can flow. Carries the
     /// heartbeat parameters in force.

@@ -235,48 +235,6 @@ async fn quick_reconnects_are_coupled_independently() {
 }
 
 #[tokio::test]
-async fn client_keeps_messages_until_its_previous_connection_is_closed() {
-    use groundlink::{ConnectionEventKind, EventSource, TestActor};
-
-    let peer_b = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let from_b = TestActor::<SimpleString>::spawn(TestActor::new());
-    let client = SimpleStringClient::spawn(TcpClientArgs::new(
-        peer_b.local_addr().unwrap(),
-        from_b.recipient(),
-        SimpleStringCodec::default(),
-    ));
-    let server_event = |connection_id, kind| ConnectionEvent {
-        source: EventSource::Server,
-        connection_id,
-        peer_connection_id: None,
-        peer_addr: "127.0.0.1:1".parse().unwrap(),
-        kind,
-    };
-
-    client
-        .tell(server_event(1, ConnectionEventKind::Connected))
-        .await
-        .unwrap();
-    let mut b1 = accept_b(&peer_b).await;
-
-    // Server connection 1 ends and 2 starts, all before the client has
-    // closed its first connection.
-    client
-        .tell(server_event(1, ConnectionEventKind::Disconnected))
-        .await
-        .unwrap();
-    client
-        .tell(server_event(2, ConnectionEventKind::Connected))
-        .await
-        .unwrap();
-    client.tell(text("for 2")).await.unwrap();
-
-    assert_eq!(next(&mut b1).await, None, "the first connection should be closed");
-    let mut b2 = accept_b(&peer_b).await;
-    assert_eq!(next(&mut b2).await, Some(text("for 2")));
-}
-
-#[tokio::test]
 async fn server_and_client_can_be_coupled_directly() {
     let (server, peer_b) = coupled_directly().await;
 

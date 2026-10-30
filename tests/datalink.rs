@@ -17,10 +17,8 @@ fn packet(packet_type: PacketType, n: u16, len: usize) -> SpacePacket {
 
 #[tokio::test]
 async fn tc_packets_go_through_cltus_with_a_segment_header() {
-    let config = TcFrameConfig {
-        map_id: Some(3),
-        ..TcFrameConfig::new(0x2a, 1)
-    };
+    let mut config = TcFrameConfig::new(0x2a, 1);
+    config.map_id = Some(3);
     let cltus = TestActor::<Cltu>::spawn(TestActor::new());
     let encoder = TcFrameEncoder::spawn(TcFrameEncoder::new(config, 100, cltus.clone().recipient::<Cltu>()));
     for n in 0..3 {
@@ -33,14 +31,9 @@ async fn tc_packets_go_through_cltus_with_a_segment_header() {
     let decoder = TcFrameDecoder::spawn(TcFrameDecoder::new(config, packets.clone().recipient::<SpacePacket>()));
     // A CLTU for another spacecraft is dropped.
     let other = TestActor::<Cltu>::spawn(TestActor::new());
-    let other_encoder = TcFrameEncoder::spawn(TcFrameEncoder::new(
-        TcFrameConfig {
-            spacecraft_id: 0x2b,
-            ..config
-        },
-        0,
-        other.clone().recipient::<Cltu>(),
-    ));
+    let mut other_config = config;
+    other_config.spacecraft_id = 0x2b;
+    let other_encoder = TcFrameEncoder::spawn(TcFrameEncoder::new(other_config, 0, other.clone().recipient::<Cltu>()));
     other_encoder.tell(packet(PacketType::Telecommand, 9, 5)).await.unwrap();
     let foreign = TestActor::assert_received(&other, 1, TIMEOUT).await;
 

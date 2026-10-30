@@ -25,6 +25,7 @@ pub const MAX_FRAME_LEN: usize = 1024;
 /// The parameters of a TC virtual channel that sender and receiver agree
 /// on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct TcFrameConfig {
     /// The spacecraft identifier, 10 bits.
     pub spacecraft_id: u16,

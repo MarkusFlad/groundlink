@@ -34,6 +34,7 @@ use crate::protocol::tml::SlePdu;
 /// Configuration of a [`SleUserActor`]: what it sends in the BIND
 /// invocation, and how long it waits for returns.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct SleUserConfig {
     /// The initiator identifier of the user.
     pub initiator_id: String,
@@ -68,6 +69,7 @@ impl SleUserConfig {
 /// Why an operation of a [`SleUserActor`] failed. Returned to callers that
 /// `ask`.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SleUserError {
     /// The operation is not allowed in the current state of the
     /// association, e.g. START before BIND; nothing was sent.
@@ -102,6 +104,7 @@ impl std::error::Error for SleUserError {}
 /// What happened to the association of a [`SleUserActor`] (see
 /// [`SleUserActor::with_events`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SleUserEvent {
     /// The provider accepted the BIND.
     Bound,

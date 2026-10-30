@@ -58,8 +58,8 @@
 //!     Transfer Frames.
 //!   - [`actor::tml`]: the SLE Transport Mapping Layer actor.
 //!   - [`actor::sle`]: SLE provider actors for RAF and FCLTU.
-//!   - [`actor::test`]: a generic actor that records messages, for
-//!     assertions in tests.
+//!   - `actor::test`: a generic actor that records messages, for
+//!     assertions in tests (feature `test-util`).
 //!
 //! The most important items are re-exported at the crate root.
 //!
@@ -100,7 +100,7 @@
 //! # Example
 //!
 //! A server that forwards every received [`SimpleString`] to a
-//! [`TestActor`]:
+//! `TestActor` (feature `test-util`):
 //!
 //! ```
 //! use std::time::Duration;
@@ -142,17 +142,16 @@ pub use actor::datalink::{TcFrameDecoder, TcFrameEncoder, TmFrameDecoder, TmFram
 pub use actor::pus::{PusPacketAdapter, PusTcAcceptor, PusTestServiceActor, PusTmStamper};
 pub use actor::sle::{
     Cltu, CltuStart, DEFAULT_SLE_TICK, FcltuConfig, FcltuServiceInstance, RafConfig, RafServiceInstance, RafStart,
-    ServiceInstanceRef, SleAssociationActor, SleAssociationConfig, SleBind, SleProviderEvent, SleServiceRegistry,
-    SleStop, SleUnbind, SleUserActor, SleUserConfig, SleUserError, SleUserEvent,
+    SleAssociationActor, SleAssociationConfig, SleBind, SleProviderEvent, SleServiceRegistry, SleStop, SleUnbind,
+    SleUserActor, SleUserConfig, SleUserError, SleUserEvent,
 };
 pub use actor::tcp::{
     Close, CloseRead, CloseReason, CloseWrite, Connect, ConnectionEvent, ConnectionEventKind, ConnectionHalf,
-    ConnectionHalfClosed, ConnectionObserver, ConnectionPolicy, DEFAULT_MAILBOX_CAPACITY, DEFAULT_WRITE_TIMEOUT,
-    EventSource, GetLocalAddr, KeepAlive, PusClient, PusReader, PusServer, PusWriter, Shutdown, SimpleStringClient,
-    SimpleStringReader, SimpleStringServer, SimpleStringWriter, SpacePacketClient, SpacePacketReader,
-    SpacePacketServer, SpacePacketWriter, TcpClientActor, TcpClientArgs, TcpReaderActor, TcpReaderArgs, TcpServerActor,
-    TcpServerArgs, TcpWriterActor, TcpWriterArgs, TmlClient, TmlReader, TmlServer, TmlWriter,
+    ConnectionObserver, ConnectionPolicy, DEFAULT_MAILBOX_CAPACITY, DEFAULT_WRITE_TIMEOUT, EventSource, GetLocalAddr,
+    KeepAlive, PusClient, PusServer, SimpleStringClient, SimpleStringServer, SpacePacketClient, SpacePacketServer,
+    TcpClientActor, TcpClientArgs, TcpServerActor, TcpServerArgs, TmlClient, TmlServer,
 };
+#[cfg(any(test, feature = "test-util"))]
 pub use actor::test::{GetMessages, TestActor};
 pub use actor::tml::{
     DEFAULT_TML_TICK, SleDisconnect, SlePeerAbort, TmlLinkActor, TmlLinkEvent, TmlReleaseReason, TmlResponderConfig,

@@ -235,14 +235,11 @@ async fn a_rejected_bind_is_reported_and_the_user_can_bind_again() {
         SleUserError::BindRejected(bind_diagnostic::NO_SUCH_SERVICE_INSTANCE)
     );
 
-    let user = spawn_user(
-        provider.addr,
-        true,
-        SleUserConfig {
-            version: 1,
-            ..config(RAF_SI)
-        },
-    );
+    let user = spawn_user(provider.addr, true, {
+        let mut config = config(RAF_SI);
+        config.version = 1;
+        config
+    });
     assert_eq!(
         user_error(user.user.ask(SleBind).await),
         SleUserError::BindRejected(bind_diagnostic::VERSION_NOT_SUPPORTED)
@@ -283,14 +280,11 @@ async fn operations_out_of_order_are_refused_locally() {
 async fn a_missing_return_aborts_the_association() {
     // A provider that accepts the connection but never answers.
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let user = spawn_user(
-        listener.local_addr().unwrap(),
-        true,
-        SleUserConfig {
-            return_timeout: Duration::from_millis(200),
-            ..config(RAF_SI)
-        },
-    );
+    let user = spawn_user(listener.local_addr().unwrap(), true, {
+        let mut config = config(RAF_SI);
+        config.return_timeout = Duration::from_millis(200);
+        config
+    });
     let bind = tokio::spawn({
         let user = user.user.clone();
         async move { user.ask(SleBind).await }

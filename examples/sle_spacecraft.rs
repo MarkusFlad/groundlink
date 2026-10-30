@@ -18,32 +18,47 @@
 //! only delivered while a RAF user has started the service; the rest is
 //! discarded, as on a real online RAF.
 //!
-//! Every telecommand that arrives is logged (`TC received: ...`), also one
-//! that is not a valid PUS packet, and so is every telemetry packet that
-//! is sent (`TM sent: ...`).
-//!
-//! Usage: `cargo run --example sle_spacecraft -- <raf_port> <fcltu_port>`,
+//! Usage: `cargo run --example sle_spacecraft -- [--log LAYERS] [--hex] <raf_port> <fcltu_port>`,
 //! then `cargo run --example sle_ground -- 127.0.0.1 <raf_port> <fcltu_port>`.
 //!
-//! Set the log level with `RUST_LOG`, e.g. `RUST_LOG=debug`.
+//! `--log` selects, comma-separated, which data units are logged on their
+//! way through the spacecraft, in the order they pass:
+//!
+//! | Layer | Logged |
+//! |---|---|
+//! | `cltu` | every CLTU received: identification, length |
+//! | `tc-frame` | every TC Transfer Frame: spacecraft, virtual channel, sequence number, type |
+//! | `tc` | every telecommand: PUS service, APID, sequence count, ack flags; also one that is not valid PUS |
+//! | `tm` | every telemetry packet: PUS service, APID, sequence count, the TC a report refers to |
+//! | `tm-frame` | every TM Transfer Frame: virtual channel, frame counts, first header pointer |
+//!
+//! `all` and `none` select all or no layers; the default is `tc,tm`. With
+//! `--hex`, the selected data units are also dumped in hex. There are no
+//! CADUs: RAF carries the TM Transfer Frames as the ground station's
+//! decoder delivers them.
+//!
+//! `RUST_LOG` sets the levels of everything else, e.g. `RUST_LOG=debug`.
 
 use std::net::SocketAddr;
 use std::time::Duration;
 
 use anyhow::{Context as _, anyhow};
+use bytes::BytesMut;
+use groundlink::actor::datalink::{LOG_TARGET_CLTU, LOG_TARGET_TC_FRAME, LOG_TARGET_TM_FRAME};
 use groundlink::protocol::pus::service17;
 use groundlink::{
     AreYouAliveReport, Batch, Cltu, ConnectionEvent, Downstream, FcltuConfig, FcltuServiceInstance, GetLocalAddr,
     PusConfig, PusPacket, PusTc, PusTcAcceptor, PusTestServiceActor, PusTm, PusTmStamper, RafConfig, RafFrame,
     RafServiceInstance, SleAssociationActor, SleAssociationConfig, SlePdu, SleProviderEvent, SleServiceRegistry,
-    SpacePacket, TcFrameConfig, TcFrameDecoder, TcpServerArgs, TmFrameConfig, TmFrameEncoder, TmlCodec, TmlLinkActor,
-    TmlMessage, TmlResponderConfig, TmlServer, VerificationReport,
+    SpacePacket, SpacePacketCodec, TcFrameConfig, TcFrameDecoder, TcpServerArgs, TmFrameConfig, TmFrameEncoder,
+    TmlCodec, TmlLinkActor, TmlMessage, TmlResponderConfig, TmlServer, VerificationReport,
 };
 use kameo::actor::{Actor, ActorRef, Recipient, Spawn};
 use kameo::error::Infallible;
 use kameo::mailbox;
 use kameo::message::{Context, Message};
-use tracing::{info, warn};
+use tokio_util::codec::Encoder;
+use tracing::{info, trace, warn};
 use tracing_subscriber::EnvFilter;
 
 const RAF_SI: &str = "sagr=1.spack=VST-PASS0001.rsl-fg=1.raf=onlt1";
@@ -69,6 +84,115 @@ impl Message<SleProviderEvent> for EventPrinter {
     async fn handle(&mut self, event: SleProviderEvent, _ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         println!("SLE: {event:?}");
     }
+}
+
+/// Log target of the telecommands (`--log tc`).
+const LOG_TARGET_TC: &str = "sle_spacecraft::tc";
+/// Log target of the telemetry packets (`--log tm`).
+const LOG_TARGET_TM: &str = "sle_spacecraft::tm";
+
+/// The layers `--log` can select, with their log targets and the levels
+/// for a one-line summary and for a hex dump.
+const LAYERS: [(&str, &str, &str, &str); 5] = [
+    ("cltu", LOG_TARGET_CLTU, "debug", "trace"),
+    ("tc-frame", LOG_TARGET_TC_FRAME, "debug", "trace"),
+    ("tc", LOG_TARGET_TC, "info", "trace"),
+    ("tm", LOG_TARGET_TM, "info", "trace"),
+    ("tm-frame", LOG_TARGET_TM_FRAME, "debug", "trace"),
+];
+
+/// The whole Space Packet, primary header included, in hex.
+fn packet_hex(packet: &SpacePacket) -> String {
+    let mut bytes = BytesMut::new();
+    match SpacePacketCodec.encode(packet.clone(), &mut bytes) {
+        Ok(()) => hex(&bytes),
+        Err(err) => format!(" (not encodable: {err})"),
+    }
+}
+
+/// Octets in hex, 32 per line.
+fn hex(data: &[u8]) -> String {
+    let mut text = String::new();
+    for (i, chunk) in data.chunks(32).enumerate() {
+        text.push_str(&format!("\n  {:04x}:", i * 32));
+        for byte in chunk {
+            text.push_str(&format!(" {byte:02x}"));
+        }
+    }
+    text
+}
+
+/// The command line: the selected layers, hex dumps, the ports.
+struct Options {
+    layers: Vec<&'static str>,
+    hex: bool,
+    raf_port: u16,
+    fcltu_port: u16,
+}
+
+const USAGE: &str = "usage: sle_spacecraft [--log LAYERS] [--hex] <raf_port> <fcltu_port>
+  LAYERS: comma-separated cltu, tc-frame, tc, tm, tm-frame, all or none (default: tc,tm)";
+
+fn parse_options() -> anyhow::Result<Options> {
+    let mut layers = vec!["tc", "tm"];
+    let mut hex = false;
+    let mut ports = Vec::new();
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        let value = match arg.as_str() {
+            "--hex" => {
+                hex = true;
+                continue;
+            }
+            "--log" => args.next().context(USAGE)?,
+            _ => match arg.strip_prefix("--log=") {
+                Some(value) => value.to_string(),
+                None if arg.starts_with('-') => return Err(anyhow!("unknown option '{arg}'\n{USAGE}")),
+                None => {
+                    ports.push(
+                        arg.parse::<u16>()
+                            .with_context(|| format!("invalid port '{arg}'\n{USAGE}"))?,
+                    );
+                    continue;
+                }
+            },
+        };
+        layers.clear();
+        for name in value.split(',').map(str::trim).filter(|name| !name.is_empty()) {
+            match name {
+                "all" => layers.extend(LAYERS.iter().map(|layer| layer.0)),
+                "none" => layers.clear(),
+                _ => match LAYERS.iter().find(|layer| layer.0 == name) {
+                    Some(layer) => layers.push(layer.0),
+                    None => return Err(anyhow!("unknown layer '{name}'\n{USAGE}")),
+                },
+            }
+        }
+    }
+    let [raf_port, fcltu_port] = ports[..] else {
+        return Err(anyhow!("{USAGE}"));
+    };
+    Ok(Options {
+        layers,
+        hex,
+        raf_port,
+        fcltu_port,
+    })
+}
+
+/// `RUST_LOG` (default `info`), with the selected layers on and the others
+/// off.
+fn log_filter(options: &Options) -> anyhow::Result<EnvFilter> {
+    let mut filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    for (name, target, summary, dump) in LAYERS {
+        let level = match (options.layers.contains(&name), options.hex) {
+            (false, _) => "off",
+            (true, false) => summary,
+            (true, true) => dump,
+        };
+        filter = filter.add_directive(format!("{target}={level}").parse()?);
+    }
+    Ok(filter)
 }
 
 /// Logs every telecommand on its way to the acceptance check.
@@ -97,6 +221,7 @@ impl Message<SpacePacket> for TcLog {
                 let ack = sec.ack_flags;
                 let flag = |set: bool, c: char| if set { c } else { '-' };
                 info!(
+                    target: LOG_TARGET_TC,
                     "TC received: TC({},{}) apid={:#05x} seq={} source={} ack={}{}{}{} app_data={} octets",
                     sec.service_type,
                     sec.message_subtype,
@@ -111,14 +236,17 @@ impl Message<SpacePacket> for TcLog {
                 );
             }
             Ok(PusPacket::Tm(_)) => warn!(
+                target: LOG_TARGET_TC,
                 "TC received: telemetry packet apid={:#05x} seq={} on the TC link",
                 header.apid, header.sequence_count
             ),
             Err(err) => warn!(
+                target: LOG_TARGET_TC,
                 "TC received: space packet apid={:#05x} seq={} that is not a valid PUS TC: {err}",
                 header.apid, header.sequence_count
             ),
         }
+        trace!(target: LOG_TARGET_TC, "TC seq={}:{}", header.sequence_count, packet_hex(&packet));
         if let Err(err) = self.acceptor.send(packet).await {
             warn!("TC dropped, could not pass it on: {err}");
         }
@@ -158,7 +286,12 @@ impl Message<PusPacket> for TmLog {
         } else if AreYouAliveReport::try_from(packet.clone()).is_ok() {
             text += " are-you-alive report";
         }
-        info!("{text}");
+        info!(target: LOG_TARGET_TM, "{text}");
+        if tracing::enabled!(target: LOG_TARGET_TM, tracing::Level::TRACE)
+            && let Ok(space_packet) = packet.to_space_packet(&PusConfig::default())
+        {
+            trace!(target: LOG_TARGET_TM, "TM seq={}:{}", header.sequence_count, packet_hex(&space_packet));
+        }
         if let Err(err) = self.encoder.send(packet).await {
             warn!("TM dropped, could not pass it on: {err}");
         }
@@ -201,21 +334,24 @@ async fn spawn_port(
         .map_err(|err| anyhow!("cannot listen on port {port}: {err}"))
 }
 
-fn parse_port(arg: Option<String>, usage: &str) -> anyhow::Result<u16> {
-    let arg = arg.context(usage.to_owned())?;
-    arg.parse().with_context(|| format!("invalid port '{arg}'"))
-}
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
-        .init();
-
-    let usage = "usage: sle_spacecraft <raf_port> <fcltu_port>";
-    let mut args = std::env::args().skip(1);
-    let raf_port = parse_port(args.next(), usage)?;
-    let fcltu_port = parse_port(args.next(), usage)?;
+    let options = parse_options()?;
+    tracing_subscriber::fmt().with_env_filter(log_filter(&options)?).init();
+    let (raf_port, fcltu_port) = (options.raf_port, options.fcltu_port);
+    info!(
+        "logging {}{}",
+        if options.layers.is_empty() {
+            "no data units".to_string()
+        } else {
+            options.layers.join(", ")
+        },
+        if options.hex && !options.layers.is_empty() {
+            " with hex dumps"
+        } else {
+            ""
+        }
+    );
 
     // Telemetry: numbered and time-stamped, packed into TM frames that the
     // ground station receives and offers over RAF.

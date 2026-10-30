@@ -20,6 +20,18 @@
 //! sent and accepted as type-BD) and no segmentation of packets that do not
 //! fit into one TC frame. All handle batches and pass the results of a
 //! batch on as one batch.
+//!
+//! # Logging
+//!
+//! Each data unit is logged under its own target, so an application can
+//! switch the levels on separately, e.g. with
+//! `RUST_LOG=info,groundlink::tc_frame=debug`:
+//!
+//! | Target | `debug` | `trace` |
+//! |---|---|---|
+//! | [`LOG_TARGET_CLTU`] | every CLTU sent or received: identification, length | and its octets in hex |
+//! | [`LOG_TARGET_TC_FRAME`] | every TC Transfer Frame: spacecraft, virtual channel, sequence number, type, length | and its octets in hex |
+//! | [`LOG_TARGET_TM_FRAME`] | every TM Transfer Frame: spacecraft, virtual channel, frame counts, first header pointer, length | and its octets in hex |
 
 use std::collections::HashMap;
 
@@ -28,19 +40,94 @@ use kameo::actor::{Actor, ActorRef};
 use kameo::error::Infallible;
 use kameo::message::{Context, Message};
 use tokio_util::codec::{Decoder, Encoder};
-use tracing::warn;
+use tracing::{debug, trace, warn};
 
 use crate::actor::batch::Downstream;
 use crate::actor::sle::Cltu;
 use crate::impl_batch_message;
 use crate::protocol::ccsds::{SpacePacket, SpacePacketCodec};
 use crate::protocol::datalink::cltu;
-use crate::protocol::datalink::tc::{TcFrameConfig, TcTransferFrame};
+use crate::protocol::datalink::tc::{self, TcFrameConfig, TcTransferFrame};
 use crate::protocol::datalink::tm::{TmFrameConfig, TmFramePacker, TmPacketExtractor, TmTransferFrame};
 use crate::protocol::pus::{PusConfig, PusPacket};
 use crate::protocol::sle::common::{ConditionalTime, Time};
 use crate::protocol::sle::fcltu::CltuId;
 use crate::protocol::sle::raf::{AntennaId, FrameQuality, RafFrame};
+
+/// Log target for CLTUs, see [Logging](self#logging).
+pub const LOG_TARGET_CLTU: &str = "groundlink::cltu";
+/// Log target for TC Transfer Frames, see [Logging](self#logging).
+pub const LOG_TARGET_TC_FRAME: &str = "groundlink::tc_frame";
+/// Log target for TM Transfer Frames, see [Logging](self#logging).
+pub const LOG_TARGET_TM_FRAME: &str = "groundlink::tm_frame";
+
+/// The octets as hex, 32 per line.
+fn hex(data: &[u8]) -> String {
+    let mut text = String::with_capacity(data.len() * 3 + data.len() / 32 * 8);
+    for (i, chunk) in data.chunks(32).enumerate() {
+        text.push_str(&format!("\n  {:04x}:", i * 32));
+        for byte in chunk {
+            text.push_str(&format!(" {byte:02x}"));
+        }
+    }
+    text
+}
+
+fn log_cltu(direction: &str, cltu: &Cltu) {
+    let codeblocks = cltu
+        .data
+        .len()
+        .saturating_sub(cltu::START_SEQUENCE.len() + cltu::TAIL_SEQUENCE.len())
+        / cltu::CODEBLOCK_LEN;
+    debug!(
+        target: LOG_TARGET_CLTU,
+        "CLTU {direction}: id={} {} octets, {codeblocks} codeblocks",
+        cltu.id,
+        cltu.data.len()
+    );
+    trace!(target: LOG_TARGET_CLTU, "CLTU {}:{}", cltu.id, hex(&cltu.data));
+}
+
+fn log_tc_frame(direction: &str, frame: &TcTransferFrame, encoded: &[u8]) {
+    let kind = match (frame.bypass, frame.control_command) {
+        (true, false) => "BD",
+        (false, false) => "AD",
+        (true, true) => "BC",
+        (false, true) => "AC",
+    };
+    debug!(
+        target: LOG_TARGET_TC_FRAME,
+        "TC frame {direction}: scid={:#x} vcid={} seq={} type={kind} {} octets",
+        frame.spacecraft_id,
+        frame.virtual_channel_id,
+        frame.sequence_number,
+        encoded.len()
+    );
+    trace!(target: LOG_TARGET_TC_FRAME, "TC frame {}:{}", frame.sequence_number, hex(encoded));
+}
+
+fn log_tm_frame(direction: &str, frame: &TmTransferFrame, encoded: &[u8]) {
+    let fhp = match frame.first_header_pointer {
+        crate::protocol::datalink::tm::FHP_NO_PACKET_START => "none".to_string(),
+        crate::protocol::datalink::tm::FHP_IDLE_DATA => "idle".to_string(),
+        offset => offset.to_string(),
+    };
+    debug!(
+        target: LOG_TARGET_TM_FRAME,
+        "TM frame {direction}: scid={:#x} vcid={} mc={} vc={} fhp={fhp} {} octets",
+        frame.spacecraft_id,
+        frame.virtual_channel_id,
+        frame.master_channel_frame_count,
+        frame.virtual_channel_frame_count,
+        encoded.len()
+    );
+    trace!(
+        target: LOG_TARGET_TM_FRAME,
+        "TM frame vc={}:{}",
+        frame.virtual_channel_frame_count,
+        hex(encoded)
+    );
+}
 
 /// Segment header sequence flags for an unsegmented packet.
 const UNSEGMENTED: u8 = 0b11 << 6;
@@ -105,6 +192,7 @@ impl TcFrameEncoder {
                 return;
             }
         };
+        log_tc_frame("sent", &frame, &encoded);
         self.sequence_number = self.sequence_number.wrapping_add(1);
         let cltu = Cltu {
             id: self.next_cltu_id,
@@ -114,6 +202,7 @@ impl TcFrameEncoder {
             data: cltu::encode(&encoded),
         };
         self.next_cltu_id = self.next_cltu_id.wrapping_add(1);
+        log_cltu("sent", &cltu);
         if let Err(err) = self.downstream.send(cltu).await {
             warn!("TcFrameEncoder: could not pass CLTU on: {err}");
         }
@@ -175,6 +264,8 @@ impl TcFrameDecoder {
     fn packets(&self, cltu: &Cltu) -> Result<Vec<SpacePacket>, String> {
         let data = cltu::decode(&cltu.data).map_err(|err| err.to_string())?;
         let frame = TcTransferFrame::decode(&data, self.config.fecf).map_err(|err| err.to_string())?;
+        let frame_len = tc::PRIMARY_HEADER_LEN + frame.data.len() + if self.config.fecf { tc::FECF_LEN } else { 0 };
+        log_tc_frame("received", &frame, &data[..frame_len]);
         if frame.spacecraft_id != self.config.spacecraft_id
             || frame.virtual_channel_id != self.config.virtual_channel_id
         {
@@ -218,6 +309,7 @@ impl Message<Cltu> for TcFrameDecoder {
     type Reply = ();
 
     async fn handle(&mut self, cltu: Cltu, _ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        log_cltu("received", &cltu);
         match self.packets(&cltu) {
             Ok(packets) => {
                 if let Err(err) = self.downstream.send_all(packets).await {
@@ -284,14 +376,17 @@ impl TmFrameEncoder {
         let mut raf_frames = Vec::with_capacity(frames.len());
         for frame in frames {
             match frame.encode(fecf) {
-                Ok(data) => raf_frames.push(RafFrame {
-                    earth_receive_time: Time::now(),
-                    antenna_id: self.antenna_id.clone(),
-                    data_link_continuity: 0,
-                    quality: FrameQuality::Good,
-                    private_annotation: None,
-                    data,
-                }),
+                Ok(data) => {
+                    log_tm_frame("sent", &frame, &data);
+                    raf_frames.push(RafFrame {
+                        earth_receive_time: Time::now(),
+                        antenna_id: self.antenna_id.clone(),
+                        data_link_continuity: 0,
+                        quality: FrameQuality::Good,
+                        private_annotation: None,
+                        data,
+                    });
+                }
                 Err(err) => warn!("TmFrameEncoder: frame dropped: {err}"),
             }
         }
@@ -422,6 +517,7 @@ impl Message<RafFrame> for TmFrameDecoder {
                 return;
             }
         };
+        log_tm_frame("received", &frame, &raf_frame.data);
         if frame.spacecraft_id != self.config.spacecraft_id {
             warn!("TmFrameDecoder: frame of spacecraft {} dropped", frame.spacecraft_id);
             return;

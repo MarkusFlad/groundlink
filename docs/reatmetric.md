@@ -115,7 +115,51 @@ INFO sle_spacecraft: TM sent: TM(1,7) apid=0x042 seq=3 CompletionSuccess for TC 
 
 A packet on the TC link that is not a valid PUS telecommand is logged as
 a warning; the acceptance check then answers it with TM(1,2) if it can.
-`RUST_LOG=debug` adds the details of the actors.
+
+`--log` selects the layers that are logged, `--hex` adds a hex dump of
+each data unit:
+
+```sh
+cargo run --example sle_spacecraft -- --log all --hex 5200 5201
+cargo run --example sle_spacecraft -- --log cltu,tc-frame,tc 5200 5201
+```
+
+| Layer | Logged |
+|---|---|
+| `cltu` | every CLTU received: identification, length, codeblocks |
+| `tc-frame` | every TC Transfer Frame: spacecraft, virtual channel, sequence number, type (BD, AD, …) |
+| `tc` | every telecommand (the default, with `tm`) |
+| `tm` | every telemetry packet |
+| `tm-frame` | every TM Transfer Frame: virtual channel, frame counts, first header pointer |
+
+`all` and `none` select all or no layers. With `--log all --hex`, one
+TC(17,1) from ReatMetric looks like this (shortened):
+
+```text
+DEBUG groundlink::cltu: CLTU received: id=1 34 octets, 3 codeblocks
+TRACE groundlink::cltu: CLTU 1:
+  0000: eb 90 20 2a 00 13 00 18 42 b4 c0 01 00 06 1b 11 01 a4 00 01 07 d2 af 01 55 88 c5 c5 c5 c5 c5 c5
+  0020: c5 79
+DEBUG groundlink::tc_frame: TC frame received: scid=0x2a vcid=0 seq=0 type=BD 20 octets
+TRACE groundlink::tc_frame: TC frame 0:
+  0000: 20 2a 00 13 00 18 42 c0 01 00 06 1b 11 01 00 01 07 d2 af 01
+ INFO sle_spacecraft::tc: TC received: TC(17,1) apid=0x042 seq=1 source=1 ack=AS-C app_data=0 octets
+TRACE sle_spacecraft::tc: TC seq=1:
+  0000: 18 42 c0 01 00 06 1b 11 01 00 01 07 d2
+ INFO sle_spacecraft::tm: TM sent: TM(1,1) apid=0x042 seq=0 AcceptanceSuccess for TC seq=1
+DEBUG groundlink::tm_frame: TM frame sent: scid=0x2a vcid=0 mc=0 vc=0 fhp=0 1115 octets
+```
+
+There are no CADUs to log: RAF carries the TM Transfer Frames as the
+ground station's decoder delivers them, after synchronisation marker,
+derandomisation and Reed-Solomon decoding. The frame layers come from
+groundlink's `TcFrameDecoder` and `TmFrameEncoder`, which log under the
+targets `groundlink::cltu`, `groundlink::tc_frame` and
+`groundlink::tm_frame` (on the ground side, `TcFrameEncoder` and
+`TmFrameDecoder` log the same way); any application can switch them on
+with `RUST_LOG`, e.g. `RUST_LOG=info,groundlink::tc_frame=debug`.
+`RUST_LOG` sets the levels of everything else, e.g. `RUST_LOG=debug` for
+the details of the actors.
 
 ReatMetric logs to the console and to `~/Reatmetric/sle_test/reatmetric.log`
 (with the language of the system, e.g. `WARNUNG` for warnings). The SLE

@@ -213,7 +213,8 @@ FCLTU), `TC17_1`, `Close` (stops and unbinds) and `Quit` from stdin. Each
 TC(17,1) goes as a CLTU with a TC Transfer Frame to the spacecraft, whose
 TM(1,1), TM(1,3), TM(17,2) and TM(1,7) come back in TM Transfer Frames
 and are printed. `sle_spacecraft` logs every TC it receives and every TM
-it sends.
+it sends; `--log all --hex` adds the CLTUs, TC and TM Transfer Frames,
+with hex dumps.
 
 `sle_spacecraft` can also be commanded by
 [ReatMetric](https://github.com/dariol83/reatmetric), an independent SLE

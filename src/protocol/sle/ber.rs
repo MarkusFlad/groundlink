@@ -32,6 +32,7 @@
 //! ```
 
 use std::fmt;
+use std::ops::Range;
 
 use bytes::Bytes;
 
@@ -352,22 +353,26 @@ pub(crate) fn element_len(tag: Tag, content_len: usize) -> usize {
 pub struct BerReader {
     data: Bytes,
     pos: usize,
+    /// End of the elements to read: the end of `data`, or of the content
+    /// of the element that [`sequence`](Self::sequence) is reading.
+    end: usize,
 }
 
 impl BerReader {
     /// A reader over `data`.
     pub fn new(data: Bytes) -> Self {
-        Self { data, pos: 0 }
+        let end = data.len();
+        Self { data, pos: 0, end }
     }
 
     /// Whether all elements have been read.
     pub fn is_empty(&self) -> bool {
-        self.pos >= self.data.len()
+        self.pos >= self.end
     }
 
     /// Returns (tag, header length, content length) of the next element.
     fn header(&self) -> BerResult<(Tag, usize, usize)> {
-        let d = &self.data[self.pos..];
+        let d = &self.data[self.pos..self.end];
         let first = *d.first().ok_or(BerError::Truncated)?;
         let class = match first >> 6 {
             0 => Class::Universal,
@@ -439,13 +444,30 @@ impl BerReader {
         Ok((tag, content))
     }
 
-    /// Reads the content of the next element, which must carry `expected`.
-    pub fn read(&mut self, expected: Tag) -> BerResult<Bytes> {
-        let found = self.peek_tag()?;
+    /// Moves past the next element, which must carry `expected`, and
+    /// returns the range of its content in `data`.
+    fn next(&mut self, expected: Tag) -> BerResult<Range<usize>> {
+        let (found, hdr, len) = self.header()?;
         if found != expected {
             return Err(BerError::UnexpectedTag { expected, found });
         }
-        Ok(self.read_any()?.1)
+        let start = self.pos + hdr;
+        self.pos = start + len;
+        Ok(start..start + len)
+    }
+
+    /// Reads the content of the next element, which must carry `expected`.
+    pub fn read(&mut self, expected: Tag) -> BerResult<Bytes> {
+        let content = self.next(expected)?;
+        Ok(self.data.slice(content))
+    }
+
+    /// Like [`read`](Self::read), but borrows the content instead of
+    /// returning it as [`Bytes`]; that saves updating the reference count
+    /// of the data, for content that is converted at once.
+    pub(crate) fn read_slice(&mut self, expected: Tag) -> BerResult<&[u8]> {
+        let content = self.next(expected)?;
+        Ok(&self.data[content])
     }
 
     /// A reader over the content of the next element, which must carry
@@ -457,15 +479,20 @@ impl BerReader {
     /// Reads a constructed element and parses its whole content with `f`;
     /// content left over is an error.
     pub fn sequence<T>(&mut self, tag: Tag, f: impl FnOnce(&mut BerReader) -> BerResult<T>) -> BerResult<T> {
-        let mut inner = self.constructed(tag)?;
-        let value = f(&mut inner)?;
-        inner.finish()?;
-        Ok(value)
+        // This reader is narrowed to the content and reads it in place: a
+        // reader of its own would take a reference to the data.
+        let content = self.next(tag)?;
+        let outer_end = std::mem::replace(&mut self.end, content.end);
+        self.pos = content.start;
+        let result = f(self).and_then(|value| self.finish().map(|()| value));
+        self.pos = content.end;
+        self.end = outer_end;
+        result
     }
 
     /// Reads an INTEGER.
     pub fn integer(&mut self, tag: Tag) -> BerResult<i64> {
-        decode_integer(&self.read(tag)?)
+        decode_integer(self.read_slice(tag)?)
     }
 
     /// Reads an INTEGER and converts it to a narrower or unsigned type.
@@ -475,7 +502,7 @@ impl BerReader {
 
     /// Reads a NULL.
     pub fn null(&mut self, tag: Tag) -> BerResult<()> {
-        if self.read(tag)?.is_empty() {
+        if self.read_slice(tag)?.is_empty() {
             Ok(())
         } else {
             Err(BerError::InvalidValue("NULL with content"))
@@ -489,7 +516,7 @@ impl BerReader {
 
     /// Reads a VisibleString.
     pub fn visible_string(&mut self, tag: Tag) -> BerResult<String> {
-        let b = self.read(tag)?;
+        let b = self.read_slice(tag)?;
         if !b.iter().all(|c| (0x20..=0x7e).contains(c)) {
             return Err(BerError::InvalidValue("VisibleString with invalid character"));
         }
@@ -498,7 +525,7 @@ impl BerReader {
 
     /// Reads an OBJECT IDENTIFIER and returns its arcs.
     pub fn oid(&mut self, tag: Tag) -> BerResult<Vec<u32>> {
-        let b = self.read(tag)?;
+        let b = self.read_slice(tag)?;
         let mut sub = Vec::new();
         let mut v: u32 = 0;
         for (i, byte) in b.iter().enumerate() {
@@ -678,5 +705,38 @@ mod tests {
     #[should_panic(expected = "differs from its announced length")]
     fn constructed_with_len_rejects_a_wrong_length() {
         enc(|w| w.constructed_with_len(Tag::SEQUENCE, 3, |w| w.null(Tag::NULL)));
+    }
+
+    #[test]
+    fn sequence_reads_only_its_content_and_continues_behind_it() {
+        // SEQUENCE { INTEGER 1 } INTEGER 2
+        let mut reader = BerReader::new(Bytes::from_static(&[0x30, 0x03, 0x02, 0x01, 0x01, 0x02, 0x01, 0x02]));
+        let inner = reader.sequence(Tag::SEQUENCE, |r| {
+            let v = r.integer(Tag::INTEGER)?;
+            // The INTEGER behind the SEQUENCE is not part of its content.
+            assert!(r.is_empty());
+            assert_eq!(r.peek_tag(), Err(BerError::Truncated));
+            Ok(v)
+        });
+        assert_eq!(inner, Ok(1));
+        assert_eq!(reader.integer(Tag::INTEGER), Ok(2));
+        assert!(reader.finish().is_ok());
+
+        // An element inside that claims more octets than the content has.
+        let mut reader = BerReader::new(Bytes::from_static(&[0x30, 0x02, 0x04, 0x03, 0x85, 0x00]));
+        assert_eq!(
+            reader.sequence(Tag::SEQUENCE, |r| r.octets(Tag::OCTET_STRING)),
+            Err(BerError::Truncated)
+        );
+        // After an error inside, reading goes on behind the SEQUENCE.
+        assert_eq!(reader.peek_tag(), Ok(Tag::ctx(5)));
+
+        // Content left over inside.
+        let mut reader = BerReader::new(Bytes::from_static(&[0x30, 0x04, 0x05, 0x00, 0x05, 0x00]));
+        assert_eq!(
+            reader.sequence(Tag::SEQUENCE, |r| r.null(Tag::NULL)),
+            Err(BerError::TrailingData)
+        );
+        assert!(reader.is_empty());
     }
 }

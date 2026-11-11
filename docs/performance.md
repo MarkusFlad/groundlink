@@ -496,6 +496,38 @@ about 10% of one core at a million frames per second. Larger frames gain
 a factor of about 1.8. A single frame per buffer costs about the same as
 before.
 
+### Decoding SLE PDUs
+
+The decoder returns OCTET STRINGs as slices of the received data, so it
+copies no frame data. It still took about 300 ns per frame of a
+RAF-TRANSFER-BUFFER, whatever the frame length, for two reasons:
+
+- **Every header was parsed twice.** `BerReader::read` looked at the tag
+  with `peek_tag` and then parsed the header again with `read_any`.
+- **Every element became a `Bytes`.** INTEGERs, NULLs and times were read
+  as `Bytes` slices and converted at once; nested elements got a reader
+  of their own over a `Bytes` slice. Each slice updates the reference
+  count of the received data atomically, and a frame has about ten such
+  elements.
+
+`read` now parses a header once. INTEGER, NULL, VisibleString, OBJECT
+IDENTIFIER and the times borrow their content instead, and `sequence`
+reads the content of an element in place, by narrowing the reader to it.
+Only OCTET STRINGs that end up in the result, such as the frame data,
+still become `Bytes`. The provider's decoding of FCLTU-TRANSFER-DATA uses
+the same reader and gets cheaper as well.
+
+Measured like the encoder above, three runs each:
+
+| Frames per buffer × frame length | Before | After |
+|---|---:|---:|
+| 16 × 1115 bytes | 260–383 ns/frame | 142–189 ns/frame |
+| 64 × 1115 bytes | 278–325 ns/frame | 128–161 ns/frame |
+| 64 × 256 bytes | 265–314 ns/frame | 133–155 ns/frame |
+| 16 × 8920 bytes | 277–346 ns/frame | 143–156 ns/frame |
+
+Decoding is about twice as fast, for all frame lengths.
+
 ### Measuring the whole path
 
 The [RAF throughput test](../tests/sle_raf_throughput.rs) feeds frames

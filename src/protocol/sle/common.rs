@@ -256,14 +256,12 @@ impl Time {
     pub(crate) fn read(r: &mut BerReader) -> BerResult<Self> {
         match r.peek_tag()? {
             t if t == Tag::ctx(0) => r
-                .octets(t)?
-                .as_ref()
+                .read_slice(t)?
                 .try_into()
                 .map(Time::Ccsds)
                 .map_err(|_| BerError::InvalidValue("CCSDS time must have 8 octets")),
             t if t == Tag::ctx(1) => r
-                .octets(t)?
-                .as_ref()
+                .read_slice(t)?
                 .try_into()
                 .map(Time::CcsdsPico)
                 .map_err(|_| BerError::InvalidValue("CCSDS pico time must have 10 octets")),

@@ -29,24 +29,53 @@ bytes.
 ## Where the time goes
 
 A CPU profile (`perf`) of 1 KiB packets through a coupled server and
-client, after optimizations 1 and 2, showed this distribution:
+client shows this distribution for the current version, on the i5 test
+machine described [below](#measurements). "Single" is a server that
+forwards every packet on its own, "batched" one that forwards batches
+(`TcpServerArgs::batched`, see
+[optimization 4](#optimization-4-batches-between-actors)):
 
-| Share | What |
-|---:|---|
-| ~37% | Passing messages between actors: tokio channels, semaphores and wakers, kameo's sending, receiving and dispatching |
-| ~15% | System calls of the actors: sending (writer) and receiving (reader) |
-| ~11% | The test's own sender and receiver |
-| ~7–8% | Worker threads going to sleep and being woken (futex, epoll) |
-| 7% | Memory allocation |
-| 5% | Copying packet data in the encoder |
-| 3.4% | Tracing spans created by kameo for every message |
-| 3% | Codec |
-| 3% | tokio scheduler |
+| What | Single | Batched |
+|---|---:|---:|
+| Passing messages between actors: tokio channels, semaphores and wakers, kameo's sending, receiving and dispatching | 27% | 4.5% |
+| System calls of the reader (receiving) | 12% | 20% |
+| System calls of the writer (sending) | 10% | 18% |
+| The test's own sender and receiver | 16% | 29% |
+| Worker threads going to sleep and being woken (futex, epoll) | 9% | 5% |
+| Memory allocation | 9% | 3.5% |
+| Copying packet data in the encoder | 4.5% | 9% |
+| Codec, framing and buffers (`tokio_util`, `bytes`) | 5% | 5.5% |
+| The actors' own code | 3.5% | 3.5% |
+| tokio scheduler | 3% | 1% |
+| **CPU time per packet** | **about 6.0 µs** | **about 2.9 µs** |
 
-The hops between actors dominate. A CPU profile shows where time is
-spent, though, not which stage of the pipeline sets its pace: making one
-stage cheaper helps only if that stage is the bottleneck (see
-[delayed writes](#delayed-writes)).
+The shares of the two columns are parts of different totals: a packet
+takes about half the CPU time with batches. Per packet, passing messages
+between actors drops from about 1.6 µs to 0.13 µs, allocation from 0.5 µs
+to 0.1 µs, and sleeping and waking from 0.55 µs to 0.15 µs. The system
+calls and the copy in the encoder cost about the same per packet in both
+cases (0.5 to 0.7 µs per direction, 0.27 µs for the copy), so their
+shares double.
+
+Without batches, the hops between actors still dominate. With batches,
+two thirds of the time are system calls and the test's own sender and
+receiver, which are mostly system calls as well; what the actors add to
+moving the data through the sockets is small.
+
+The profiles were recorded with `perf record -F 499 --call-graph dwarf`
+over 4 million packets (single) and 8 million packets (batched), about
+12 seconds each. Under the profiler, the throughput was about 10% lower
+than without (2.7 and 5.5 Gbit/s).
+
+An earlier profile, taken after optimizations 1 and 2 only, led to
+optimizations 3 and 4. It showed about 37% for passing messages between
+actors, 15% for the actors' system calls, 11% for the test, 7–8% for
+sleeping and waking, 7% for allocation, 5% for the copy in the encoder
+and 3.4% for the tracing spans that kameo created for every message.
+
+A CPU profile shows where time is spent, though, not which stage of the
+pipeline sets its pace: making one stage cheaper helps only if that
+stage is the bottleneck (see [delayed writes](#delayed-writes)).
 
 ## Optimization 1: write batching
 
@@ -652,5 +681,6 @@ Gbit/s:
   data into the buffer. Writing large packets with vectored writes
   (header and data separately) would skip that copy.
 - **A different allocator** in the application, such as mimalloc or
-  jemalloc: allocation took about 7% of the time in the profile, mostly
-  for the messages passed between actors.
+  jemalloc: allocation takes about 9% of the time in the profile without
+  batches and 3.5% with batches, mostly for the messages passed between
+  actors.

@@ -590,6 +590,62 @@ limits short frames; the gain is therefore one of the SLE user, which
 uses the same decoder. For longer frames, the decoder is not the limit
 either.
 
+### The SLE user
+
+The [SLE user throughput test](../tests/sle_user_throughput.rs) measures
+the receiving side on its own:
+
+```text
+provider ─TCP─▶ TmlClient ─▶ TmlLinkActor ─▶ SleUserActor ─RafFrame─▶ sink
+```
+
+The provider is a plain TCP connection that answers BIND and RAF-START
+and then writes pre-encoded RAF-TRANSFER-BUFFERs, so encoding them is not
+measured. The sink is an actor that counts the frames. The actors are
+measured twice: passing every TML message, SLE PDU and frame on its own
+("single"), and passing batches, that is the messages of one read and the
+frames of one transfer buffer ("batched"). "Plain" receives the same data
+with a `Framed` stream and decodes every transfer buffer, without actors:
+
+```sh
+cargo test --release --test sle_user_throughput -- --ignored --nocapture
+```
+
+The test is ignored by default and only meaningful in release mode. On
+the i5 test machine, three runs each, throughput of the frame data in
+Gbit/s:
+
+| Frame length | Frames per buffer | Single | Batched | Plain |
+|---:|---:|---:|---:|---:|
+| 256 | 16 | 1.57–1.68 | 3.17–4.16 | 4.13–4.19 |
+| 256 | 64 | 1.49–1.77 | 3.12–4.73 | 3.79–5.08 |
+| 1115 | 16 | 5.23–5.61 | 11.28–11.32 | 10.03–10.36 |
+| 1115 | 64 | 5.45–5.74 | 7.68–8.88 | 11.75–13.35 |
+| 2048 | 16 | 7.67–8.09 | 8.48–8.65 | 13.52–14.26 |
+| 2048 | 64 | 8.24–8.85 | 10.39–10.84 | 15.84–17.87 |
+| 8920 | 16 | 9.83–12.56 | 12.70–12.83 | 15.82–16.69 |
+| 8920 | 64 | 12.48–13.24 | 12.77–13.97 | 14.75–15.05 |
+
+- **With batches, the user is faster than the provider** for every frame
+  length: 1.5 to 2.3 million frames of 256 bytes per second, and 8 to 13
+  Gbit/s from 1115 bytes on, against 1.4 to 1.9 million frames per second
+  and 6 to 8 Gbit/s through the provider. The user does not limit the
+  return link then.
+- **Passing frames on one by one halves the rate** of frames up to 1115
+  bytes: every frame passes the mailbox of the sink on its own, which
+  limits 256-byte frames to about 800,000 per second, less than the
+  provider delivers. Give `SleUserActor::raf` a `Recipient<Batch<RafFrame>>`
+  where the rate matters.
+- **The actors reach the plain connection for 256-byte frames** and for
+  16 frames of 1115 bytes per buffer. For larger transfer buffers they
+  stay 10 to 40% below it. The cause has not been examined.
+- **The user's mailbox does not slow the provider down.** The
+  `SleUserActor` has an unbounded mailbox, since it and the link actor
+  send to each other. The test process took 0.9 to 1.3 GB of memory at
+  its peak, for 512 MiB of frame data per measurement; presumably
+  transfer buffers wait in that mailbox when they arrive faster than the
+  user decodes them and the sink takes the frames.
+
 ## Possible next steps
 
 - **Avoid the copy for large packets.** The encoder copies the packet

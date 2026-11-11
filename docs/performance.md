@@ -481,25 +481,36 @@ each frame first. That gives every length in advance, and the frame data
 is copied once, straight to its place. The octets on the wire are the
 same; a test compares them with the generic encoding.
 
-Measured with a micro benchmark of the encoder alone, on a Xeon at
-2.1 GHz with 2 threads (a cloud VM), three runs each:
+Measured with the [RAF codec test](../tests/sle_raf_codec.rs), which
+times the encoder alone, on the i5 test machine described above. Each
+value is the best of seven runs; the ranges show two such measurements:
 
 | Frames per buffer × frame length | Before | After |
 |---|---:|---:|
-| 64 × 1115 bytes | 85–107 ns/frame | 76–91 ns/frame |
-| 1 × 1115 bytes | 125–143 ns/frame | 133–149 ns/frame |
-| 16 × 8920 bytes | 404–481 ns/frame | 218–265 ns/frame |
+| 1 × 1115 bytes | 350–351 ns/frame | 319–321 ns/frame |
+| 16 × 256 bytes | 150–152 ns/frame | 142–143 ns/frame |
+| 16 × 1115 bytes | 215–216 ns/frame | 166 ns/frame |
+| 64 × 1115 bytes | 223–225 ns/frame | 158–160 ns/frame |
+| 16 × 2048 bytes | 315 ns/frame | 205–207 ns/frame |
+| 16 × 8920 bytes | 1066–1073 ns/frame | 498–501 ns/frame |
+| 64 × 8920 bytes | 1215–1252 ns/frame | 499–508 ns/frame |
 
-For 1115-byte frames the gain is about 10%, since moving one frame in the
-cache is cheap; the encoder took less than 0.1 µs per frame already,
-about 10% of one core at a million frames per second. Larger frames gain
-a factor of about 1.8. A single frame per buffer costs about the same as
-before.
+For 1115-byte frames the gain is about 25%, for 8920-byte frames a
+factor of 2.1 to 2.4. Short frames and a single frame per buffer gain
+5 to 10%, since there is little data to move.
+
+The throughput of the whole path does not change measurably, though
+(see [Measuring the whole path](#measuring-the-whole-path)): at 8920
+bytes, about 115,000 frames per second pass, and the encoder took about
+12% of one core before and takes 6% now. The pace is set by the hops
+between the actors and the socket, not by the encoder. The change saves
+CPU time, which a provider with many service instances can use, but it
+does not raise the throughput of one instance.
 
 ### Decoding SLE PDUs
 
 The decoder returns OCTET STRINGs as slices of the received data, so it
-copies no frame data. It still took about 300 ns per frame of a
+copies no frame data. It still took about 430 ns per frame of a
 RAF-TRANSFER-BUFFER, whatever the frame length, for two reasons:
 
 - **Every header was parsed twice.** `BerReader::read` looked at the tag
@@ -517,27 +528,67 @@ Only OCTET STRINGs that end up in the result, such as the frame data,
 still become `Bytes`. The provider's decoding of FCLTU-TRANSFER-DATA uses
 the same reader and gets cheaper as well.
 
-Measured like the encoder above, three runs each:
+Measured like the encoder above, with the same test:
 
 | Frames per buffer × frame length | Before | After |
 |---|---:|---:|
-| 16 × 1115 bytes | 260–383 ns/frame | 142–189 ns/frame |
-| 64 × 1115 bytes | 278–325 ns/frame | 128–161 ns/frame |
-| 64 × 256 bytes | 265–314 ns/frame | 133–155 ns/frame |
-| 16 × 8920 bytes | 277–346 ns/frame | 143–156 ns/frame |
+| 1 × 1115 bytes | 512–513 ns/frame | 329–330 ns/frame |
+| 16 × 256 bytes | 433–436 ns/frame | 236–238 ns/frame |
+| 16 × 1115 bytes | 431–436 ns/frame | 236–238 ns/frame |
+| 64 × 1115 bytes | 419–423 ns/frame | 226–230 ns/frame |
+| 16 × 2048 bytes | 434–435 ns/frame | 236–243 ns/frame |
+| 16 × 8920 bytes | 433–436 ns/frame | 235–238 ns/frame |
+| 64 × 8920 bytes | 421–422 ns/frame | 226–228 ns/frame |
 
-Decoding is about twice as fast, for all frame lengths.
+Decoding is about 1.8 times as fast, for all frame lengths. Unlike the
+encoder, this shows in the throughput of the whole path for short
+frames, by about 30% (see below).
 
 ### Measuring the whole path
 
 The [RAF throughput test](../tests/sle_raf_throughput.rs) feeds frames
-in batches to a `RafServiceInstance` and receives the transfer buffers
-at a plain TML connection, through the association, the TML link and
-the server:
+of 256 to 8920 bytes in batches to a `RafServiceInstance` and receives
+the RAF-TRANSFER-BUFFERs at a plain TML connection, through the
+association, the TML link and the server. The user decodes every
+transfer buffer to count the frames, which is part of the measurement;
+the rate counts the frame data only, not the SLE and TML overhead:
 
 ```sh
 cargo test --release --test sle_raf_throughput -- --ignored --nocapture
 ```
+
+The [RAF codec test](../tests/sle_raf_codec.rs) times encoding
+(`encode_transfer_buffer`) and decoding (`RafProviderPdu::decode`) of a
+RAF-TRANSFER-BUFFER alone, without actors or sockets, and prints
+nanoseconds per frame; the tables above come from it:
+
+```sh
+cargo test --release --test sle_raf_codec -- --ignored --nocapture
+```
+
+Both tests are ignored by default and only meaningful in release mode.
+
+On the i5 test machine, two runs each, throughput of the frame data in
+Gbit/s:
+
+| Frame length | Frames per buffer | Before both | Encoder | Encoder and decoder |
+|---:|---:|---:|---:|---:|
+| 256 | 16 | 2.41–2.51 | 2.12–2.41 | 3.06–3.07 |
+| 256 | 64 | 2.92–2.96 | 2.86–2.88 | 3.83 |
+| 1115 | 16 | 6.38–6.39 | 6.36–6.58 | 6.14–6.72 |
+| 1115 | 64 | 6.21–6.22 | 6.35–6.45 | 6.24–6.51 |
+| 2048 | 16 | 7.10–7.38 | 7.17–7.81 | 7.18–7.75 |
+| 2048 | 64 | 7.15–7.53 | 7.26–7.57 | 7.05–7.34 |
+| 8920 | 16 | 7.66–8.15 | 8.22–9.06 | 7.94–8.26 |
+| 8920 | 64 | 7.49–8.16 | 6.90–8.30 | 7.14–7.76 |
+
+The faster encoder makes no difference beyond the variation between
+runs, even for 8920-byte frames. The faster decoder raises the rate of
+256-byte frames from 1.4 to 1.9 million frames per second in buffers of
+64. The test's user decodes every transfer buffer in a single task and
+limits short frames; the gain is therefore one of the SLE user, which
+uses the same decoder. For longer frames, the decoder is not the limit
+either.
 
 ## Possible next steps
 

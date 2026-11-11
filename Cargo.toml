@@ -3,6 +3,13 @@ name = "groundlink"
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
+description = "Actors for CCSDS Space Packets, ECSS PUS-C and the SLE services RAF and FCLTU over TCP, built on kameo and tokio"
+repository = "https://github.com/MarkusFlad/groundlink"
+documentation = "https://markusflad.github.io/groundlink/"
+readme = "README.md"
+keywords = ["ccsds", "pus", "sle", "space", "actor"]
+categories = ["aerospace::space-protocols", "network-programming", "asynchronous"]
+exclude = [".github", ".vscode"]
 
 [features]
 # `TestActor` and `GetMessages`, for the tests of applications.

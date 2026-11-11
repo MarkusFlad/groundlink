@@ -1,8 +1,11 @@
 # groundlink
 
-Async Rust library for CCSDS Space Packets and ECSS PUS-C telecommands and
-telemetry over TCP, built on [kameo](https://crates.io/crates/kameo) actors
-and [tokio](https://tokio.rs).
+Async Rust library for the TCP links of a space ground segment: CCSDS
+Space Packets, ECSS PUS-C telecommands and telemetry, and the CCSDS Space
+Link Extension (SLE) services Return All Frames and Forward CLTU, as
+provider and as user, with the transfer frames and CLTUs they carry.
+Built on [kameo](https://crates.io/crates/kameo) actors and
+[tokio](https://tokio.rs).
 
 ## Features
 

@@ -1,6 +1,7 @@
-//! Generic TCP actors built on [`kameo`], plus three protocols that plug
+//! Generic TCP actors built on [`kameo`], plus the protocols that plug
 //! into them: a simple length-prefixed string protocol, CCSDS Space
-//! Packets and ECSS PUS-C packets.
+//! Packets, ECSS PUS-C packets and the SLE Transport Mapping Layer, with
+//! the SLE services Return All Frames and Forward CLTU on top of it.
 //!
 //! # Overview
 //!

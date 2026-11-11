@@ -258,6 +258,35 @@ impl BerWriter {
         }
     }
 
+    /// Writes a constructed element whose content is produced by `f` and
+    /// is known to be `content_len` octets long.
+    ///
+    /// Unlike [`constructed`](Self::constructed), the length is written
+    /// before the content, so no octets have to move afterwards to make
+    /// room for a long length. Panics if `f` writes another number of
+    /// octets, since the element would be corrupt.
+    pub(crate) fn constructed_with_len(&mut self, tag: Tag, content_len: usize, f: impl FnOnce(&mut BerWriter)) {
+        self.put_tag(tag);
+        self.put_len(content_len);
+        let start = self.buf.len();
+        f(self);
+        assert_eq!(
+            self.buf.len() - start,
+            content_len,
+            "content of {tag} differs from its announced length"
+        );
+    }
+
+    /// Appends octets that are already BER encoded.
+    pub(crate) fn raw(&mut self, encoded: &[u8]) {
+        self.buf.extend_from_slice(encoded);
+    }
+
+    /// The number of octets written so far.
+    pub(crate) fn len(&self) -> usize {
+        self.buf.len()
+    }
+
     /// Writes an INTEGER in the minimal number of octets.
     pub fn integer(&mut self, tag: Tag, v: i64) {
         let b = v.to_be_bytes();
@@ -295,6 +324,23 @@ impl BerWriter {
         }
         self.primitive(tag, &content.buf);
     }
+}
+
+/// The number of octets of an element with tag `tag` and `content_len`
+/// octets of content, as [`BerWriter`] writes it: identifier, length and
+/// content.
+pub(crate) fn element_len(tag: Tag, content_len: usize) -> usize {
+    let tag_len = if tag.number < 31 {
+        1
+    } else {
+        1 + (32 - tag.number.leading_zeros() as usize).div_ceil(7)
+    };
+    let len_len = if content_len < 0x80 {
+        1
+    } else {
+        1 + (usize::BITS - content_len.leading_zeros()).div_ceil(8) as usize
+    };
+    tag_len + len_len + content_len
 }
 
 // ---------------------------------------------------------------------------
@@ -590,5 +636,47 @@ mod tests {
                 .unwrap_err(),
             BerError::TrailingData
         );
+    }
+
+    #[test]
+    fn element_len_matches_the_writer() {
+        let tags = [
+            Tag::ctx(0),
+            Tag::ctx_cons(30),
+            Tag::ctx(31),
+            Tag::ctx(100),
+            Tag::ctx(127),
+            Tag::ctx(128),
+            Tag::ctx(20000),
+        ];
+        let lens = [0, 1, 127, 128, 255, 256, 65535, 65536, 0x1_00_00_00];
+        for tag in tags {
+            for len in lens {
+                let content = vec![0u8; len];
+                assert_eq!(
+                    element_len(tag, len),
+                    enc(|w| w.octets(tag, &content)).len(),
+                    "{tag}, {len} octets"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn constructed_with_len_writes_what_constructed_writes() {
+        for len in [0, 5, 127, 128, 300, 70000] {
+            let content = vec![0x5a; len];
+            let tag = Tag::ctx_cons(8);
+            let expected = enc(|w| w.constructed(tag, |w| w.octets(Tag::OCTET_STRING, &content)));
+            let inner = element_len(Tag::OCTET_STRING, len);
+            let written = enc(|w| w.constructed_with_len(tag, inner, |w| w.octets(Tag::OCTET_STRING, &content)));
+            assert_eq!(written, expected, "{len} octets");
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "differs from its announced length")]
+    fn constructed_with_len_rejects_a_wrong_length() {
+        enc(|w| w.constructed_with_len(Tag::SEQUENCE, 3, |w| w.null(Tag::NULL)));
     }
 }

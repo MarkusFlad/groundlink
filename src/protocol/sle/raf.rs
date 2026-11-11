@@ -25,7 +25,7 @@
 
 use bytes::Bytes;
 
-use super::ber::{BerError, BerReader, BerResult, BerWriter, Tag};
+use super::ber::{BerError, BerReader, BerResult, BerWriter, Tag, element_len};
 use super::common::*;
 
 const TAG_START_INVOCATION: Tag = Tag::ctx_cons(0);
@@ -222,7 +222,9 @@ pub struct RafFrame {
 }
 
 impl RafFrame {
-    fn write(&self, w: &mut BerWriter) {
+    /// Writes the fields before the frame data, which follows them as an
+    /// OCTET STRING; they take a few dozen octets.
+    fn write_head(&self, w: &mut BerWriter) {
         Credentials::Unused.write(w);
         self.earth_receive_time.write(w);
         self.antenna_id.write(w);
@@ -232,7 +234,6 @@ impl RafFrame {
             None => w.null(Tag::ctx(0)),
             Some(b) => w.octets(Tag::ctx(1), b),
         }
-        w.octets(Tag::OCTET_STRING, &self.data);
     }
 
     fn read(r: &mut BerReader) -> BerResult<Self> {
@@ -263,12 +264,35 @@ impl RafFrame {
 
 /// Encodes a RAF-TRANSFER-BUFFER PDU holding `frames`; the same as
 /// [`RafProviderPdu::TransferBuffer`], without the copy into a `Vec`.
+///
+/// The data of every frame is copied once, straight to its place in the
+/// PDU. To make that possible, the short fields before the data of each
+/// frame are encoded first, which gives every length in advance; the
+/// generic [`BerWriter::constructed`] would have to move the content of
+/// each frame, and of the whole PDU, to make room for their long lengths.
 pub fn encode_transfer_buffer(frames: &[RafFrame]) -> Bytes {
-    let capacity = frames.iter().map(|f| f.data.len() + 48).sum::<usize>() + 8;
-    let mut w = BerWriter::with_capacity(capacity);
-    w.constructed(TAG_TRANSFER_BUFFER, |w| {
-        for f in frames {
-            w.constructed(TAG_ANNOTATED_FRAME, |w| f.write(w));
+    let mut heads = BerWriter::with_capacity(frames.len() * 48);
+    let mut head_ends = Vec::with_capacity(frames.len());
+    let mut content_len = 0;
+    for f in frames {
+        let start = heads.len();
+        f.write_head(&mut heads);
+        head_ends.push(heads.len());
+        let frame_len = heads.len() - start + element_len(Tag::OCTET_STRING, f.data.len());
+        content_len += element_len(TAG_ANNOTATED_FRAME, frame_len);
+    }
+
+    let mut w = BerWriter::with_capacity(element_len(TAG_TRANSFER_BUFFER, content_len));
+    w.constructed_with_len(TAG_TRANSFER_BUFFER, content_len, |w| {
+        let mut start = 0;
+        for (f, &end) in frames.iter().zip(&head_ends) {
+            let head = &heads.as_slice()[start..end];
+            let frame_len = head.len() + element_len(Tag::OCTET_STRING, f.data.len());
+            w.constructed_with_len(TAG_ANNOTATED_FRAME, frame_len, |w| {
+                w.raw(head);
+                w.octets(Tag::OCTET_STRING, &f.data);
+            });
+            start = end;
         }
     });
     w.into_bytes()
@@ -564,6 +588,63 @@ mod tests {
         ];
         for p in pdus {
             assert_eq!(RafProviderPdu::decode(p.encode()).unwrap(), p);
+        }
+    }
+
+    /// The encoding with the generic [`BerWriter::constructed`], which
+    /// `encode_transfer_buffer` must match octet for octet.
+    fn transfer_buffer_reference(frames: &[RafFrame]) -> Vec<u8> {
+        let mut w = BerWriter::new();
+        w.constructed(TAG_TRANSFER_BUFFER, |w| {
+            for f in frames {
+                w.constructed(TAG_ANNOTATED_FRAME, |w| {
+                    f.write_head(w);
+                    w.octets(Tag::OCTET_STRING, &f.data);
+                });
+            }
+        });
+        w.as_slice().to_vec()
+    }
+
+    #[test]
+    fn transfer_buffer_matches_the_generic_encoding() {
+        let sized = |n: u8, len: usize| RafFrame {
+            data: Bytes::from(vec![n; len]),
+            ..frame(n)
+        };
+        let annotated = {
+            let mut f = sized(9, 300);
+            f.private_annotation = Some(Bytes::from(vec![7; 200]));
+            f.antenna_id = AntennaId::Global(vec![1, 3, 112, 4, 7, 0]);
+            f.data_link_continuity = -1;
+            f.quality = FrameQuality::Erred;
+            f
+        };
+        let cases: Vec<Vec<RafFrame>> = vec![
+            vec![],
+            // Frame content below and around the 128 octets of a long length.
+            vec![sized(1, 1)],
+            vec![sized(2, 60)],
+            vec![sized(3, 100)],
+            vec![sized(4, 128)],
+            vec![sized(5, 1115)],
+            // A frame and a PDU that need three octets of length.
+            vec![sized(6, 70_000)],
+            (0..64).map(|n| sized(n, 1115)).collect(),
+            vec![sized(1, 1), annotated, sized(2, 255), sized(3, 256)],
+        ];
+        for frames in cases {
+            let encoded = encode_transfer_buffer(&frames);
+            assert_eq!(
+                &encoded[..],
+                &transfer_buffer_reference(&frames)[..],
+                "{} frames",
+                frames.len()
+            );
+            assert_eq!(
+                RafProviderPdu::decode(encoded).unwrap(),
+                RafProviderPdu::TransferBuffer(frames)
+            );
         }
     }
 

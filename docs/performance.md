@@ -465,6 +465,48 @@ prototype of the batched path, three runs each, throughput in Gbit/s:
   packet already fills a read and a write, and the cost is copying the
   data.
 
+## The RAF return link
+
+### Encoding RAF-TRANSFER-BUFFERs
+
+`BerWriter::constructed` writes the content of an element before it
+knows its length. If the content takes 128 octets or more, the length
+needs more than one octet, and the content is moved to make room. In a
+RAF-TRANSFER-BUFFER, that happened for every annotated frame and once
+more for the whole PDU, so the data of every frame was copied about three
+times instead of once.
+
+`encode_transfer_buffer` now encodes the short fields before the data of
+each frame first. That gives every length in advance, and the frame data
+is copied once, straight to its place. The octets on the wire are the
+same; a test compares them with the generic encoding.
+
+Measured with a micro benchmark of the encoder alone, on a Xeon at
+2.1 GHz with 2 threads (a cloud VM), three runs each:
+
+| Frames per buffer × frame length | Before | After |
+|---|---:|---:|
+| 64 × 1115 bytes | 85–107 ns/frame | 76–91 ns/frame |
+| 1 × 1115 bytes | 125–143 ns/frame | 133–149 ns/frame |
+| 16 × 8920 bytes | 404–481 ns/frame | 218–265 ns/frame |
+
+For 1115-byte frames the gain is about 10%, since moving one frame in the
+cache is cheap; the encoder took less than 0.1 µs per frame already,
+about 10% of one core at a million frames per second. Larger frames gain
+a factor of about 1.8. A single frame per buffer costs about the same as
+before.
+
+### Measuring the whole path
+
+The [RAF throughput test](../tests/sle_raf_throughput.rs) feeds frames
+in batches to a `RafServiceInstance` and receives the transfer buffers
+at a plain TML connection, through the association, the TML link and
+the server:
+
+```sh
+cargo test --release --test sle_raf_throughput -- --ignored --nocapture
+```
+
 ## Possible next steps
 
 - **Avoid the copy for large packets.** The encoder copies the packet
